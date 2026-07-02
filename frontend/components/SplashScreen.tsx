@@ -103,7 +103,7 @@ const SplashScreen: React.FC<SplashScreenProps> = ({ onGetStarted = () => {} }) 
 
         {/* Mini credibility line */}
         <p style={{ fontSize: 12, color: c.textFaint, margin: 0 }}>
-          Built for fast fashion financial analysis · Gap · PVH · AEO
+          Analyze any public company's SEC filings
         </p>
       </div>
     </div>

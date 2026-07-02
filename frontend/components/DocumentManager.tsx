@@ -1,61 +1,121 @@
-import React, { useState, useRef } from 'react';
-import { UploadCloud, FileText, Trash2, CheckCircle, Loader2 } from 'lucide-react';
-import { Document } from '../types';
+import React, { useState, useRef, useEffect } from 'react';
+import { UploadCloud, FileText, Trash2, Loader2, AlertTriangle, CheckCircle2 } from 'lucide-react';
+import { Document, IndexStatus } from '../types';
 import { c, font } from '../theme';
+import { extractCompany, buildContent, searchCompanies, SearchResult } from '../services/gemini';
+import CompanyLogo from './CompanyLogo';
+import SearchDropdown from './SearchDropdown';
 
 interface DocumentManagerProps {
   documents: Document[];
   onAddDocument: (doc: Document) => void;
   onRemoveDocument: (id: string) => void;
+  onFetched?: () => void;
 }
 
 const FF = font.ui;
+type Form = '10-K' | '10-Q';
 
-const DocumentManager: React.FC<DocumentManagerProps> = ({ documents, onAddDocument, onRemoveDocument }) => {
-  const [isDragging, setIsDragging]   = useState(false);
-  const [isUploading, setIsUploading] = useState(false);
-  const [ticker, setTicker]           = useState('');
+const selectStyle: React.CSSProperties = {
+  fontSize: 13, padding: '8px 12px',
+  border: `0.5px solid ${c.border}`,
+  borderRadius: 7, outline: 'none',
+  fontFamily: FF, color: c.text, background: c.bg,
+  cursor: 'pointer', flexShrink: 0,
+};
+
+const DocumentManager: React.FC<DocumentManagerProps> = ({ documents, onAddDocument, onRemoveDocument, onFetched }) => {
+  const [fetching, setFetching]   = useState(false);
+  const [form, setForm]           = useState<Form>('10-K');
+  const [error, setError]         = useState<string | null>(null);
+
+  // Ticker input: inputValue is what the user sees; resolvedTicker is the
+  // confirmed ticker from a dropdown selection. Manual edits clear resolvedTicker
+  // so the debounced search re-runs on the new text.
+  const [inputValue, setInputValue]         = useState('');
+  const [resolvedTicker, setResolvedTicker] = useState<string | null>(null);
+  const [suggestions, setSuggestions]       = useState<SearchResult[]>([]);
+  const [showDrop, setShowDrop]             = useState(false);
+  const [highlightIdx, setHighlightIdx]     = useState(-1);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const simulateUpload = (file: File) => {
-    setIsUploading(true);
-    setTimeout(() => {
+  // Debounced search — skipped when a company has already been resolved from
+  // the dropdown (resolvedTicker is set). Clears on manual typing via onChange.
+  useEffect(() => {
+    if (resolvedTicker) { setSuggestions([]); setShowDrop(false); return; }
+    const q = inputValue.trim();
+    if (!q) { setSuggestions([]); setShowDrop(false); return; }
+
+    const timer = setTimeout(async () => {
+      const results = await searchCompanies(q);
+      setSuggestions(results);
+      setShowDrop(results.length > 0);
+      setHighlightIdx(-1);
+    }, 200);
+
+    return () => clearTimeout(timer);
+  }, [inputValue, resolvedTicker]);
+
+  const selectSuggestion = (s: SearchResult) => {
+    setInputValue(s.name);
+    setResolvedTicker(s.ticker);
+    setShowDrop(false);
+    setHighlightIdx(-1);
+  };
+
+  const handleTickerKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (showDrop && suggestions.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setHighlightIdx(i => Math.min(i + 1, suggestions.length - 1));
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setHighlightIdx(i => Math.max(i - 1, -1));
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        const chosen = highlightIdx >= 0 ? suggestions[highlightIdx] : suggestions[0];
+        if (chosen) selectSuggestion(chosen);
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        setShowDrop(false);
+        setHighlightIdx(-1);
+      }
+    } else if (e.key === 'Enter') {
+      handleFetchEdgar();
+    }
+  };
+
+  const handleFetchEdgar = async () => {
+    const t = (resolvedTicker || inputValue.trim()).toUpperCase();
+    if (!t || fetching) return;
+    setError(null);
+    setFetching(true);
+    try {
+      const data = await extractCompany(t, form);
       onAddDocument({
         id: `doc-${Date.now()}`,
-        name: file.name,
+        name: `${t} ${data.form}`,
         uploadDate: new Date().toISOString().split('T')[0],
-        size: `${(file.size / (1024 * 1024)).toFixed(2)} MB`,
-        content: `Simulated extracted content for ${file.name}. This document contains financial data, revenue figures, and strategic outlook. (In a real app this would be parsed PDF text.)`,
+        size: data.char_count ? `${Math.round(data.char_count / 1024)} KB` : '—',
+        content: buildContent(data.sections ?? {}),
+        ticker: t,
+        form: data.form,
+        metrics: data.metrics,
+        indexStatus: 'indexing',
+        ...(data.sector ? { sector: data.sector } : {}),
       });
-      setIsUploading(false);
-    }, 1500);
+      setInputValue('');
+      setResolvedTicker(null);
+      onFetched?.();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Fetch failed. Is the backend running?');
+    } finally {
+      setFetching(false);
+    }
   };
 
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(false);
-    if (e.dataTransfer.files?.[0]) simulateUpload(e.dataTransfer.files[0]);
-  };
-
-  const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files?.[0]) simulateUpload(e.target.files[0]);
-  };
-
-  const handleFetchEdgar = () => {
-    if (!ticker.trim()) return;
-    setIsUploading(true);
-    setTimeout(() => {
-      onAddDocument({
-        id: `doc-${Date.now()}`,
-        name: `${ticker.toUpperCase()}_10K_FY2024.pdf`,
-        uploadDate: new Date().toISOString().split('T')[0],
-        size: '2.4 MB',
-        content: `Simulated 10-K content for ${ticker.toUpperCase()} FY2024 fetched from SEC EDGAR.`,
-      });
-      setTicker('');
-      setIsUploading(false);
-    }, 1800);
-  };
+  const canFetch = inputValue.trim() && !fetching;
 
   return (
     <div style={{ padding: 22, height: '100%', overflowY: 'auto', fontFamily: FF, background: c.bg }}>
@@ -63,96 +123,145 @@ const DocumentManager: React.FC<DocumentManagerProps> = ({ documents, onAddDocum
       {/* Header */}
       <div style={{ marginBottom: 20 }}>
         <p style={{ fontSize: 15, fontWeight: 500, color: c.text, margin: '0 0 2px' }}>Document library</p>
-        <p style={{ fontSize: 13, color: c.textMuted, margin: 0 }}>Upload 10-Ks, 10-Qs, and earnings PDFs for RAG analysis.</p>
+        <p style={{ fontSize: 13, color: c.textMuted, margin: 0 }}>
+          Fetch filings from SEC EDGAR — each is parsed and embedded into a searchable vector index for RAG chat.
+        </p>
       </div>
 
-      {/* Drop zone */}
-      <div
-        onClick={() => !isUploading && fileInputRef.current?.click()}
-        onDragOver={e => { e.preventDefault(); setIsDragging(true); }}
-        onDragLeave={() => setIsDragging(false)}
-        onDrop={handleDrop}
-        style={{
-          border: `2px dashed ${isDragging ? c.brand : c.border}`,
-          borderRadius: 10,
-          padding: '28px 20px',
-          textAlign: 'center',
-          cursor: isUploading ? 'default' : 'pointer',
-          background: isDragging ? c.brandTint : c.surface,
-          marginBottom: 16,
-          transition: 'border-color 0.15s, background 0.15s',
-        }}
-        onMouseEnter={e => { if (!isUploading && !isDragging) (e.currentTarget as HTMLDivElement).style.background = c.surfaceAlt; }}
-        onMouseLeave={e => { if (!isDragging) (e.currentTarget as HTMLDivElement).style.background = c.surface; }}
-      >
-        <input type="file" ref={fileInputRef} onChange={handleFileInput} style={{ display: 'none' }} accept=".pdf,.txt,.csv" />
-        {isUploading ? (
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
-            <Loader2 size={26} color={c.brand} style={{ animation: 'spin 1s linear infinite' }} />
-            <p style={{ fontSize: 13, color: c.textMuted, margin: 0 }}>Processing document and generating embeddings…</p>
+      {/* Primary: fetch from EDGAR */}
+      <div style={{ background: c.surface, borderRadius: 12, padding: '16px 18px', marginBottom: 12 }}>
+        <p style={{ fontSize: 12, color: c.textMuted, margin: '0 0 8px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+          Fetch from SEC EDGAR
+        </p>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+
+          {/* Ticker input — positioning root for the autocomplete dropdown */}
+          <div style={{ flex: 1, minWidth: 0, position: 'relative' }}>
+            <input
+              type="text"
+              value={inputValue}
+              onChange={e => {
+                setInputValue(e.target.value);
+                setResolvedTicker(null);
+                if (error) setError(null);
+              }}
+              onKeyDown={handleTickerKeyDown}
+              onFocus={e => {
+                e.target.style.borderColor = c.brand;
+                if (suggestions.length > 0 && !resolvedTicker) setShowDrop(true);
+              }}
+              onBlur={e => {
+                e.target.style.borderColor = c.border;
+                setTimeout(() => setShowDrop(false), 150);
+              }}
+              placeholder="Company name or ticker"
+              style={{
+                width: '100%', boxSizing: 'border-box', fontSize: 13,
+                padding: '8px 12px',
+                border: `0.5px solid ${c.border}`,
+                borderRadius: 7, outline: 'none',
+                fontFamily: FF, color: c.text, background: c.bg,
+              }}
+            />
+            {showDrop && (
+              <SearchDropdown
+                suggestions={suggestions}
+                highlightIdx={highlightIdx}
+                onSelect={selectSuggestion}
+                onHighlight={setHighlightIdx}
+              />
+            )}
           </div>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
-            <div style={{ width: 44, height: 44, borderRadius: '50%', background: c.brandTint, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <UploadCloud size={22} color={c.brand} />
-            </div>
-            <div>
-              <p style={{ fontSize: 14, fontWeight: 500, color: c.text2, margin: '0 0 3px' }}>Click to upload or drag and drop</p>
-              <p style={{ fontSize: 12, color: c.textFaint, margin: 0 }}>PDF, TXT, or CSV · max 10MB</p>
-            </div>
+
+          <select
+            value={form}
+            onChange={e => setForm(e.target.value as Form)}
+            style={selectStyle}
+            aria-label="Filing type"
+          >
+            <option value="10-K">10-K</option>
+            <option value="10-Q">10-Q</option>
+          </select>
+
+          <button
+            onClick={handleFetchEdgar}
+            disabled={!canFetch}
+            style={{
+              padding: '8px 16px', borderRadius: 7, fontSize: 13,
+              background: canFetch ? c.brandDeep : c.border,
+              color:      canFetch ? c.onBrand   : c.textFaint,
+              border: 'none', cursor: canFetch ? 'pointer' : 'not-allowed',
+              fontFamily: FF, fontWeight: 500, flexShrink: 0,
+              display: 'inline-flex', alignItems: 'center', gap: 6,
+              transition: 'background 0.15s',
+            }}
+            onMouseEnter={e => { if (canFetch) e.currentTarget.style.background = c.brandDeepHover; }}
+            onMouseLeave={e => { if (canFetch) e.currentTarget.style.background = c.brandDeep; }}
+          >
+            {fetching
+              ? <><Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> Fetching…</>
+              : 'Fetch filing'}
+          </button>
+        </div>
+
+        {/* Resolved company hint */}
+        {resolvedTicker && (
+          <p style={{ fontSize: 11, color: c.textMuted, margin: '6px 0 0' }}>
+            Will fetch <strong style={{ color: c.text }}>{resolvedTicker}</strong> · choose a form above then click Fetch filing
+          </p>
+        )}
+
+        {/* Fetch error — honey warn tokens */}
+        {error && (
+          <div style={{
+            display: 'flex', alignItems: 'flex-start', gap: 8,
+            marginTop: 10, padding: '8px 12px', borderRadius: 7,
+            background: c.warnSurface, border: `0.5px solid ${c.warnBorder}`,
+            fontSize: 12, color: c.warnFg, lineHeight: 1.5,
+          }}>
+            <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 1 }} />
+            <span>{error}</span>
           </div>
         )}
       </div>
 
-      {/* EDGAR fetch row */}
-      <div style={{ display: 'flex', gap: 8, marginBottom: 24 }}>
-        <input
-          type="text"
-          value={ticker}
-          onChange={e => setTicker(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && handleFetchEdgar()}
-          placeholder="Fetch by ticker from SEC EDGAR (e.g. GPS, PVH, AEO)…"
-          style={{
-            flex: 1, fontSize: 13,
-            padding: '8px 12px',
-            border: `0.5px solid ${c.border}`,
-            borderRadius: 7, outline: 'none',
-            fontFamily: FF, color: c.text,
-            background: c.bg,
-          }}
-          onFocus={e  => (e.target.style.borderColor = c.brand)}
-          onBlur={e   => (e.target.style.borderColor = c.border)}
-        />
-        <button
-          onClick={handleFetchEdgar}
-          disabled={!ticker.trim() || isUploading}
-          style={{
-            padding: '8px 16px', borderRadius: 7, fontSize: 13,
-            background: ticker.trim() && !isUploading ? c.brandDeep : c.border,
-            color:      ticker.trim() && !isUploading ? c.onBrand  : c.textFaint,
-            border: 'none', cursor: ticker.trim() && !isUploading ? 'pointer' : 'not-allowed',
-            fontFamily: FF, fontWeight: 500, flexShrink: 0,
-            transition: 'background 0.15s',
-          }}
-          onMouseEnter={e => { if (ticker.trim() && !isUploading) e.currentTarget.style.background = c.brandDeepHover; }}
-          onMouseLeave={e => { if (ticker.trim() && !isUploading) e.currentTarget.style.background = c.brandDeep; }}
-        >
-          Fetch 10-K
-        </button>
+      {/* Divider */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, margin: '4px 0 14px' }}>
+        <div style={{ flex: 1, height: '0.5px', background: c.border }} />
+        <span style={{ fontSize: 12, color: c.textFaint }}>or upload a file</span>
+        <div style={{ flex: 1, height: '0.5px', background: c.border }} />
+      </div>
+
+      {/* PDF upload — disabled, coming soon */}
+      <div
+        style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+          border: `1px dashed ${c.border}`,
+          borderRadius: 8, padding: '12px 16px', marginBottom: 24,
+          cursor: 'default',
+          background: 'transparent',
+          color: c.textFaint, fontSize: 13,
+          opacity: 0.6,
+        }}
+      >
+        <input type="file" ref={fileInputRef} style={{ display: 'none' }} disabled />
+        <UploadCloud size={18} color={c.textFaint} />
+        PDF / TXT upload — coming soon
       </div>
 
       {/* Document list */}
-      <div style={{ border: `0.5px solid ${c.border}`, borderRadius: 10, overflow: 'hidden' }}>
-        <div style={{ padding: '11px 16px', borderBottom: `0.5px solid ${c.border}`, background: c.surface, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <p style={{ fontSize: 13, fontWeight: 500, color: c.text2, margin: 0 }}>
-            Indexed documents ({documents.length})
-          </p>
-        </div>
+      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 10 }}>
+        <p style={{ fontSize: 13, color: c.textMuted, margin: 0 }}>Indexed documents</p>
+        <span style={{ fontSize: 13, color: c.textFaint }}>
+          {documents.length} {documents.length === 1 ? 'filing' : 'filings'}
+        </span>
+      </div>
 
+      <div style={{ border: `0.5px solid ${c.border}`, borderRadius: 12, overflow: 'hidden' }}>
         {documents.length === 0 ? (
           <div style={{ padding: '32px 20px', textAlign: 'center' }}>
             <FileText size={22} color={c.textFaint} style={{ margin: '0 auto 8px', display: 'block' }} />
-            <p style={{ fontSize: 13, color: c.textFaint, margin: 0 }}>No filings yet — upload above or fetch from EDGAR.</p>
+            <p style={{ fontSize: 13, color: c.textFaint, margin: 0 }}>No filings yet. Fetch from EDGAR above.</p>
           </div>
         ) : (
           <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
@@ -168,16 +277,67 @@ const DocumentManager: React.FC<DocumentManagerProps> = ({ documents, onAddDocum
         )}
       </div>
 
-      <style>{`@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
     </div>
   );
 };
 
+// --- Index status badge -----------------------------------------------------
+
+const IndexBadge: React.FC<{ status: IndexStatus | undefined; chunks?: number; error?: string }> = ({
+  status, chunks, error,
+}) => {
+  if (!status) return null;
+
+  if (status === 'indexing') {
+    return (
+      <span style={{
+        display: 'inline-flex', alignItems: 'center', gap: 4,
+        fontSize: 11, color: c.textMuted,
+      }}>
+        <Loader2 size={11} style={{ animation: 'spin 1s linear infinite', flexShrink: 0 }} />
+        Indexing…
+      </span>
+    );
+  }
+
+  if (status === 'indexed') {
+    return (
+      <span style={{
+        display: 'inline-flex', alignItems: 'center', gap: 4,
+        fontSize: 11,
+        padding: '2px 7px', borderRadius: 10,
+        background: c.brandTint, color: c.brand,
+      }} title={chunks ? `${chunks} chunks stored` : undefined}>
+        <CheckCircle2 size={10} style={{ flexShrink: 0 }} />
+        {chunks ? `${chunks} chunks` : 'Indexed'}
+      </span>
+    );
+  }
+
+  // failed — honey warn, not red (red = financial direction only)
+  return (
+    <span style={{
+      display: 'inline-flex', alignItems: 'center', gap: 4,
+      fontSize: 11,
+      padding: '2px 7px', borderRadius: 10,
+      background: c.warnSurface, color: c.warnFg,
+    }} title={error ?? 'Indexing failed'}>
+      <AlertTriangle size={10} style={{ flexShrink: 0 }} />
+      Index failed
+    </span>
+  );
+};
+
+// --- Document row -----------------------------------------------------------
+
 const DocRow: React.FC<{ doc: Document; last: boolean; onRemove: () => void }> = ({ doc, last, onRemove }) => {
   const [hovered, setHovered] = useState(false);
 
-  const is10K = doc.name.toLowerCase().includes('10k') || doc.name.toLowerCase().includes('10-k') || doc.name.toLowerCase().includes('annual');
-  const tag = is10K ? '10-K' : '10-Q';
+  const ticker = doc.ticker || doc.name.match(/^([A-Za-z]{1,5})/)?.[1]?.toUpperCase();
+
+  const lower = doc.name.toLowerCase();
+  const is10K = doc.form ? doc.form === '10-K' : (lower.includes('10k') || lower.includes('10-k') || lower.includes('annual'));
+  const tag = doc.form || (is10K ? '10-K' : '10-Q');
   const tagStyle: React.CSSProperties = is10K
     ? { background: c.brandTint, color: c.brand }
     : { background: c.accentSoft, color: c.accentFg };
@@ -186,7 +346,7 @@ const DocRow: React.FC<{ doc: Document; last: boolean; onRemove: () => void }> =
     <li
       style={{
         display: 'flex', alignItems: 'center', gap: 12,
-        padding: '11px 16px',
+        padding: '12px 16px',
         borderBottom: last ? 'none' : `0.5px solid ${c.border}`,
         background: hovered ? c.surface : c.bg,
         transition: 'background 0.1s',
@@ -194,34 +354,25 @@ const DocRow: React.FC<{ doc: Document; last: boolean; onRemove: () => void }> =
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
-      {/* Icon */}
-      <div style={{ width: 34, height: 34, borderRadius: 7, background: c.negSurface, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-        <FileText size={16} color={c.neg} />
-      </div>
+      <CompanyLogo ticker={ticker} size={36} radius={7} />
 
-      {/* Info */}
       <div style={{ flex: 1, minWidth: 0 }}>
-        <p style={{ fontSize: 13, fontWeight: 500, color: c.text, margin: '0 0 2px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        <p style={{ fontSize: 13, fontWeight: 500, color: c.text, margin: '0 0 4px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {doc.name}
         </p>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: c.textFaint }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: c.textFaint, flexWrap: 'wrap' }}>
           <span>{doc.size}</span>
           <span>·</span>
-          <span>Uploaded {doc.uploadDate}</span>
+          <span>Added {doc.uploadDate}</span>
           <span>·</span>
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, color: c.pos }}>
-            <CheckCircle size={11} />
-            Indexed
-          </span>
+          <IndexBadge status={doc.indexStatus} chunks={doc.indexChunks} error={doc.indexError} />
         </div>
       </div>
 
-      {/* Tag */}
       <span style={{ ...tagStyle, fontSize: 11, padding: '2px 8px', borderRadius: 10, fontWeight: 500, flexShrink: 0 }}>
         {tag}
       </span>
 
-      {/* Delete */}
       <button
         onClick={onRemove}
         title="Remove"

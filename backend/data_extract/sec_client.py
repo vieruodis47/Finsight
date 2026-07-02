@@ -19,6 +19,19 @@ SEC_HEADERS = {
 }
 
 
+def get_sic(cik: str) -> str | None:
+    """Return the 4-digit SIC code from submissions metadata, or None on failure."""
+    try:
+        url = f"https://data.sec.gov/submissions/CIK{cik}.json"
+        r = requests.get(url, headers={**SEC_HEADERS, "Host": "data.sec.gov"})
+        r.raise_for_status()
+        sic = r.json().get("sic")
+        return str(sic) if sic else None
+    except Exception as e:
+        print(f"Warning: could not fetch SIC for CIK {cik}: {e}")
+        return None
+
+
 def get_company_facts(cik: str) -> dict:
     """All XBRL facts SEC has for a company, in one cached call."""
     try:

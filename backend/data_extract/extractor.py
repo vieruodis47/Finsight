@@ -12,11 +12,12 @@ or import ``run`` from the FastAPI app (see app.py).
 import json
 
 from .sec_client import (get_cik, get_filings, get_document_url,
-                         fetch_and_parse, get_company_facts)
+                         fetch_and_parse, get_company_facts, get_sic)
 from .sections import extract_sections
 from . import facts as xbrl
 from .ratios import compute_ratios
 from .text_metrics import extract_qualitative
+from .sectors import sic_to_sector, sector_label
 
 
 def extract_all_metrics(company_facts: dict, sections: dict) -> dict:
@@ -50,6 +51,7 @@ def run(ticker: str, form_type: str = "10-K") -> dict:
     try:
         print(f"\n[1/5] Looking up CIK for {ticker}...")
         cik = get_cik(ticker)
+        sector = sector_label(sic_to_sector(get_sic(cik)))
 
         print(f"[2/5] Fetching {form_type} filings...")
         filings = get_filings(cik, form_type=form_type, limit=1)
@@ -77,6 +79,7 @@ def run(ticker: str, form_type: str = "10-K") -> dict:
             "char_count": len(text),
             "metrics": metrics,
             "sections": sections,
+            "sector": sector,
         }
         
     except Exception as e:
