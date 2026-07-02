@@ -32,3 +32,5 @@ node_modules/
 financial_dashboard.html
 __pycache__/
 *.pyc
+
+.claude/

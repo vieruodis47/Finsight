@@ -6,3 +6,10 @@ uvicorn
 httpx
 pytest
 pytest-cov
+# Added 2026-07-01: used by backend/data_extract but previously missing here
+google-genai
+python-dotenv
+ravendb
+yfinance
+numpy
+pandas

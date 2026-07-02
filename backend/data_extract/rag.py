@@ -27,7 +27,7 @@ from .embeddings import search, get_genai_client, FilingChunk
 
 logger = logging.getLogger(__name__)
 
-GEN_MODEL = os.getenv("GEMINI_GEN_MODEL", "gemini-1.5-flash")
+GEN_MODEL = os.getenv("GEMINI_GEN_MODEL", "gemini-3.1-lite")
 
 SYSTEM_PROMPT = (
     "You are FinSight, an expert financial research assistant.\n"

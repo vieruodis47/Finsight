@@ -1,6 +1,10 @@
 import { ChatSource, FilingMetrics } from '../types';
 
-const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8000';
+// Same-origin by default: all API calls go through the Node server (:5000),
+// which owns sessions/auth and forwards FinSight routes to Python (:8000).
+// In dev, Vite proxies these paths to Node (see vite.config.ts).
+// Set VITE_API_BASE only to point at a remote deployment.
+const API_BASE = import.meta.env.VITE_API_BASE ?? '';
 
 export interface ChatResult {
   answer: string;
