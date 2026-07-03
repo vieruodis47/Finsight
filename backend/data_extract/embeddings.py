@@ -14,6 +14,30 @@ Embeddings are generated with gemini-embedding-001 via google-genai and stored o
 the document as a plain float array. RavenDB indexes pre-made numerical arrays
 directly (no transformation), so all generation control stays in this module.
 
+Deduplication
+-------------
+An IngestManifest document is written (upserted) to RavenDB only after ALL
+chunks for a filing are successfully stored. This makes completeness detection
+reliable: manifest present with chunk_count > 0 → fully indexed; no manifest
+(or manifest absent) → partial or never ingested.
+
+check_already_indexed() runs two passes:
+  1. Fast O(1) manifest lookup by accession_number.
+  2. Fallback: count existing chunks by ticker+form+source URL, covering filings
+     ingested before manifest support was added. A retroactive manifest is
+     written on hit so future checks use the fast path.
+
+Persistent job queue
+--------------------
+IngestJob documents in the IngestJobs collection survive server restarts.
+  upsert_job()         — create or reset a job entry
+  update_job_status()  — update status, chunks, error, and quota-retry fields
+  load_active_jobs()   — load all jobs not yet indexed (for startup recovery)
+
+DailyQuotaExceededError is raised by embed_texts() when the Gemini per-day
+quota is hit (PerDay in the error). The caller (app._run_ingest) handles this
+by transitioning the job to waiting_for_quota instead of failed.
+
 Auth (auto-detected by get_genai_client):
   - GEMINI_API_KEY set      -> Gemini Developer API (key mode)
   - else GOOGLE_CLOUD_PROJECT -> Vertex AI (ADC; run `gcloud auth application-default login`)
@@ -33,6 +57,7 @@ import logging
 import os
 import re
 import time
+from datetime import datetime, timezone
 from typing import Iterable, Optional
 
 import numpy as np
@@ -55,6 +80,8 @@ GOOGLE_CLOUD_LOCATION = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
 EMBED_MODEL = "gemini-embedding-001"
 EMBED_DIM = int(os.getenv("EMBED_DIM", "1536"))  # must stay consistent across all docs
 COLLECTION = "FilingChunks"
+MANIFEST_COLLECTION = "IngestManifests"
+JOB_COLLECTION = "IngestJobs"
 
 # Batch size for embed_content calls. Small value (8) avoids per-minute token
 # quota spikes on the free tier while still saving round-trips vs. one-at-a-time.
@@ -111,7 +138,7 @@ def get_genai_client() -> genai.Client:
     return _genai_client
 
 
-# --- Document model ---------------------------------------------------------
+# --- Document models --------------------------------------------------------
 
 class FilingChunk:
     """A single embedded chunk of an SEC filing."""
@@ -122,6 +149,8 @@ class FilingChunk:
         ticker: str = "",
         form: str = "",
         source: str = "",
+        accession_number: str = "",
+        filing_date: str = "",
         chunk_index: int = 0,
         text: str = "",
         embedding: Optional[list] = None,
@@ -130,11 +159,101 @@ class FilingChunk:
         self.ticker = ticker
         self.form = form
         self.source = source
+        self.accession_number = accession_number
+        self.filing_date = filing_date
         self.chunk_index = chunk_index
         self.text = text
-        # Stored as a plain float array. For large corpora, swap to RavenDB's
-        # RavenVector type for tighter storage / faster reads.
         self.embedding = embedding or []
+
+
+class IngestManifest:
+    """
+    Written (upserted) to RavenDB only after a full successful ingest.
+
+    Absence of a manifest means the filing was never ingested OR only partially
+    ingested (e.g. a 429 mid-batch cut the run short). check_already_indexed()
+    treats both cases as needing (re-)ingest.
+    """
+
+    def __init__(
+        self,
+        Id: Optional[str] = None,
+        ticker: str = "",
+        form: str = "",
+        accession_number: str = "",
+        filing_date: str = "",
+        chunk_count: int = 0,
+        completed_at: str = "",
+    ):
+        self.Id = Id
+        self.ticker = ticker
+        self.form = form
+        self.accession_number = accession_number
+        self.filing_date = filing_date
+        self.chunk_count = chunk_count
+        self.completed_at = completed_at
+
+
+class IngestJob:
+    """
+    Persistent record of an embedding ingest job, stored in the IngestJobs
+    collection. Survives server restarts — the worker reloads and re-enqueues
+    active jobs on startup.
+
+    Status lifecycle:
+      queued → indexing → indexed | failed | waiting_for_quota
+      waiting_for_quota → (backoff elapsed) → queued → indexing → …
+    """
+
+    def __init__(
+        self,
+        Id: Optional[str] = None,
+        job_type: str = "edgar",
+        ticker: str = "",
+        form: str = "",
+        source: str = "",
+        accession_number: str = "",
+        filing_date: str = "",
+        status: str = "queued",
+        enqueued_at: str = "",
+        updated_at: str = "",
+        attempts: int = 0,
+        quota_attempts: int = 0,
+        first_quota_hit_at: str = "",
+        quota_resume_after: str = "",
+        last_error: Optional[str] = None,
+        chunks: int = 0,
+        sections: Optional[dict] = None,
+    ):
+        self.Id = Id
+        self.job_type = job_type
+        self.ticker = ticker
+        self.form = form
+        self.source = source
+        self.accession_number = accession_number
+        self.filing_date = filing_date
+        self.status = status
+        self.enqueued_at = enqueued_at
+        self.updated_at = updated_at
+        self.attempts = attempts
+        self.quota_attempts = quota_attempts
+        self.first_quota_hit_at = first_quota_hit_at
+        self.quota_resume_after = quota_resume_after
+        self.last_error = last_error
+        self.chunks = chunks
+        self.sections = sections if sections is not None else {}
+
+
+# --- Exceptions -------------------------------------------------------------
+
+class DailyQuotaExceededError(Exception):
+    """Raised when the Gemini embedding daily per-request quota is exhausted."""
+
+
+def is_daily_quota_error(e: Exception) -> bool:
+    """Return True if the exception is a Gemini daily quota error (not per-minute)."""
+    msg = str(e)
+    return "PerDay" in msg or "EmbedContentRequestsPerDay" in msg
 
 
 # --- Embedding generation ---------------------------------------------------
@@ -153,8 +272,11 @@ def embed_texts(texts: list[str], task_type: str) -> list[list]:
     Embed a list of texts with the given task type, normalized.
 
     Uses small batches (EMBED_BATCH) with inter-batch sleep to pace the free-
-    tier quota. On 429 RESOURCE_EXHAUSTED (per-minute RPM cap), waits 62s and
-    retries up to 3 times — the API returns retryDelay ~60s on rate limits.
+    tier quota. On 429 RESOURCE_EXHAUSTED:
+      - Daily quota ("PerDay" in error): raises DailyQuotaExceededError immediately.
+        The caller must handle this specially — do NOT retry, the quota is gone
+        for the day.
+      - Per-minute RPM cap (no "PerDay"): waits 62s and retries up to 3 times.
     """
     client = get_genai_client()
     out: list[list] = []
@@ -176,14 +298,20 @@ def embed_texts(texts: list[str], task_type: str) -> list[list]:
                 out.extend(_normalize(e.values) for e in resp.embeddings)
                 break
             except Exception as e:
-                if ("429" in str(e) or "RESOURCE_EXHAUSTED" in str(e)) and attempt < 3:
-                    wait = 62 + attempt * 10  # 62s, 72s, 82s
-                    logger.warning(
-                        "Embedding 429 on batch %d/%d (attempt %d), waiting %ds…",
-                        i + 1, (len(texts) + EMBED_BATCH - 1) // EMBED_BATCH,
-                        attempt + 1, wait,
-                    )
-                    time.sleep(wait)
+                if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+                    if is_daily_quota_error(e):
+                        # Daily quota gone — caller handles waiting_for_quota transition.
+                        raise DailyQuotaExceededError(str(e)) from e
+                    elif attempt < 3:
+                        wait = 62 + attempt * 10  # 62s, 72s, 82s
+                        logger.warning(
+                            "Embedding 429 (per-minute) on batch %d/%d (attempt %d), waiting %ds…",
+                            i + 1, (len(texts) + EMBED_BATCH - 1) // EMBED_BATCH,
+                            attempt + 1, wait,
+                        )
+                        time.sleep(wait)
+                    else:
+                        raise
                 else:
                     raise
     return out
@@ -260,13 +388,254 @@ def _chunk_id(ticker: str, form: str, source: str, idx: int) -> str:
     return f"{COLLECTION}/{ticker}-{form}-{digest}"
 
 
+def _manifest_id(ticker: str, form: str, accession_number: str) -> str:
+    return f"{MANIFEST_COLLECTION}/{ticker.strip().upper()}-{form}-{accession_number}"
+
+
+def _job_id(key: str) -> str:
+    return f"{JOB_COLLECTION}/{key}"
+
+
+# --- Deduplication ----------------------------------------------------------
+
+def _write_manifest(
+    ticker: str,
+    form: str,
+    accession_number: str,
+    filing_date: str,
+    chunk_count: int,
+) -> None:
+    """Upsert the completion manifest. Called only after save_changes() succeeds."""
+    if not accession_number:
+        return
+    try:
+        store = get_store()
+        mid = _manifest_id(ticker, form, accession_number)
+        with store.open_session() as session:
+            manifest = IngestManifest(
+                Id=mid,
+                ticker=ticker.strip().upper(),
+                form=form,
+                accession_number=accession_number,
+                filing_date=filing_date,
+                chunk_count=chunk_count,
+                completed_at=datetime.now(timezone.utc).isoformat(),
+            )
+            session.store(manifest, mid)
+            session.save_changes()
+        logger.info("Wrote ingest manifest %s (%d chunks)", mid, chunk_count)
+    except Exception as e:
+        # Non-fatal: ingest still succeeded; next run will use the fallback path.
+        logger.warning("Could not write ingest manifest for %s: %s", accession_number, e)
+
+
+def check_already_indexed(
+    ticker: str,
+    form: str,
+    accession_number: str,
+    source_url: str = "",
+) -> tuple[bool, int]:
+    """
+    Return (is_fully_indexed, chunk_count).
+
+    Pass 1 — manifest lookup (O(1), fast path):
+      If IngestManifests/{ticker}-{form}-{accession_number} exists with chunk_count > 0,
+      the filing is fully indexed.
+
+    Pass 2 — chunk count fallback (migration path):
+      For filings ingested before manifest support was added, count chunks
+      stored with matching ticker+form+source. If > 0 chunks found, write a
+      retroactive manifest so future calls use the fast path.
+
+    Returns (False, 0) if RavenDB is unreachable; caller proceeds with ingest.
+    """
+    # Fast path via manifest
+    if accession_number:
+        try:
+            store = get_store()
+            with store.open_session() as session:
+                manifest = session.load(
+                    _manifest_id(ticker, form, accession_number),
+                    object_type=IngestManifest,
+                )
+                if manifest and manifest.chunk_count > 0:
+                    logger.debug(
+                        "Manifest hit for %s %s %s: %d chunks",
+                        ticker, form, accession_number, manifest.chunk_count,
+                    )
+                    return True, manifest.chunk_count
+        except Exception as e:
+            logger.warning("Manifest lookup failed for %s: %s — will proceed with ingest", accession_number, e)
+            return False, 0
+
+    # Fallback: count chunks by ticker+form+source (covers pre-manifest ingests).
+    # Load only chunk_index to avoid pulling full text + embedding vectors.
+    if source_url:
+        try:
+            store = get_store()
+            with store.open_session() as session:
+                rows = list(
+                    session.advanced.raw_query(
+                        "from FilingChunks "
+                        "where ticker = $t and form = $f and source = $s "
+                        "select chunk_index",
+                        object_type=dict,
+                    )
+                    .add_parameter("t", ticker.strip().upper())
+                    .add_parameter("f", form)
+                    .add_parameter("s", source_url)
+                )
+            count = len(rows)
+            if count > 0:
+                logger.info(
+                    "Migration path: found %d existing chunks for %s %s — writing retroactive manifest",
+                    count, ticker, form,
+                )
+                _write_manifest(ticker, form, accession_number, "", count)
+                return True, count
+        except Exception as e:
+            logger.warning("Chunk-count fallback failed for %s %s: %s", ticker, form, e)
+
+    return False, 0
+
+
+# --- Job persistence --------------------------------------------------------
+
+def upsert_job(
+    key: str,
+    job_type: str,
+    ticker: str,
+    form: str,
+    source: str,
+    accession_number: str,
+    filing_date: str,
+    sections: dict,
+) -> None:
+    """
+    Create or reset an IngestJob in RavenDB.
+
+    If the job already exists, resets it to queued and updates sections (so a
+    retry re-runs with current data). Quota state (quota_attempts,
+    first_quota_hit_at) is preserved on existing jobs so the 72h deadline
+    applies across manual retries.
+    """
+    try:
+        store = get_store()
+        jid = _job_id(key)
+        now = datetime.now(timezone.utc).isoformat()
+        with store.open_session() as session:
+            existing = session.load(jid, object_type=IngestJob)
+            if existing is None:
+                job = IngestJob(
+                    Id=jid,
+                    job_type=job_type,
+                    ticker=ticker.strip().upper(),
+                    form=form,
+                    source=source,
+                    accession_number=accession_number,
+                    filing_date=filing_date,
+                    status="queued",
+                    enqueued_at=now,
+                    updated_at=now,
+                    sections=sections,
+                )
+                session.store(job, jid)
+            else:
+                existing.status = "queued"
+                existing.updated_at = now
+                existing.sections = sections
+                existing.last_error = None
+            session.save_changes()
+        logger.debug("Upserted IngestJob %s (type=%s)", jid, job_type)
+    except Exception as e:
+        logger.warning("Could not upsert job %s: %s", key, e)
+
+
+def update_job_status(
+    key: str,
+    status: str,
+    chunks: int = 0,
+    error: Optional[str] = None,
+    quota_resume_after: str = "",
+    quota_attempt: int = 0,
+    first_quota_hit_at: str = "",
+) -> None:
+    """Persist a job status transition to RavenDB. Non-fatal if RavenDB is unavailable."""
+    try:
+        store = get_store()
+        jid = _job_id(key)
+        now = datetime.now(timezone.utc).isoformat()
+        with store.open_session() as session:
+            job = session.load(jid, object_type=IngestJob)
+            if job is None:
+                logger.warning("update_job_status: job %s not found in RavenDB", jid)
+                return
+            job.status = status
+            job.updated_at = now
+            job.chunks = chunks
+            job.last_error = error
+            if status == "indexing":
+                job.attempts = (job.attempts or 0) + 1
+            if quota_resume_after:
+                job.quota_resume_after = quota_resume_after
+            if quota_attempt:
+                job.quota_attempts = quota_attempt
+            if first_quota_hit_at:
+                job.first_quota_hit_at = first_quota_hit_at
+            session.save_changes()
+    except Exception as e:
+        logger.warning("Could not update job status for %s: %s", key, e)
+
+
+def load_active_jobs() -> list[IngestJob]:
+    """
+    Load all non-indexed jobs from RavenDB for startup recovery.
+
+    Includes queued, indexing, waiting_for_quota, and failed so that:
+      - queued/indexing are re-enqueued (may have been interrupted by a restart)
+      - waiting_for_quota have their state restored for _check_waiting_jobs
+      - failed have their payload restored so the retry endpoint works
+    """
+    try:
+        store = get_store()
+        with store.open_session() as session:
+            rows = list(
+                session.advanced.raw_query(
+                    "from IngestJobs "
+                    "where status in ($s1, $s2, $s3, $s4)",
+                    object_type=IngestJob,
+                )
+                .add_parameter("s1", "queued")
+                .add_parameter("s2", "indexing")
+                .add_parameter("s3", "waiting_for_quota")
+                .add_parameter("s4", "failed")
+            )
+        logger.info("load_active_jobs: found %d non-indexed jobs", len(rows))
+        return rows
+    except Exception as e:
+        logger.warning("Could not load active jobs from RavenDB: %s", e)
+        return []
+
+
 # --- Ingest -----------------------------------------------------------------
 
-def ingest(ticker: str, form: str, text: str, source: str) -> int:
+def ingest(
+    ticker: str,
+    form: str,
+    text: str,
+    source: str,
+    accession_number: str = "",
+    filing_date: str = "",
+) -> int:
     """
     Chunk -> embed (RETRIEVAL_DOCUMENT) -> upsert into RavenDB.
-    Returns the number of chunks stored. Re-ingesting the same source overwrites
-    by deterministic ID instead of duplicating.
+    Returns the number of chunks stored.
+
+    Re-ingesting the same (ticker, form, source) overwrites chunks by
+    deterministic ID — no duplicates accumulate.
+
+    On full success, writes an IngestManifest so check_already_indexed()
+    can skip future re-ingests of the same filing (same accession_number).
     """
     ticker = ticker.strip().upper()
     chunks = chunk_text(text)
@@ -287,12 +656,19 @@ def ingest(ticker: str, form: str, text: str, source: str) -> int:
                 ticker=ticker,
                 form=form,
                 source=source,
+                accession_number=accession_number,
+                filing_date=filing_date,
                 chunk_index=idx,
                 text=chunk,
                 embedding=vec,
             )
             session.store(doc, doc_id)
         session.save_changes()
+
+    # Write completion manifest only after all chunks are durably stored.
+    # A partial ingest (exception before save_changes) leaves no manifest,
+    # so check_already_indexed correctly treats it as incomplete.
+    _write_manifest(ticker, form, accession_number, filing_date, len(chunks))
 
     logger.info("Ingested %d chunks for %s %s (%s)", len(chunks), ticker, form, source)
     return len(chunks)
@@ -353,7 +729,9 @@ def _cli() -> None:
     p_ingest = sub.add_parser("ingest", help="Embed and store a filing")
     p_ingest.add_argument("--ticker", required=True)
     p_ingest.add_argument("--form", required=True, choices=["10-K", "10-Q"])
-    p_ingest.add_argument("--source", required=True, help="Filing identifier / path")
+    p_ingest.add_argument("--source", required=True, help="Filing identifier / source URL")
+    p_ingest.add_argument("--accession", default="", help="Accession number for dedup manifest")
+    p_ingest.add_argument("--filing-date", default="", help="Filing date (YYYY-MM-DD)")
     p_ingest.add_argument("--file", required=True, help="Path to extracted filing text")
 
     p_search = sub.add_parser("search", help="Semantic search over stored filings")
@@ -368,7 +746,11 @@ def _cli() -> None:
     if args.command == "ingest":
         with open(args.file, "r", encoding="utf-8") as fh:
             text = fh.read()
-        n = ingest(args.ticker, args.form, text, args.source)
+        n = ingest(
+            args.ticker, args.form, text, args.source,
+            accession_number=args.accession,
+            filing_date=args.filing_date,
+        )
         print(f"Stored {n} chunks.")
 
     elif args.command == "search":
