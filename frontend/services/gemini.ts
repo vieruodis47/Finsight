@@ -98,7 +98,7 @@ export async function extractCompany(ticker: string, form: '10-K' | '10-Q' = '10
 // --- Ingest status polling --------------------------------------------------
 
 export interface IngestStatus {
-  status: 'indexing' | 'indexed' | 'failed' | 'unknown';
+  status: 'queued' | 'indexing' | 'indexed' | 'failed' | 'unknown' | 'waiting_for_quota';
   chunks: number;
   error?: string;
 }
@@ -109,6 +109,56 @@ export async function getIngestStatus(ticker: string, form: string): Promise<Ing
   );
   if (!res.ok) throw new Error(`Ingest status check failed (${res.status})`);
   return (await res.json()) as IngestStatus;
+}
+
+export async function retryIngest(ticker: string, form: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/ingest-retry`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ticker, form }),
+  });
+  if (!res.ok) {
+    const msg = await res.text().catch(() => res.statusText);
+    throw new Error(`Retry failed (${res.status}): ${msg}`);
+  }
+}
+
+// --- File upload ------------------------------------------------------------
+
+export interface UploadResponse {
+  doc_id: string;
+  filename: string;
+  char_count: number;
+  ticker_label: string;
+}
+
+export async function uploadFile(file: File): Promise<UploadResponse> {
+  const body = new FormData();
+  body.append('file', file);
+  const res = await fetch(`${API_BASE}/upload`, { method: 'POST', body });
+  if (!res.ok) {
+    const msg = await res.text().catch(() => res.statusText);
+    throw new Error(msg || `Upload failed (${res.status})`);
+  }
+  return (await res.json()) as UploadResponse;
+}
+
+export async function getUploadStatus(docId: string): Promise<IngestStatus> {
+  const res = await fetch(`${API_BASE}/upload-status/${encodeURIComponent(docId)}`);
+  if (!res.ok) throw new Error(`Upload status check failed (${res.status})`);
+  return (await res.json()) as IngestStatus;
+}
+
+export async function retryUpload(docId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/upload-retry`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ doc_id: docId }),
+  });
+  if (!res.ok) {
+    const msg = await res.text().catch(() => res.statusText);
+    throw new Error(`Retry failed (${res.status}): ${msg}`);
+  }
 }
 
 // --- Market data ------------------------------------------------------------

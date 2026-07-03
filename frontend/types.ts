@@ -1,4 +1,4 @@
-export type IndexStatus = 'indexing' | 'indexed' | 'failed';
+export type IndexStatus = 'queued' | 'indexing' | 'indexed' | 'failed' | 'waiting_for_quota';
 
 export interface Document {
   id: string;
@@ -13,6 +13,7 @@ export interface Document {
   indexStatus?: IndexStatus;  // tracks RavenDB embedding ingest progress
   indexError?: string;        // set when indexStatus === 'failed'
   indexChunks?: number;       // count of chunks stored on success
+  uploadDocId?: string;       // set for uploaded files; used to poll /upload-status
 }
 
 // --- Extractor output (backend/data_extract/extractor.py -> metrics) ---------
