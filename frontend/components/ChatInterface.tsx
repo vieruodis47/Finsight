@@ -27,6 +27,16 @@ const sourceTag: React.CSSProperties = {
   whiteSpace: 'nowrap',
 };
 
+const pathBadge = (path: string): React.CSSProperties => ({
+  fontSize: 10, padding: '2px 8px', borderRadius: 6, fontFamily: font.ui,
+  whiteSpace: 'nowrap', fontWeight: 500,
+  ...(path === 'graph'
+    ? { background: c.brandTint, color: c.brand }
+    : path === 'both'
+    ? { background: c.accentSoft, color: c.accentFg }
+    : { background: c.surfaceAlt, color: c.textMuted }),
+});
+
 // ── component ────────────────────────────────────────────────────────────────
 
 const ChatInterface: React.FC<ChatInterfaceProps> = ({ documents }) => {
@@ -78,13 +88,14 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ documents }) => {
       const ticker = tickers.length === 1 ? tickers[0] : undefined;
       const form = forms.length === 1 ? forms[0] : undefined;
 
-      const { answer, sources } = await askFinSight(userMsg.text, { ticker, form, k: 6 });
+      const { answer, sources, retrievalPath } = await askFinSight(userMsg.text, { ticker, form, k: 6 });
 
       setMessages(prev => [...prev, {
         id: (Date.now() + 1).toString(),
         role: 'assistant',
         text: answer,
         sources,
+        retrievalPath,
         timestamp: new Date(),
       }]);
     } catch (err) {
@@ -215,9 +226,22 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ documents }) => {
                   >
                     {msg.text}
 
+                    {/* Retrieval path indicator (assistant only) */}
+                    {!isUser && msg.retrievalPath && msg.retrievalPath !== 'none' && (
+                      <div style={{ margin: '8px 0 0' }}>
+                        <span style={pathBadge(msg.retrievalPath)}>
+                          {msg.retrievalPath === 'graph'
+                            ? '◉ financial data'
+                            : msg.retrievalPath === 'both'
+                            ? '◉ financial data + filing text'
+                            : '◉ filing text'}
+                        </span>
+                      </div>
+                    )}
+
                     {/* Source citations (assistant only) */}
                     {!isUser && msg.sources && msg.sources.length > 0 && (
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, margin: '8px 0 0' }}>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, margin: '6px 0 0' }}>
                         {msg.sources.map((s, i) => (
                           <span key={`${s.source}-${s.chunk_index}-${i}`} style={sourceTag} title={s.source}>
                             {s.ticker} {s.form} · #{s.chunk_index}

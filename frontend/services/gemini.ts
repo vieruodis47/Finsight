@@ -5,6 +5,7 @@ const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8000';
 export interface ChatResult {
   answer: string;
   sources: ChatSource[];
+  retrievalPath?: 'graph' | 'vector' | 'both' | 'none';
 }
 
 export interface AskOptions {
@@ -23,7 +24,12 @@ export async function askFinSight(question: string, opts: AskOptions = {}): Prom
     const msg = await res.text().catch(() => res.statusText);
     throw new Error(`Chat failed (${res.status}): ${msg}`);
   }
-  return (await res.json()) as ChatResult;
+  const data = await res.json() as { answer: string; sources: ChatSource[]; retrieval_path?: string };
+  return {
+    answer: data.answer,
+    sources: data.sources,
+    retrievalPath: data.retrieval_path as ChatResult['retrievalPath'],
+  };
 }
 
 export async function generateSummary(content: string): Promise<string> {

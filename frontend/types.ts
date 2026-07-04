@@ -83,7 +83,8 @@ export interface ChatMessage {
   role: 'user' | 'assistant';
   text: string;
   timestamp: Date;
-  sources?: ChatSource[]; // filings that grounded an assistant answer
+  sources?: ChatSource[];         // filings that grounded an assistant answer
+  retrievalPath?: 'graph' | 'vector' | 'both' | 'none'; // which path answered
 }
 
 export interface StockDataPoint {
