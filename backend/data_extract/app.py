@@ -518,6 +518,13 @@ def extract(
         logger.exception("Extraction failed for %s %s", ticker, form)
         raise HTTPException(status_code=502, detail=f"Extraction failed: {e}")
 
+    # Populate the in-memory RDF graph with structured metrics (non-fatal).
+    try:
+        from ..graph.router import register_filing
+        register_filing(result)
+    except Exception as e:
+        logger.warning("Could not register %s in graph: %s", ticker, e)
+
     sections = result.get("sections", {})
     source = result.get("source_url", f"{ticker}/{form}")
     accession_number = result.get("accession_number", "")
