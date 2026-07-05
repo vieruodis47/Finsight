@@ -34,8 +34,111 @@ const pathBadge = (path: string): React.CSSProperties => ({
     ? { background: c.brandTint, color: c.brand }
     : path === 'both'
     ? { background: c.accentSoft, color: c.accentFg }
+    : path === 'vector_no_graph'
+    ? { background: c.warnSurface, color: c.warnFg }
     : { background: c.surfaceAlt, color: c.textMuted }),
 });
+
+// ── Markdown renderer for chat bubbles ───────────────────────────────────────
+// Inline citation tags [AAPL 10-K #37] are rendered as muted superscripts.
+
+const _parseInline = (text: string): React.ReactNode => {
+  const parts = text.split(/(\*\*[^*]+\*\*|\[[A-Z0-9]+\s+10-K\s+#\d+\])/g);
+  if (parts.length === 1) return text;
+  return (
+    <>
+      {parts.map((p, i) => {
+        if (p.startsWith('**') && p.endsWith('**')) {
+          return <strong key={i} style={{ fontWeight: 600 }}>{p.slice(2, -2)}</strong>;
+        }
+        if (/^\[[A-Z0-9]+\s+10-K\s+#\d+\]$/.test(p)) {
+          return (
+            <span
+              key={i}
+              style={{
+                fontSize: 9, color: c.textFaint, fontFamily: font.ui,
+                verticalAlign: 'super', lineHeight: 1, letterSpacing: 0,
+              }}
+            >
+              {p}
+            </span>
+          );
+        }
+        return p;
+      })}
+    </>
+  );
+};
+
+const renderChatMarkdown = (text: string): React.ReactNode => {
+  if (!text) return null;
+  const lines = text.split('\n');
+  const nodes: React.ReactNode[] = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i];
+
+    // Table: consume consecutive | lines
+    if (line.trim().startsWith('|')) {
+      const tableLines: string[] = [];
+      while (i < lines.length && lines[i].trim().startsWith('|')) {
+        tableLines.push(lines[i]);
+        i++;
+      }
+      const rows = tableLines.filter(l => !/^\|[\s|:-]+\|$/.test(l.trim()));
+      nodes.push(
+        <table key={`tbl-${i}`} style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, marginBottom: 12 }}>
+          <tbody>
+            {rows.map((row, ri) => {
+              const cells = row.split('|').slice(1, -1);
+              const isHeader = ri === 0;
+              return (
+                <tr key={ri}>
+                  {cells.map((cell, ci) =>
+                    isHeader ? (
+                      <th key={ci} style={{ padding: '4px 10px', textAlign: 'left', fontWeight: 600, borderBottom: `1px solid ${c.border}`, color: c.text, fontFamily: font.ui, fontSize: 12 }}>
+                        {cell.trim()}
+                      </th>
+                    ) : (
+                      <td key={ci} style={{ padding: '4px 10px', borderBottom: `0.5px solid ${c.borderFaint}`, color: c.text2, fontFamily: font.prose }}>
+                        {_parseInline(cell.trim())}
+                      </td>
+                    )
+                  )}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      );
+      continue;
+    }
+
+    if (line.startsWith('## ')) {
+      nodes.push(<h2 key={i} style={{ fontSize: 14, fontWeight: 600, color: c.text, margin: '18px 0 4px', fontFamily: font.prose }}>{_parseInline(line.slice(3))}</h2>);
+    } else if (line.startsWith('# ')) {
+      nodes.push(<h1 key={i} style={{ fontSize: 16, fontWeight: 600, color: c.text, margin: '22px 0 6px', fontFamily: font.prose }}>{_parseInline(line.slice(2))}</h1>);
+    } else if (line.startsWith('- ') || line.startsWith('* ')) {
+      nodes.push(
+        <li key={i} style={{ marginLeft: 16, marginBottom: 4, fontSize: 13, color: c.text2, lineHeight: 1.65, fontFamily: font.prose }}>
+          {_parseInline(line.slice(2))}
+        </li>
+      );
+    } else if (line.trim() === '') {
+      nodes.push(<div key={i} style={{ height: 6 }} />);
+    } else {
+      nodes.push(
+        <p key={i} style={{ fontSize: 13, color: c.text2, lineHeight: 1.7, marginBottom: 4, fontFamily: font.prose }}>
+          {_parseInline(line)}
+        </p>
+      );
+    }
+    i++;
+  }
+
+  return nodes;
+};
 
 // ── component ────────────────────────────────────────────────────────────────
 
@@ -83,7 +186,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ documents }) => {
         selected.map(d => d.ticker).filter((t): t is string => Boolean(t))
       ));
       const forms = Array.from(new Set(
-        selected.map(d => d.form).filter((f): f is '10-K' | '10-Q' => Boolean(f))
+        selected.map(d => d.form).filter((f): f is '10-K' => Boolean(f))
       ));
       const ticker = tickers.length === 1 ? tickers[0] : undefined;
       const form = forms.length === 1 ? forms[0] : undefined;
@@ -192,6 +295,10 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ documents }) => {
         <div style={{ flex: 1, overflowY: 'auto', padding: '18px 20px', display: 'flex', flexDirection: 'column', gap: 14 }}>
           {messages.map(msg => {
             const isUser = msg.role === 'user';
+            const hasMetadata = !isUser && (
+              (msg.retrievalPath && msg.retrievalPath !== 'none') ||
+              (msg.sources && msg.sources.length > 0)
+            );
             return (
               <div key={msg.id} style={{ display: 'flex', justifyContent: isUser ? 'flex-end' : 'flex-start' }}>
                 <div style={{ display: 'flex', flexDirection: isUser ? 'row-reverse' : 'row', alignItems: 'flex-end', gap: 8, maxWidth: '85%' }}>
@@ -217,41 +324,57 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ documents }) => {
                       borderRadius: 10,
                       ...(isUser
                         ? { background: c.brandTint, color: c.brandDeep, borderBottomRightRadius: 3 }
-                        : { background: c.surface, color: c.text, borderBottomLeftRadius: 3 }
+                        : { background: c.surface, color: c.text, borderBottomLeftRadius: 3, maxWidth: '68ch' }
                       ),
                       fontSize: 13, lineHeight: 1.65,
-                      whiteSpace: 'pre-wrap',
-                      fontFamily: font.ui,
+                      ...(isUser ? { whiteSpace: 'pre-wrap', fontFamily: font.ui } : {}),
                     }}
                   >
-                    {msg.text}
+                    {/* Answer body */}
+                    {isUser
+                      ? msg.text
+                      : renderChatMarkdown(msg.text)
+                    }
 
-                    {/* Retrieval path indicator (assistant only) */}
-                    {!isUser && msg.retrievalPath && msg.retrievalPath !== 'none' && (
-                      <div style={{ margin: '8px 0 0' }}>
-                        <span style={pathBadge(msg.retrievalPath)}>
-                          {msg.retrievalPath === 'graph'
-                            ? '◉ financial data'
-                            : msg.retrievalPath === 'both'
-                            ? '◉ financial data + filing text'
-                            : '◉ filing text'}
-                        </span>
-                      </div>
-                    )}
+                    {/* Source metadata — visually separated from answer body */}
+                    {hasMetadata && (
+                      <div
+                        style={{
+                          marginTop: 10,
+                          paddingTop: 8,
+                          borderTop: `0.5px solid ${c.border}`,
+                        }}
+                      >
+                        {/* Retrieval path badge */}
+                        {msg.retrievalPath && msg.retrievalPath !== 'none' && (
+                          <div style={{ marginBottom: msg.sources && msg.sources.length > 0 ? 6 : 0 }}>
+                            <span style={pathBadge(msg.retrievalPath)}>
+                              {msg.retrievalPath === 'graph'
+                                ? '◉ financial data'
+                                : msg.retrievalPath === 'both'
+                                ? '◉ financial data + filing text'
+                                : msg.retrievalPath === 'vector_no_graph'
+                                ? '◎ filing text · graph data not loaded'
+                                : '◉ filing text'}
+                            </span>
+                          </div>
+                        )}
 
-                    {/* Source citations (assistant only) */}
-                    {!isUser && msg.sources && msg.sources.length > 0 && (
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, margin: '6px 0 0' }}>
-                        {msg.sources.map((s, i) => (
-                          <span key={`${s.source}-${s.chunk_index}-${i}`} style={sourceTag} title={s.source}>
-                            {s.ticker} {s.form} · #{s.chunk_index}
-                          </span>
-                        ))}
+                        {/* Source citation chips */}
+                        {msg.sources && msg.sources.length > 0 && (
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                            {msg.sources.map((s, i) => (
+                              <span key={`${s.source}-${s.chunk_index}-${i}`} style={sourceTag} title={s.source}>
+                                {s.ticker} {s.form} · #{s.chunk_index}
+                              </span>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     )}
 
                     {/* Timestamp */}
-                    <p style={{ fontSize: 10, color: isUser ? c.textMuted : c.textFaint, margin: '6px 0 0', textAlign: isUser ? 'right' : 'left' }}>
+                    <p style={{ fontSize: 10, color: isUser ? c.textMuted : c.textFaint, margin: '6px 0 0', textAlign: isUser ? 'right' : 'left', fontFamily: font.ui }}>
                       {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                     </p>
                   </div>

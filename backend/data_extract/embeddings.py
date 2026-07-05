@@ -269,6 +269,7 @@ class FilingMetrics:
         form: str = "10-K",
         accession_number: str = "",
         filing_date: str = "",
+        fiscal_year_end: str = "",
         sector: str = "Unknown",
         metrics: Optional[dict] = None,
         metrics_by_year: Optional[dict] = None,
@@ -278,6 +279,11 @@ class FilingMetrics:
         self.form = form
         self.accession_number = accession_number
         self.filing_date = filing_date
+        # Four-digit year string derived from the XBRL period-end date, not the
+        # filing date.  e.g. "2025" for a Dec-FY company whose 10-K was filed in
+        # January 2026.  Empty string means not yet resolved (will be set by the
+        # background migration or on the next /extract call).
+        self.fiscal_year_end: str = fiscal_year_end or ""
         self.sector = sector
         self.metrics = metrics if metrics is not None else {}
         self.metrics_by_year: dict = metrics_by_year if metrics_by_year is not None else {}
@@ -447,6 +453,7 @@ def save_filing_metrics(
     sector: str,
     metrics: dict,
     metrics_by_year: Optional[dict] = None,
+    fiscal_year_end: str = "",
 ) -> None:
     """
     Upsert structured metrics for one filing to the FilingMetrics collection.
@@ -475,6 +482,7 @@ def save_filing_metrics(
                 form=form,
                 accession_number=accession_number,
                 filing_date=filing_date,
+                fiscal_year_end=fiscal_year_end or "",
                 sector=sector,
                 metrics=metrics,
                 metrics_by_year=metrics_by_year or {},
@@ -554,7 +562,6 @@ def fix_collection_name_once() -> int:
     Safe to call on every boot: exits immediately once the correct collection has
     documents.  Returns the number of documents migrated (0 on subsequent boots).
     """
-    import urllib.parse
     import requests as _requests
 
     _LEGACY = METRICS_COLLECTION + "s"   # "FilingMetricss"

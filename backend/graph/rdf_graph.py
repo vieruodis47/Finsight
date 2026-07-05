@@ -160,10 +160,14 @@ def add_company(g: Graph, result: dict) -> None:
             g.add((filing_uri, FS.filingForm, Literal(form)))
             _add_metric_triples(g, filing_uri, year_metrics)
     else:
-        # Single-year legacy path
-        filing_date = result.get("filing_date", "")
-        fiscal_year = filing_date[:4] if filing_date else "unknown"
-        filing_uri  = FSD[f"filing/{ticker}/{accession}"]
+        # Single-year legacy path.
+        # Use the XBRL period-end year (e.g. "2025" for a Dec-FY company whose
+        # 10-K was filed in Jan 2026).  Fall back to filing_date[:4] only when
+        # fiscal_year_end is absent (old docs not yet migrated).
+        filing_date     = result.get("filing_date", "")
+        fiscal_year_end = result.get("fiscal_year_end", "")
+        fiscal_year     = fiscal_year_end or (filing_date[:4] if filing_date else "unknown")
+        filing_uri      = FSD[f"filing/{ticker}/{accession}"]
         g.add((company_uri, FS.filedFiling, filing_uri))
         g.add((filing_uri, RDF.type,      FS.Filing))
         g.add((filing_uri, FS.fiscalYear, Literal(fiscal_year)))

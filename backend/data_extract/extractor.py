@@ -70,10 +70,17 @@ def run(ticker: str, form_type: str = "10-K") -> dict:
         print(f"[5/5] Building metrics...")
         metrics = extract_all_metrics(company_facts, sections)
 
+        # Derive fiscal year from the XBRL period-end date, not the filing date.
+        # A Dec-FY company (e.g. Meta, Amazon) files its annual 10-K in Jan/Feb of
+        # the following calendar year, so filing_date[:4] would be one year too high.
+        period_end = xbrl.target_period_end(company_facts) or ""
+        fiscal_year_end = period_end[:4] if period_end else filing["date"][:4]
+
         return {
             "ticker": ticker.upper(),
             "form": form_type,
             "filing_date": filing["date"],
+            "fiscal_year_end": fiscal_year_end,
             "accession_number": filing["accession"],
             "source_url": url,
             "char_count": len(text),
