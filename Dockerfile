@@ -1,15 +1,11 @@
-# Use an official lightweight Python image
+# syntax=docker/dockerfile:1
+
 FROM python:3.11-slim
 
-# Set the working directory
-WORKDIR /app
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --upgrade pip \
+    pip install -r /tmp/requirements.txt
 
-# Copy requirements and install dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Copy the rest of the application code
-COPY . .
-
-# Start the application using the $PORT environment variable
-CMD exec uvicorn main:app --host 0.0.0.0 --port $PORT
+RUN --mount=type=secret, id=env \
+    curl -H "Authorization: Bearer $(cat /run/secrets/env)" \
+    -o /tmp/requirements.txt https://raw.githubusercontent.com/yourusername/yourrepo/main/requirements.txt && \
