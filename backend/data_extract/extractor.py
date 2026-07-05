@@ -10,6 +10,10 @@ or import ``run`` from the FastAPI app (see app.py).
 """
 
 import json
+from pathlib import Path
+
+# Extraction outputs land in <repo root>/company_data/, regardless of cwd.
+OUTPUT_DIR = Path(__file__).resolve().parents[2] / "company_data"
 
 from .sec_client import (get_cik, get_filings, get_document_url,
                          fetch_and_parse, get_company_facts, get_sic)
@@ -99,7 +103,8 @@ if __name__ == "__main__":
 
     data = run(ticker, form)
 
-    output_file = f"{ticker}_{form.replace('-', '')}.json"
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    output_file = OUTPUT_DIR / f"{ticker}_{form.replace('-', '')}.json"
     with open(output_file, "w") as f:
         json.dump(data, f, indent=2)
 
