@@ -1,0 +1,18 @@
+# Node
+**/node_modules
+**/npm-debug.log
+
+# Python
+__pycache__/
+*.pyc
+
+# React Native
+**/android/app/build
+
+# Common
+*.log
+**/.git
+**/.gitignore
+**/.env
+LICENSE
+README.md
