@@ -454,10 +454,18 @@ def _resume_pending_jobs() -> None:
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     _resume_pending_jobs()
-    # Rebuild the in-memory RDF graph from persisted FilingMetrics.
-    # On the very first boot after the fix is deployed, this triggers a one-time
-    # background migration that fetches XBRL (not HTML) from SEC for each
-    # already-indexed filing — zero embedding calls, non-blocking.
+    # Step 1: one-time collection-name fix (idempotent, exits fast after first run).
+    # Moves existing FilingMetrics docs from the auto-pluralized 'FilingMetricss'
+    # collection to the explicit 'FilingMetrics' collection so load_all_filing_metrics
+    # can find them.  Must run BEFORE rebuild_graph_from_ravendb.
+    try:
+        from .embeddings import fix_collection_name_once
+        fix_collection_name_once()
+    except Exception as e:
+        logger.warning("Collection name fix failed (non-fatal): %s", e)
+    # Step 2: rebuild the in-memory RDF graph from persisted FilingMetrics.
+    # After the collection-name fix above this will find all 15 documents and
+    # populate the graph without triggering a full EDGAR re-migration.
     try:
         from ..graph.router import rebuild_graph_from_ravendb
         rebuild_graph_from_ravendb()
