@@ -255,6 +255,11 @@ class FilingMetrics:
     The ``metrics`` dict mirrors the extractor result structure:
       { income_statement: {...}, balance_sheet: {...},
         cash_flow: {...}, computed_ratios: {...} }
+
+    ``metrics_by_year`` must be an __init__ parameter (not just an instance
+    attribute) so the RavenDB Python client maps it from the stored JSON on
+    deserialization.  All fields that need to survive a round-trip must appear
+    in the parameter list.
     """
 
     def __init__(
@@ -266,6 +271,7 @@ class FilingMetrics:
         filing_date: str = "",
         sector: str = "Unknown",
         metrics: Optional[dict] = None,
+        metrics_by_year: Optional[dict] = None,
     ):
         self.Id = Id
         self.ticker = ticker
@@ -274,9 +280,7 @@ class FilingMetrics:
         self.filing_date = filing_date
         self.sector = sector
         self.metrics = metrics if metrics is not None else {}
-        # Multi-year income data: {year_str: {income_statement: {...}, ...}}
-        # Populated by the XBRL migration and by register_filing() for new extracts.
-        self.metrics_by_year: dict = {}
+        self.metrics_by_year: dict = metrics_by_year if metrics_by_year is not None else {}
 
 
 # --- Exceptions -------------------------------------------------------------
@@ -473,9 +477,13 @@ def save_filing_metrics(
                 filing_date=filing_date,
                 sector=sector,
                 metrics=metrics,
+                metrics_by_year=metrics_by_year or {},
             )
-            doc.metrics_by_year = metrics_by_year or {}
             session.store(doc, mid)
+            # Explicitly set the RavenDB collection name so the document lands in
+            # "FilingMetrics", not the auto-pluralized "FilingMetricss" that the Python
+            # client derives from the class name.
+            session.advanced.get_metadata_for(doc)["@collection"] = METRICS_COLLECTION
             session.save_changes()
         logger.info("Saved FilingMetrics %s (years=%s)", mid,
                     sorted(metrics_by_year or {}, reverse=True))
@@ -525,6 +533,106 @@ def load_all_ingest_manifests() -> list:
     except Exception as e:
         logger.warning("Could not load IngestManifests: %s", e)
         return []
+
+
+def fix_collection_name_once() -> int:
+    """
+    One-time migration: move FilingMetrics documents from the auto-pluralized
+    collection ('FilingMetricss') to the explicit 'FilingMetrics' collection.
+
+    Root cause: session.store() without setting @collection causes RavenDB to
+    derive the collection name from the Python class name, so class 'FilingMetrics'
+    → collection 'FilingMetricss'.  The fix is applied going forward in
+    save_filing_metrics() via get_metadata_for(doc)["@collection"] = METRICS_COLLECTION.
+    This function migrates the 15 existing documents in the wrong collection.
+
+    RavenDB does not allow changing a document's @collection via update — it
+    requires delete + recreate.  We use the HTTP JSON API directly so we can
+    preserve the exact document content while replacing the @metadata.@collection
+    field, without going through the Python ORM (which re-derives the class name).
+
+    Safe to call on every boot: exits immediately once the correct collection has
+    documents.  Returns the number of documents migrated (0 on subsequent boots).
+    """
+    import urllib.parse
+    import requests as _requests
+
+    _LEGACY = METRICS_COLLECTION + "s"   # "FilingMetricss"
+    try:
+        store = get_store()
+        base = store.urls[0].rstrip("/")
+        db   = store.database
+
+        # If the correct collection already has data the migration has already run.
+        with store.open_session() as session:
+            already = list(
+                session.advanced.raw_query(
+                    f"from {METRICS_COLLECTION}",
+                    object_type=FilingMetrics,
+                )
+            )
+        if already:
+            logger.info(
+                "fix_collection_name_once: '%s' already has %d docs — skipping",
+                METRICS_COLLECTION, len(already),
+            )
+            return 0
+
+        # Fetch raw JSON from the legacy collection (up to 100 docs; we have 15).
+        resp = _requests.get(
+            f"{base}/databases/{db}/queries",
+            params={"query": f"from {_LEGACY}", "pageSize": 100},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        raw_docs = resp.json().get("Results", [])
+
+        if not raw_docs:
+            logger.info("fix_collection_name_once: '%s' is empty — nothing to migrate", _LEGACY)
+            return 0
+
+        migrated = 0
+        for raw_doc in raw_docs:
+            old_meta = raw_doc.get("@metadata", {})
+            doc_id   = old_meta.get("@id", "")
+            if not doc_id:
+                continue
+
+            # Step 1: delete from old collection.
+            _requests.delete(
+                f"{base}/databases/{db}/docs",
+                params={"id": doc_id},
+                timeout=10,
+            ).raise_for_status()
+
+            # Step 2: reconstruct with correct @collection metadata; strip
+            # server-managed fields that must not be sent on PUT.
+            new_meta = {
+                k: v for k, v in old_meta.items()
+                if k not in ("@change-vector", "@last-modified", "@flags", "@attachments")
+            }
+            new_meta["@collection"] = METRICS_COLLECTION
+            new_doc = {k: v for k, v in raw_doc.items() if k != "@metadata"}
+            new_doc["@metadata"] = new_meta
+
+            _requests.put(
+                f"{base}/databases/{db}/docs",
+                params={"id": doc_id},
+                json=new_doc,
+                headers={"Content-Type": "application/json"},
+                timeout=10,
+            ).raise_for_status()
+
+            migrated += 1
+
+        logger.info(
+            "fix_collection_name_once: migrated %d docs '%s' → '%s'",
+            migrated, _LEGACY, METRICS_COLLECTION,
+        )
+        return migrated
+    except Exception as e:
+        logger.warning("fix_collection_name_once failed (non-fatal): %s", e)
+        return 0
 
 
 # --- Deduplication ----------------------------------------------------------

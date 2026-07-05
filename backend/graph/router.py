@@ -443,10 +443,21 @@ _METRIC_MAP: dict[str, str] = {
     "cash flow":           "operating_cash_flow_millions",
     "capex":               "capex_millions",
     "total assets":        "total_assets_millions",
-    "long-term debt":      "long_term_debt_millions",
-    "long term debt":      "long_term_debt_millions",
-    "debt":                "long_term_debt_millions",
-    "gross profit":        "gross_margin_millions",
+    # D/E entries must appear before the bare "debt" entry so that
+    # _detect_metric (longest-first scan) matches the specific ratio phrase
+    # before falling through to the raw long-term debt figure.
+    "debt to equity ratio": "debt_to_equity",
+    "debt to equity":       "debt_to_equity",
+    "debt-to-equity ratio": "debt_to_equity",
+    "debt-to-equity":       "debt_to_equity",
+    "debt equity ratio":    "debt_to_equity",
+    "leverage ratio":       "debt_to_equity",
+    "d/e ratio":            "debt_to_equity",
+    "d/e":                  "debt_to_equity",
+    "long-term debt":       "long_term_debt_millions",
+    "long term debt":       "long_term_debt_millions",
+    "debt":                 "long_term_debt_millions",
+    "gross profit":         "gross_margin_millions",
 }
 
 
