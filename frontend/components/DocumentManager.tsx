@@ -21,15 +21,6 @@ interface DocumentManagerProps {
 }
 
 const FF = font.ui;
-type Form = '10-K' | '10-Q';
-
-const selectStyle: React.CSSProperties = {
-  fontSize: 13, padding: '8px 12px',
-  border: `0.5px solid ${c.border}`,
-  borderRadius: 7, outline: 'none',
-  fontFamily: FF, color: c.text, background: c.bg,
-  cursor: 'pointer', flexShrink: 0,
-};
 
 const ACCEPTED_TYPES = '.pdf,.txt,.text';
 const MAX_MB = 50;
@@ -47,7 +38,6 @@ const DocumentManager: React.FC<DocumentManagerProps> = ({
   const hasActiveJobs = statusCounts.indexing + statusCounts.queued + statusCounts.waiting > 0;
 
   const [fetching, setFetching]   = useState(false);
-  const [form, setForm]           = useState<Form>('10-K');
   const [error, setError]         = useState<string | null>(null);
 
   const [inputValue, setInputValue]         = useState('');
@@ -110,7 +100,7 @@ const DocumentManager: React.FC<DocumentManagerProps> = ({
     setError(null);
     setFetching(true);
     try {
-      const data = await extractCompany(t, form);
+      const data = await extractCompany(t, '10-K');
       onAddDocument({
         id: `doc-${Date.now()}`,
         name: `${t} ${data.form}`,
@@ -247,16 +237,6 @@ const DocumentManager: React.FC<DocumentManagerProps> = ({
             )}
           </div>
 
-          <select
-            value={form}
-            onChange={e => setForm(e.target.value as Form)}
-            style={selectStyle}
-            aria-label="Filing type"
-          >
-            <option value="10-K">10-K</option>
-            <option value="10-Q">10-Q</option>
-          </select>
-
           <button
             onClick={handleFetchEdgar}
             disabled={!canFetch}
@@ -280,7 +260,7 @@ const DocumentManager: React.FC<DocumentManagerProps> = ({
 
         {resolvedTicker && (
           <p style={{ fontSize: 11, color: c.textMuted, margin: '6px 0 0' }}>
-            Will fetch <strong style={{ color: c.text }}>{resolvedTicker}</strong> · choose a form above then click Fetch filing
+            Will fetch <strong style={{ color: c.text }}>{resolvedTicker}</strong> · click Fetch filing
           </p>
         )}
 
@@ -495,15 +475,12 @@ const DocRow: React.FC<{
   const isUpload = !!doc.uploadDocId;
 
   const lower = doc.name.toLowerCase();
-  const is10K = doc.form ? doc.form === '10-K' : (lower.includes('10k') || lower.includes('10-k') || lower.includes('annual'));
   const tag = isUpload
     ? (lower.endsWith('.pdf') ? 'PDF' : 'TXT')
-    : (doc.form || (is10K ? '10-K' : '10-Q'));
+    : (doc.form ?? '10-K');
   const tagStyle: React.CSSProperties = isUpload
     ? { background: c.surfaceAlt, color: c.textMuted }
-    : is10K
-      ? { background: c.brandTint, color: c.brand }
-      : { background: c.accentSoft, color: c.accentFg };
+    : { background: c.brandTint, color: c.brand };
 
   // Show retry for failed or quota-waiting docs that have a retryable key.
   const canRetry = (doc.indexStatus === 'failed' || doc.indexStatus === 'waiting_for_quota')

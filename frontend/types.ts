@@ -84,7 +84,7 @@ export interface ChatMessage {
   text: string;
   timestamp: Date;
   sources?: ChatSource[];         // filings that grounded an assistant answer
-  retrievalPath?: 'graph' | 'vector' | 'both' | 'none'; // which path answered
+  retrievalPath?: 'graph' | 'vector' | 'both' | 'none' | 'vector_no_graph'; // which path answered
 }
 
 export interface StockDataPoint {

@@ -121,7 +121,7 @@ const App: React.FC = () => {
     if (stale.length === 0) return;
     const doc = stale[0];
     backfilledRef.current.add(doc.id);
-    extractCompany(doc.ticker!, (doc.form as '10-K' | '10-Q') ?? '10-K')
+    extractCompany(doc.ticker!, (doc.form as '10-K') ?? '10-K')
       .then(data => {
         const content = buildContent(data.sections ?? {});
         if (!content) return;

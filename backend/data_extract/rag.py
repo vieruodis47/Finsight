@@ -107,7 +107,7 @@ class ChatRequest(BaseModel):
     question: str = Field(min_length=1)
     k: int = Field(default=5, ge=1, le=20)
     ticker: Optional[str] = None
-    form: Optional[Literal["10-K", "10-Q"]] = None
+    form: Optional[Literal["10-K"]] = None
 
 
 class Source(BaseModel):
