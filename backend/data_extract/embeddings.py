@@ -82,6 +82,7 @@ EMBED_DIM = int(os.getenv("EMBED_DIM", "1536"))  # must stay consistent across a
 COLLECTION = "FilingChunks"
 MANIFEST_COLLECTION = "IngestManifests"
 JOB_COLLECTION = "IngestJobs"
+METRICS_COLLECTION = "FilingMetrics"
 
 # Batch size for embed_content calls. Small value (8) avoids per-minute token
 # quota spikes on the free tier while still saving round-trips vs. one-at-a-time.
@@ -244,6 +245,40 @@ class IngestJob:
         self.sections = sections if sections is not None else {}
 
 
+class FilingMetrics:
+    """
+    Structured XBRL metrics for one indexed filing, persisted to RavenDB.
+
+    Populated by register_filing() in router.py at /extract time and reloaded
+    on startup to rebuild the in-memory RDF graph without re-fetching from EDGAR.
+
+    The ``metrics`` dict mirrors the extractor result structure:
+      { income_statement: {...}, balance_sheet: {...},
+        cash_flow: {...}, computed_ratios: {...} }
+    """
+
+    def __init__(
+        self,
+        Id: Optional[str] = None,
+        ticker: str = "",
+        form: str = "10-K",
+        accession_number: str = "",
+        filing_date: str = "",
+        sector: str = "Unknown",
+        metrics: Optional[dict] = None,
+    ):
+        self.Id = Id
+        self.ticker = ticker
+        self.form = form
+        self.accession_number = accession_number
+        self.filing_date = filing_date
+        self.sector = sector
+        self.metrics = metrics if metrics is not None else {}
+        # Multi-year income data: {year_str: {income_statement: {...}, ...}}
+        # Populated by the XBRL migration and by register_filing() for new extracts.
+        self.metrics_by_year: dict = {}
+
+
 # --- Exceptions -------------------------------------------------------------
 
 class DailyQuotaExceededError(Exception):
@@ -394,6 +429,102 @@ def _manifest_id(ticker: str, form: str, accession_number: str) -> str:
 
 def _job_id(key: str) -> str:
     return f"{JOB_COLLECTION}/{key}"
+
+
+def _metrics_id(ticker: str, form: str, accession_number: str) -> str:
+    return f"{METRICS_COLLECTION}/{ticker.strip().upper()}-{form}-{accession_number}"
+
+
+def save_filing_metrics(
+    ticker: str,
+    form: str,
+    accession_number: str,
+    filing_date: str,
+    sector: str,
+    metrics: dict,
+    metrics_by_year: Optional[dict] = None,
+) -> None:
+    """
+    Upsert structured metrics for one filing to the FilingMetrics collection.
+
+    Called from router.register_filing() at /extract time. Non-fatal — the
+    caller must catch and log exceptions so a RavenDB hiccup never aborts an
+    extraction that otherwise succeeded.
+
+    ``metrics`` contains the single-year snapshot (most recent fiscal year):
+        income_statement, balance_sheet, cash_flow, computed_ratios.
+
+    ``metrics_by_year`` contains per-year income data from XBRL historical rows:
+        { "2025": { "income_statement": {...} }, "2024": {...}, ... }
+    When present it allows the RDF graph to answer year-over-year comparisons via
+    SPARQL without re-fetching from EDGAR on each server restart.
+    """
+    if not accession_number:
+        return
+    try:
+        store = get_store()
+        mid = _metrics_id(ticker, form, accession_number)
+        with store.open_session() as session:
+            doc = FilingMetrics(
+                Id=mid,
+                ticker=ticker.strip().upper(),
+                form=form,
+                accession_number=accession_number,
+                filing_date=filing_date,
+                sector=sector,
+                metrics=metrics,
+            )
+            doc.metrics_by_year = metrics_by_year or {}
+            session.store(doc, mid)
+            session.save_changes()
+        logger.info("Saved FilingMetrics %s (years=%s)", mid,
+                    sorted(metrics_by_year or {}, reverse=True))
+    except Exception as e:
+        logger.warning("Could not save FilingMetrics for %s %s: %s", ticker, form, e)
+
+
+def load_all_filing_metrics() -> list:
+    """
+    Load every FilingMetrics document from RavenDB.
+
+    Returns a list of FilingMetrics instances (may be empty if none have been
+    persisted yet — happens on the very first boot after the fix is deployed).
+    """
+    try:
+        store = get_store()
+        with store.open_session() as session:
+            rows = list(
+                session.advanced.raw_query(
+                    "from FilingMetrics",
+                    object_type=FilingMetrics,
+                )
+            )
+        logger.info("load_all_filing_metrics: found %d docs", len(rows))
+        return rows
+    except Exception as e:
+        logger.warning("Could not load FilingMetrics from RavenDB: %s", e)
+        return []
+
+
+def load_all_ingest_manifests() -> list:
+    """
+    Load every IngestManifest document for the one-time graph migration.
+
+    Returns a list of IngestManifest instances.
+    """
+    try:
+        store = get_store()
+        with store.open_session() as session:
+            rows = list(
+                session.advanced.raw_query(
+                    "from IngestManifests",
+                    object_type=IngestManifest,
+                )
+            )
+        return rows
+    except Exception as e:
+        logger.warning("Could not load IngestManifests: %s", e)
+        return []
 
 
 # --- Deduplication ----------------------------------------------------------

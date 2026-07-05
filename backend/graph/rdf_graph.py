@@ -101,38 +101,8 @@ def build_ontology(g: Graph) -> None:
 # Triple builder
 # ---------------------------------------------------------------------------
 
-def add_company(g: Graph, result: dict) -> None:
-    """
-    Add all triples for one extractor result dict.
-
-    result must contain at minimum:
-        ticker, filing_date, accession_number, metrics
-    metrics keys: income_statement, balance_sheet, cash_flow, computed_ratios
-    optional: sector (from extractor; may be absent in old snapshots)
-    """
-    ticker       = result["ticker"].upper()
-    filing_date  = result.get("filing_date", "")
-    accession    = result.get("accession_number", "unknown").replace("-", "")
-    sector       = result.get("sector", "Unknown")
-    form         = result.get("form", "10-K")
-    fiscal_year  = filing_date[:4] if filing_date else "unknown"
-
-    company_uri = FSD[f"company/{ticker}"]
-    filing_uri  = FSD[f"filing/{ticker}/{accession}"]
-
-    # Company node
-    g.add((company_uri, RDF.type,       FS.Company))
-    g.add((company_uri, FS.hasTicker,   Literal(ticker)))
-    g.add((company_uri, FS.hasSector,   Literal(sector)))
-    g.add((company_uri, FS.filedFiling, filing_uri))
-
-    # Filing node
-    g.add((filing_uri, RDF.type,      FS.Filing))
-    g.add((filing_uri, FS.fiscalYear, Literal(fiscal_year)))
-    g.add((filing_uri, FS.filingForm, Literal(form)))
-
-    # Metric triples
-    metrics = result.get("metrics", {})
+def _add_metric_triples(g: Graph, filing_uri, metrics: dict) -> None:
+    """Assert metric triples for one filing node from a flat or nested metrics dict."""
     for category in _METRIC_CATEGORIES:
         cat_dict = metrics.get(category, {})
         for name, value in cat_dict.items():
@@ -142,13 +112,63 @@ def add_company(g: Graph, result: dict) -> None:
                 numeric = float(value)
             except (TypeError, ValueError):
                 continue
-
             metric_node = BNode()
             g.add((metric_node, RDF.type,          FS.FinancialMetric))
             g.add((metric_node, FS.metricName,     Literal(name)))
             g.add((metric_node, FS.metricValue,    Literal(numeric, datatype=XSD.decimal)))
             g.add((metric_node, FS.metricCategory, Literal(category)))
-            g.add((filing_uri,  FS.reportsMetric,   metric_node))
+            g.add((filing_uri,  FS.reportsMetric,  metric_node))
+
+
+def add_company(g: Graph, result: dict) -> None:
+    """
+    Add all triples for one extractor result dict.
+
+    Two modes, chosen by the keys present in ``result``:
+
+    Multi-year mode (preferred):
+        result["metrics_by_year"] = {"2025": {income_statement: {...}, ...},
+                                     "2024": {...}, ...}
+        One filing node is created per year so SPARQL can filter by fiscalYear
+        and year-over-year comparisons work correctly.
+
+    Single-year mode (legacy / fallback):
+        result["metrics"] = {income_statement: {...}, balance_sheet: {...}, ...}
+        One filing node is created, with fiscalYear derived from filing_date.
+    """
+    ticker    = result["ticker"].upper()
+    accession = result.get("accession_number", "unknown").replace("-", "")
+    sector    = result.get("sector", "Unknown")
+    form      = result.get("form", "10-K")
+
+    company_uri = FSD[f"company/{ticker}"]
+
+    # Company node (written once; duplicate triples are silently ignored by rdflib)
+    g.add((company_uri, RDF.type,     FS.Company))
+    g.add((company_uri, FS.hasTicker, Literal(ticker)))
+    g.add((company_uri, FS.hasSector, Literal(sector)))
+
+    metrics_by_year: dict = result.get("metrics_by_year") or {}
+
+    if metrics_by_year:
+        # Multi-year: one filing node per year
+        for year_str, year_metrics in metrics_by_year.items():
+            filing_uri = FSD[f"filing/{ticker}/{accession}/{year_str}"]
+            g.add((company_uri, FS.filedFiling, filing_uri))
+            g.add((filing_uri, RDF.type,      FS.Filing))
+            g.add((filing_uri, FS.fiscalYear, Literal(year_str)))
+            g.add((filing_uri, FS.filingForm, Literal(form)))
+            _add_metric_triples(g, filing_uri, year_metrics)
+    else:
+        # Single-year legacy path
+        filing_date = result.get("filing_date", "")
+        fiscal_year = filing_date[:4] if filing_date else "unknown"
+        filing_uri  = FSD[f"filing/{ticker}/{accession}"]
+        g.add((company_uri, FS.filedFiling, filing_uri))
+        g.add((filing_uri, RDF.type,      FS.Filing))
+        g.add((filing_uri, FS.fiscalYear, Literal(fiscal_year)))
+        g.add((filing_uri, FS.filingForm, Literal(form)))
+        _add_metric_triples(g, filing_uri, result.get("metrics", {}))
 
 
 def build_graph(results: list[dict]) -> Graph:

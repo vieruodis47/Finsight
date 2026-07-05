@@ -264,6 +264,68 @@ def extract_income_statement(facts: dict) -> dict:
     return out
 
 
+def extract_income_multiyear(facts: dict, n_years: int = 5) -> dict:
+    """
+    Return income-statement metrics for each available fiscal year.
+
+    Unlike extract_income_statement (which returns only the most recent year),
+    this function reads every 10-K annual row from the XBRL facts and groups them
+    by period-end year so the caller gets a multi-year dataset suitable for
+    year-over-year comparisons.
+
+    Returns a dict keyed by four-digit year string:
+        { "2025": { "operating_income_millions": 133050.0, ... },
+          "2024": { "operating_income_millions": 123216.0, ... },
+          ...  }
+
+    Deduplication: the same period sometimes appears in multiple filings
+    (comparative columns).  The most-recently-filed value per period end is kept.
+    Only the n_years most recent years are returned.
+    """
+    from collections import defaultdict
+
+    # field → {period_end → best_row}
+    by_field_year: dict = defaultdict(dict)
+
+    for field, concepts in INCOME_CONCEPTS.items():
+        for concept in concepts:
+            for r in _annual_rows(facts, "us-gaap", concept, "USD"):
+                end = r["end"]
+                existing = by_field_year[field].get(end)
+                if existing is None or r.get("filed", "") > existing.get("filed", ""):
+                    by_field_year[field][end] = r
+            if by_field_year[field]:
+                break  # first candidate concept with any data wins
+
+    # Collect all available period-end dates
+    all_ends: set = set()
+    for end_map in by_field_year.values():
+        all_ends.update(end_map.keys())
+    if not all_ends:
+        return {}
+
+    # Sort descending and take the n_years most recent period ends
+    sorted_ends = sorted(all_ends, reverse=True)[:n_years]
+
+    per_year: dict = {}
+    for end in sorted_ends:
+        year = end[:4]
+        year_data: dict = {}
+        for field, end_map in by_field_year.items():
+            row = end_map.get(end)
+            if row is not None:
+                year_data[field] = _millions(row["val"])
+        if year_data:
+            # Compute gross margin pct if revenue and gross profit are available
+            rev = year_data.get("total_revenue_millions")
+            gp  = year_data.get("gross_margin_millions")
+            if rev and gp and rev > 0:
+                year_data["gross_margin_pct"] = round(gp / rev * 100, 2)
+            per_year[year] = {"income_statement": year_data}
+
+    return per_year
+
+
 def extract_balance_sheet(facts: dict) -> dict:
     """Balance-sheet metrics from XBRL, anchored to the target fiscal year-end."""
     out = {}

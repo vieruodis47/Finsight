@@ -454,6 +454,15 @@ def _resume_pending_jobs() -> None:
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     _resume_pending_jobs()
+    # Rebuild the in-memory RDF graph from persisted FilingMetrics.
+    # On the very first boot after the fix is deployed, this triggers a one-time
+    # background migration that fetches XBRL (not HTML) from SEC for each
+    # already-indexed filing — zero embedding calls, non-blocking.
+    try:
+        from ..graph.router import rebuild_graph_from_ravendb
+        rebuild_graph_from_ravendb()
+    except Exception as e:
+        logger.warning("Could not rebuild graph on startup: %s", e)
     yield
 
 
@@ -488,7 +497,7 @@ def health() -> dict:
 @app.get("/extract/{ticker}")
 def extract(
     ticker: str,
-    form: Literal["10-K", "10-Q"] = "10-K",
+    form: Literal["10-K"] = "10-K",
 ) -> dict:
     """
     Run the full extraction pipeline and return structured JSON immediately.
@@ -586,7 +595,7 @@ class IngestStatusResponse(BaseModel):
 @app.get("/ingest-status/{ticker}", response_model=IngestStatusResponse)
 def ingest_status(
     ticker: str,
-    form: Literal["10-K", "10-Q"] = "10-K",
+    form: Literal["10-K"] = "10-K",
 ) -> IngestStatusResponse:
     """
     Returns current ingest status for a (ticker, form) pair.
@@ -609,7 +618,7 @@ def ingest_status(
 
 class RetryRequest(BaseModel):
     ticker: str
-    form: Literal["10-K", "10-Q"]
+    form: Literal["10-K"]
 
 
 @app.post("/ingest-retry")
