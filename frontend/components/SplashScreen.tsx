@@ -56,7 +56,7 @@ const SplashScreen: React.FC<SplashScreenProps> = ({ onGetStarted = () => {} }) 
             margin: '0 0 36px', maxWidth: 400,
           }}
         >
-          Upload 10-K and 10-Q documents, ask questions in plain English,
+          Upload 10-K annual reports from SEC EDGAR, ask questions in plain English,
           and get instant analysis backed by the actual source text.
         </p>
 

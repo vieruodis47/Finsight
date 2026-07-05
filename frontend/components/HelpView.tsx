@@ -42,7 +42,7 @@ const FAQS = [
   },
   {
     q: 'What document types work best?',
-    a: 'Annual 10-K filings give the most complete picture. 10-Q filings are good for quarterly details. Earnings transcripts work well for guidance and management commentary.',
+    a: 'Annual 10-K filings give the most complete picture. Earnings transcripts work well for guidance and management commentary.',
   },
   {
     q: 'Can I compare two different companies?',

@@ -5,12 +5,12 @@ const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8000';
 export interface ChatResult {
   answer: string;
   sources: ChatSource[];
-  retrievalPath?: 'graph' | 'vector' | 'both' | 'none';
+  retrievalPath?: 'graph' | 'vector' | 'both' | 'none' | 'vector_no_graph';
 }
 
 export interface AskOptions {
   ticker?: string;
-  form?: '10-K' | '10-Q';
+  form?: '10-K';
   k?: number;
 }
 
@@ -92,7 +92,7 @@ export function buildContent(sections: Record<string, string>): string {
   return parts.join('\n\n');
 }
 
-export async function extractCompany(ticker: string, form: '10-K' | '10-Q' = '10-K'): Promise<ExtractResponse> {
+export async function extractCompany(ticker: string, form: '10-K' = '10-K'): Promise<ExtractResponse> {
   const res = await fetch(`${API_BASE}/extract/${encodeURIComponent(ticker)}?form=${form}`);
   if (!res.ok) {
     const msg = await res.text().catch(() => res.statusText);
