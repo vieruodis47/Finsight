@@ -80,6 +80,7 @@ def register_filing(result: dict) -> None:
             form=result.get("form", "10-K"),
             accession_number=result.get("accession_number", ""),
             filing_date=result.get("filing_date", ""),
+            fiscal_year_end=result.get("fiscal_year_end", ""),
             sector=result.get("sector", "Unknown"),
             metrics=graph_metrics,
             metrics_by_year=result.get("metrics_by_year"),
@@ -147,6 +148,7 @@ def rebuild_graph_from_ravendb() -> int:
                 "form":             doc.form,
                 "accession_number": doc.accession_number,
                 "filing_date":      doc.filing_date,
+                "fiscal_year_end":  getattr(doc, "fiscal_year_end", "") or "",
                 "sector":           doc.sector,
                 "metrics":          doc.metrics if isinstance(doc.metrics, dict) else {},
                 "metrics_by_year":  by_year if isinstance(by_year, dict) else {},
@@ -254,11 +256,17 @@ def _migrate_from_manifests() -> None:
             # re-fetching from EDGAR on each restart.
             metrics_by_year = xbrl.extract_income_multiyear(facts, n_years=5)
 
+            # Fiscal year from XBRL period-end, not the filing date.  A Dec-FY
+            # company filed in Jan 2026 has fiscal_year_end "2025", not "2026".
+            period_end = xbrl.target_period_end(facts) or ""
+            fiscal_year_end = period_end[:4] if period_end else ""
+
             result = {
                 "ticker":           ticker,
                 "form":             manifest.form or "10-K",
                 "accession_number": accession,
                 "filing_date":      manifest.filing_date or "",
+                "fiscal_year_end":  fiscal_year_end,
                 "sector":           "Unknown",   # not critical for graph queries
                 "metrics": {
                     "income_statement": income,
