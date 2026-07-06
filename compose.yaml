@@ -1,3 +1,6 @@
+networks:
+  default:
+    name: finsight_default
 services:
   server:
     build:
@@ -6,4 +9,18 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
     ports:
-      - "3000:3000"
+      - 3000:3000
+    
+    web:
+      build: "finsight/web:latest"
+      ports:
+        - "8080:8080"
+      depends_on:
+        - database
+        - orchestration
+      networks:
+        - default
+    database:
+      image: "raven:latest"
+    orchestration:
+      image: "finsight/orchestration:latest"
