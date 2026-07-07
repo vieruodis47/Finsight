@@ -256,11 +256,28 @@ ORDER BY DESC(?netMargin)
 
 
 def run_sparql(g: Graph, query: str) -> list[dict]:
-    """Execute a SPARQL SELECT and return results as a list of dicts."""
+    """
+    Execute a SPARQL SELECT and return results as a list of dicts.
+
+    Values are coerced to float when possible.  xsd:decimal Literals have a
+    toPython() that returns decimal.Decimal, which fails isinstance(int, float)
+    — so we always call float(v.toPython()) inside a try/except rather than
+    type-testing the result first.  None is preserved as None.
+    """
     rows = []
     for row in g.query(query):
-        rows.append({str(k): (float(v) if hasattr(v, "toPython") and isinstance(v.toPython(), (int, float)) else str(v))
-                     for k, v in row.asdict().items()})
+        d: dict = {}
+        for k, v in row.asdict().items():
+            if v is None:
+                d[str(k)] = None
+            elif hasattr(v, "toPython"):
+                try:
+                    d[str(k)] = float(v.toPython())
+                except (TypeError, ValueError):
+                    d[str(k)] = str(v)
+            else:
+                d[str(k)] = str(v)
+        rows.append(d)
     return rows
 
 

@@ -189,7 +189,7 @@ const DocumentManager: React.FC<DocumentManagerProps> = ({
         <p style={{ fontSize: 15, fontWeight: 500, color: c.text, margin: '0 0 2px' }}>Document library</p>
         <p style={{ fontSize: 13, color: c.textMuted, margin: 0 }}>
           Fetch filings from SEC EDGAR or upload a PDF/TXT — each is embedded into a
-          searchable vector index for RAG chat. Filings embed one at a time to stay within API rate limits.
+          searchable vector index for FinChat. Filings embed one at a time to stay within API rate limits.
         </p>
       </div>
 

@@ -101,6 +101,19 @@ def get_store() -> DocumentStore:
     global _store
     if _store is None:
         store = DocumentStore(RAVENDB_URLS, RAVENDB_DATABASE)
+
+        # The RavenDB Python client uses inflect to pluralize class names for
+        # collection names.  "FilingMetrics" (already plural in English) becomes
+        # "FilingMetricss" — the wrong collection.  Override the convention so
+        # the client always maps the FilingMetrics class to the exact string
+        # "FilingMetrics".  Must be set BEFORE store.initialize().
+        _orig_find = store.conventions.find_collection_name
+        def _find_collection_name(cls_type):
+            if cls_type.__name__ == "FilingMetrics":
+                return METRICS_COLLECTION   # "FilingMetrics" — no extra 's'
+            return _orig_find(cls_type)
+        store.conventions.find_collection_name = _find_collection_name
+
         store.initialize()
         _store = store
         logger.info("Initialized RavenDB store: %s db=%s", RAVENDB_URLS, RAVENDB_DATABASE)
@@ -270,6 +283,7 @@ class FilingMetrics:
         accession_number: str = "",
         filing_date: str = "",
         fiscal_year_end: str = "",
+        period_end: str = "",
         sector: str = "Unknown",
         metrics: Optional[dict] = None,
         metrics_by_year: Optional[dict] = None,
@@ -281,9 +295,12 @@ class FilingMetrics:
         self.filing_date = filing_date
         # Four-digit year string derived from the XBRL period-end date, not the
         # filing date.  e.g. "2025" for a Dec-FY company whose 10-K was filed in
-        # January 2026.  Empty string means not yet resolved (will be set by the
-        # background migration or on the next /extract call).
+        # January 2026.  Empty string means not yet resolved.
         self.fiscal_year_end: str = fiscal_year_end or ""
+        # Full ISO date of the most-recent XBRL fiscal period end, e.g.
+        # "2025-09-27" for AAPL or "2025-12-31" for META.  Used for
+        # cross-company fiscal-year-end disclosure in graph answers.
+        self.period_end: str = period_end or ""
         self.sector = sector
         self.metrics = metrics if metrics is not None else {}
         self.metrics_by_year: dict = metrics_by_year if metrics_by_year is not None else {}
@@ -292,13 +309,30 @@ class FilingMetrics:
 # --- Exceptions -------------------------------------------------------------
 
 class DailyQuotaExceededError(Exception):
-    """Raised when the Gemini embedding daily per-request quota is exhausted."""
+    """Raised when the Gemini embedding per-day (RPD) quota is exhausted."""
+
+
+class PerMinuteQuotaError(Exception):
+    """Raised when the Gemini embedding per-minute (RPM/TPM) quota is exhausted."""
 
 
 def is_daily_quota_error(e: Exception) -> bool:
-    """Return True if the exception is a Gemini daily quota error (not per-minute)."""
+    """True only for per-day (RPD) exhaustion — explicitly NOT per-minute."""
     msg = str(e)
+    # Exclude per-minute signals first; some error payloads mention multiple
+    # quota dimensions and we must not misfire the midnight-UTC message for a
+    # transient per-minute rate limit.
+    if "PerMinute" in msg or "per_minute" in msg.lower():
+        return False
     return "PerDay" in msg or "EmbedContentRequestsPerDay" in msg
+
+
+def is_per_minute_quota_error(e: Exception) -> bool:
+    """True for per-minute (RPM / TPM) rate-limit responses."""
+    msg = str(e)
+    if "429" not in msg and "RESOURCE_EXHAUSTED" not in msg:
+        return False
+    return "PerMinute" in msg or "per_minute" in msg.lower()
 
 
 # --- Embedding generation ---------------------------------------------------
@@ -321,16 +355,24 @@ def embed_texts(texts: list[str], task_type: str) -> list[list]:
       - Daily quota ("PerDay" in error): raises DailyQuotaExceededError immediately.
         The caller must handle this specially — do NOT retry, the quota is gone
         for the day.
-      - Per-minute RPM cap (no "PerDay"): waits 62s and retries up to 3 times.
+      - Per-minute RPM cap:
+        RETRIEVAL_QUERY (user-facing chat): short retries [5s, 20s] so the
+          response comes back quickly; raises PerMinuteQuotaError on exhaustion.
+        RETRIEVAL_DOCUMENT (background ingest): long retries [62s, 72s, 82s] to
+          let the RPM window reset; raises PerMinuteQuotaError on exhaustion.
+        Callers must catch PerMinuteQuotaError separately from DailyQuotaExceededError
+        and surface the correct "try again in ~60s" message.
     """
     client = get_genai_client()
+    is_query = (task_type == "RETRIEVAL_QUERY")
+    retry_waits = [5, 20] if is_query else [62, 72, 82]
     out: list[list] = []
     for i, start in enumerate(range(0, len(texts), EMBED_BATCH)):
         if i > 0 and EMBED_BATCH_DELAY > 0:
             time.sleep(EMBED_BATCH_DELAY)
         batch = texts[start:start + EMBED_BATCH]
 
-        for attempt in range(4):  # up to 3 retries
+        for attempt in range(len(retry_waits) + 1):  # initial attempt + retries
             try:
                 resp = client.models.embed_content(
                     model=EMBED_MODEL,
@@ -345,18 +387,18 @@ def embed_texts(texts: list[str], task_type: str) -> list[list]:
             except Exception as e:
                 if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
                     if is_daily_quota_error(e):
-                        # Daily quota gone — caller handles waiting_for_quota transition.
                         raise DailyQuotaExceededError(str(e)) from e
-                    elif attempt < 3:
-                        wait = 62 + attempt * 10  # 62s, 72s, 82s
+                    if attempt < len(retry_waits):
+                        wait = retry_waits[attempt]
                         logger.warning(
-                            "Embedding 429 (per-minute) on batch %d/%d (attempt %d), waiting %ds…",
+                            "Embedding 429 (per-minute) on batch %d/%d "
+                            "(attempt %d/%d), waiting %ds…",
                             i + 1, (len(texts) + EMBED_BATCH - 1) // EMBED_BATCH,
-                            attempt + 1, wait,
+                            attempt + 1, len(retry_waits) + 1, wait,
                         )
                         time.sleep(wait)
                     else:
-                        raise
+                        raise PerMinuteQuotaError(str(e)) from e
                 else:
                     raise
     return out
@@ -454,6 +496,7 @@ def save_filing_metrics(
     metrics: dict,
     metrics_by_year: Optional[dict] = None,
     fiscal_year_end: str = "",
+    period_end: str = "",
 ) -> None:
     """
     Upsert structured metrics for one filing to the FilingMetrics collection.
@@ -472,9 +515,8 @@ def save_filing_metrics(
     """
     if not accession_number:
         return
-    try:
-        store = get_store()
-        mid = _metrics_id(ticker, form, accession_number)
+
+    def _do_store(store, mid: str) -> None:
         with store.open_session() as session:
             doc = FilingMetrics(
                 Id=mid,
@@ -483,6 +525,7 @@ def save_filing_metrics(
                 accession_number=accession_number,
                 filing_date=filing_date,
                 fiscal_year_end=fiscal_year_end or "",
+                period_end=period_end or "",
                 sector=sector,
                 metrics=metrics,
                 metrics_by_year=metrics_by_year or {},
@@ -493,6 +536,27 @@ def save_filing_metrics(
             # client derives from the class name.
             session.advanced.get_metadata_for(doc)["@collection"] = METRICS_COLLECTION
             session.save_changes()
+
+    try:
+        store = get_store()
+        mid = _metrics_id(ticker, form, accession_number)
+        try:
+            _do_store(store, mid)
+        except Exception as write_e:
+            if "CollectionMismatch" not in str(write_e):
+                raise
+            # An old doc with this ID exists in the wrong collection (e.g. "FilingMetricss").
+            # RavenDB forbids changing a document's collection via update — delete via
+            # the HTTP API and recreate in the correct collection.
+            import urllib.parse
+            import requests as _req
+            base = store.urls[0].rstrip("/")
+            db   = store.database
+            enc  = urllib.parse.quote(mid, safe="")
+            _req.delete(f"{base}/databases/{db}/docs?id={enc}", timeout=10)
+            logger.info("Deleted orphan doc %s from wrong collection — retrying in %s",
+                        mid, METRICS_COLLECTION)
+            _do_store(store, mid)
         logger.info("Saved FilingMetrics %s (years=%s)", mid,
                     sorted(metrics_by_year or {}, reverse=True))
     except Exception as e:
