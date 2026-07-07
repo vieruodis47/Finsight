@@ -1,16 +1,18 @@
 services:
   node:
     build:
-      context: .                          # repo root — both Dockerfiles need it
+      context: .
       dockerfile: backend/Dockerfile.node
     ports:
-      - "5000:5000"                       # the ONLY port your browser needs
+      - "5000:5000"
     environment:
-      - PY_BACKEND_URL=http://python:8000 # service name = hostname
+      - PY_BACKEND_URL=http://python:8000
+      - API_BACKEND_HOST=0.0.0.0
     env_file:
-      - backend/.env.local                # GOOGLE_CLOUD_*, PROXY_HEADER, SESSION_SECRET
+      - backend/.env.local
     depends_on:
-      - python
+      python:
+        condition: service_healthy
 
   python:
     build:

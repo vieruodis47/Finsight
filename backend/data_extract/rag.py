@@ -50,9 +50,19 @@ NO_CONTEXT_MESSAGE = (
 # --- Core ------------------------------------------------------------------
 
 def _format_context(chunks: list[FilingChunk]) -> str:
-    """Tag each chunk with its source so the model can ground and cite."""
+    """Tag each chunk with its source so the model can ground and cite.
+
+    Ordering: rank-0 (most relevant) first, rank-1 (second-most relevant) last,
+    ranks 2..k-1 in the middle. The two best chunks bookend the context so both
+    sit in the high-attention zones at either end of the contents string,
+    reducing the "lost in the middle" attention drop for the second-best passage.
+    """
+    if len(chunks) > 2:
+        ordered = [chunks[0]] + chunks[2:] + [chunks[1]]
+    else:
+        ordered = chunks
     blocks = []
-    for c in chunks:
+    for c in ordered:
         tag = f"[{c.ticker} {c.form} #{c.chunk_index} | {c.source}]"
         blocks.append(f"{tag}\n{c.text}")
     return "\n\n---\n\n".join(blocks)
@@ -97,7 +107,7 @@ class ChatRequest(BaseModel):
     question: str = Field(min_length=1)
     k: int = Field(default=5, ge=1, le=20)
     ticker: Optional[str] = None
-    form: Optional[Literal["10-K", "10-Q"]] = None
+    form: Optional[Literal["10-K"]] = None
 
 
 class Source(BaseModel):
@@ -110,6 +120,7 @@ class Source(BaseModel):
 class ChatResponse(BaseModel):
     answer: str
     sources: list[Source]
+    retrieval_path: str = "vector"   # "graph" | "vector" | "both" | "none"
 
 
 @router.post("/chat", response_model=ChatResponse)
@@ -117,16 +128,23 @@ def chat(req: ChatRequest) -> ChatResponse:
     # sync def -> FastAPI runs it in a threadpool, so the blocking
     # google-genai / RavenDB calls don't stall the event loop.
     ticker = req.ticker.strip().upper() if req.ticker else None
-    answer, chunks = answer_question(req.question, k=req.k, ticker=ticker, form=req.form)
-
-    if not chunks:
-        return ChatResponse(answer=NO_CONTEXT_MESSAGE, sources=[])
+    try:
+        from backend.graph.router import route_question
+        answer, chunks, path = route_question(
+            req.question, k=req.k, ticker=ticker, form=req.form
+        )
+    except Exception as exc:
+        logger.warning("GraphRAG router error, falling back to pure vector: %s", exc)
+        answer, chunks = answer_question(req.question, k=req.k, ticker=ticker, form=req.form)
+        path = "vector" if chunks else "none"
+        if not chunks:
+            answer = NO_CONTEXT_MESSAGE
 
     sources = [
         Source(ticker=c.ticker, form=c.form, chunk_index=c.chunk_index, source=c.source)
         for c in chunks
     ]
-    return ChatResponse(answer=answer, sources=sources)
+    return ChatResponse(answer=answer, sources=sources, retrieval_path=path)
 
 
 # --- Summary & comparison (generation over provided text, no retrieval) -----

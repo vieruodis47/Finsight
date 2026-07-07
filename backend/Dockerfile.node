@@ -3,11 +3,11 @@
 # Build React Bundle Stage
 FROM node:20-slim AS build
 WORKDIR /app
-COPY frontend/package*.json ./ ./frontend/ \
-    frontend/package-lock.json ./
-RUN npm ci --prefix frontend
+COPY package.json package-lock.json ./
+COPY frontend/package.json ./frontend/
+RUN npm ci --workspace=frontend
 COPY frontend/ ./frontend/
-RUN npm run build --prefix frontend
+RUN npm run build --workspace=frontend
 
 # Runtime Stage
 FROM node:20-slim
@@ -26,9 +26,8 @@ COPY backend/services/ ./backend/services/
 COPY --from=build /app/frontend/dist ./frontend/dist
 
 # Run as non-root user
-RUN useradd --create-home node
 USER node
 EXPOSE 5000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
     CMD node -e "fetch('http://localhost:5000/health').then(r => process.exit(r.ok ? 0 : 1))"
-CMD ["node", "/backend/server.js"]
+CMD ["node", "backend/server.js"]

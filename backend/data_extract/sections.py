@@ -38,6 +38,8 @@ def extract_sections(text: str) -> dict:
     }
 
     section_keywords = list(section_names.keys())
+    # Pre-compute uppercase versions once for O(1) per-line comparison.
+    section_keywords_upper = [kw.upper() for kw in section_keywords]
 
     # Collect all occurrences of each section
     # sections_all maps section_key -> list of content strings
@@ -47,8 +49,13 @@ def extract_sections(text: str) -> dict:
     buffer: list[str] = []
 
     for line in lines:
+        # Normalize non-breaking spaces (\xa0) to regular spaces before matching.
+        # Some filers (e.g. Nike) emit "ITEM\xa01." in uppercase — both the case
+        # difference and the non-breaking space would prevent startswith from matching.
+        stripped_norm = line.strip().replace("\xa0", " ").upper()
         matched_kw = next(
-            (kw for kw in section_keywords if line.strip().startswith(kw) and len(line) < 120),
+            (kw for kw, kw_up in zip(section_keywords, section_keywords_upper)
+             if stripped_norm.startswith(kw_up) and len(line) < 120),
             None
         )
         if matched_kw:

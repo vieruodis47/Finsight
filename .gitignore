@@ -33,5 +33,9 @@ node_modules/
 financial_dashboard.html
 __pycache__/
 *.pyc
+<<<<<<< HEAD
 
 .claude/
+=======
+**/.DS_Store
+>>>>>>> 844ffdc18551b60f983a62eaeec96d8dabcfe3d5

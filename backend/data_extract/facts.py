@@ -13,6 +13,15 @@ filer migrates an XBRL tag: the old concept's newest value is stale (an earlier 
 while every other line is current, producing impossible margins (>100%). So we first
 resolve a single target fiscal year-end from reliably-tagged concepts, then pull every
 field at that period.
+
+Stale values
+------------
+When _pick() cannot find any candidate concept at the target period it falls back to
+the concept's latest-ever value, marked stale=True. A stale value is from a prior
+fiscal year — emitting it alongside current-year figures creates impossible results
+(e.g. prior-year net income paired with current-year operating loss). We therefore
+drop stale hits entirely and leave the field absent rather than pollute the output
+with cross-year contamination.
 """
 
 from datetime import date
@@ -38,7 +47,15 @@ INCOME_CONCEPTS = {
     "total_opex_millions": ["OperatingExpenses", "CostsAndExpenses"],
     "operating_income_millions": ["OperatingIncomeLoss"],
     "income_tax_millions": ["IncomeTaxExpenseBenefit"],
-    "net_income_millions": ["NetIncomeLoss"],
+    # NetIncomeLoss is the standard tag; some filers (e.g. Ford FY2025) omit it
+    # and tag only the "available to common stockholders" variant instead.
+    # The fallback order guarantees we pick the current-year figure from whichever
+    # concept the filer actually populated, rather than a stale prior-year value.
+    "net_income_millions": [
+        "NetIncomeLoss",
+        "NetIncomeLossAvailableToCommonStockholdersBasic",
+        "NetIncomeLossAvailableToCommonStockholdersDiluted",
+    ],
 }
 
 INCOME_PER_SHARE = {  # unit "USD/shares"; never scaled to millions
@@ -172,14 +189,15 @@ def _pick(facts, concepts, unit="USD", target_end=None):
     Resolution order, per the candidate list:
       1. exact match on the target fiscal year-end,
       2. a year-end within tolerance of the target (handles minor tagging drift),
-      3. fallback to the concept's latest available value (flagged ``stale``),
-         so a filer with an unusual period still yields *something*.
+      3. fallback to the concept's latest available value (flagged ``stale``).
+
+    Callers that require a current-year value should reject stale hits.
     """
     rows_by_concept = [(c, _annual_rows(facts, "us-gaap", c, unit)) for c in concepts]
 
     if target_end:
         t = _parse(target_end)
-        # 1) exact period match
+        # 1) exact period match — check all candidates before giving up
         for concept, rows in rows_by_concept:
             exact = [r for r in rows if r["end"] == target_end]
             if exact:
@@ -215,17 +233,20 @@ def extract_income_statement(facts: dict) -> dict:
 
     for field, concepts in INCOME_CONCEPTS.items():
         hit = _pick(facts, concepts, "USD", target)
-        if hit:
+        # Reject stale hits: a value from a prior fiscal year mixed with current-year
+        # figures produces impossible results (e.g. prior-year net income against a
+        # current-year operating loss). Leave the field absent instead.
+        if hit and not hit.get("stale"):
             out[field] = _millions(hit["value"])
 
     for field, concepts in INCOME_PER_SHARE.items():
         hit = _pick(facts, concepts, "USD/shares", target)
-        if hit:
+        if hit and not hit.get("stale"):
             out[field] = hit["value"]
 
     for field, concepts in INCOME_RATES.items():
         hit = _pick(facts, concepts, "pure", target)
-        if hit:
+        if hit and not hit.get("stale"):
             out[field] = round(hit["value"] * 100, 2)
 
     rev = out.get("total_revenue_millions")
@@ -243,6 +264,183 @@ def extract_income_statement(facts: dict) -> dict:
     return out
 
 
+def extract_income_multiyear(facts: dict, n_years: int = 5) -> dict:
+    """
+    Return income-statement metrics for each available fiscal year.
+
+    Unlike extract_income_statement (which returns only the most recent year),
+    this function reads every 10-K annual row from the XBRL facts and groups them
+    by period-end year so the caller gets a multi-year dataset suitable for
+    year-over-year comparisons.
+
+    Returns a dict keyed by four-digit year string:
+        { "2025": { "operating_income_millions": 133050.0, ... },
+          "2024": { "operating_income_millions": 123216.0, ... },
+          ...  }
+
+    Deduplication: the same period sometimes appears in multiple filings
+    (comparative columns).  The most-recently-filed value per period end is kept.
+    Only the n_years most recent years are returned.
+    """
+    from collections import defaultdict
+
+    # field → {period_end → best_row}
+    by_field_year: dict = defaultdict(dict)
+
+    for field, concepts in INCOME_CONCEPTS.items():
+        for concept in concepts:
+            for r in _annual_rows(facts, "us-gaap", concept, "USD"):
+                end = r["end"]
+                existing = by_field_year[field].get(end)
+                if existing is None or r.get("filed", "") > existing.get("filed", ""):
+                    by_field_year[field][end] = r
+            if by_field_year[field]:
+                break  # first candidate concept with any data wins
+
+    # Collect all available period-end dates
+    all_ends: set = set()
+    for end_map in by_field_year.values():
+        all_ends.update(end_map.keys())
+    if not all_ends:
+        return {}
+
+    # Sort descending and take the n_years most recent period ends
+    sorted_ends = sorted(all_ends, reverse=True)[:n_years]
+
+    per_year: dict = {}
+    for end in sorted_ends:
+        year = end[:4]
+        year_data: dict = {}
+        for field, end_map in by_field_year.items():
+            row = end_map.get(end)
+            if row is not None:
+                year_data[field] = _millions(row["val"])
+        if year_data:
+            # Compute gross margin pct if revenue and gross profit are available
+            rev = year_data.get("total_revenue_millions")
+            gp  = year_data.get("gross_margin_millions")
+            if rev and gp and rev > 0:
+                year_data["gross_margin_pct"] = round(gp / rev * 100, 2)
+            per_year[year] = {"income_statement": year_data}
+
+    return per_year
+
+
+def extract_balance_multiyear(facts: dict, n_years: int = 5) -> dict:
+    """
+    Return balance-sheet metrics for each available fiscal year.
+
+    Mirrors extract_income_multiyear but for BALANCE_CONCEPTS (instant facts).
+    Returns a dict keyed by four-digit year string:
+        { "2025": { "balance_sheet": { "long_term_debt_millions": ..., ... } },
+          "2024": { "balance_sheet": { ... } }, ... }
+    """
+    from collections import defaultdict
+
+    by_field_year: dict = defaultdict(dict)
+
+    for field, concepts in BALANCE_CONCEPTS.items():
+        for concept in concepts:
+            for r in _annual_rows(facts, "us-gaap", concept, "USD"):
+                end = r["end"]
+                existing = by_field_year[field].get(end)
+                if existing is None or r.get("filed", "") > existing.get("filed", ""):
+                    by_field_year[field][end] = r
+        # No break: collect from all candidate concepts so that companies that
+        # changed XBRL tags across years (e.g. TSLA debt: LongTermDebtNoncurrent
+        # → LongTermDebt) still get populated for all years.  The filed-date
+        # deduplication above keeps the most-recently-filed value per period end.
+
+    all_ends: set = set()
+    for end_map in by_field_year.values():
+        all_ends.update(end_map.keys())
+    if not all_ends:
+        return {}
+
+    # Multiple period-end dates can share the same four-digit year
+    # (e.g. "2024-12-31" and "2024-01-01" from a cumulative-effect-adjustment
+    # instant fact).  Pick the canonical date per year: the one covered by the
+    # most fields; break ties by latest date string.
+    field_count = {end: sum(1 for m in by_field_year.values() if end in m)
+                   for end in all_ends}
+    year_to_canonical: dict = {}
+    for end in all_ends:
+        year = end[:4]
+        prev = year_to_canonical.get(year)
+        if prev is None or (field_count[end], end) > (field_count[prev], prev):
+            year_to_canonical[year] = end
+
+    sorted_years = sorted(year_to_canonical.keys(), reverse=True)[:n_years]
+
+    per_year: dict = {}
+    for year in sorted_years:
+        end = year_to_canonical[year]
+        year_data: dict = {}
+        for field, end_map in by_field_year.items():
+            row = end_map.get(end)
+            if row is not None:
+                year_data[field] = _millions(row["val"])
+        if year_data:
+            cur_assets = year_data.get("total_current_assets_millions")
+            cur_liab = year_data.get("total_current_liabilities")
+            if cur_assets and cur_liab:
+                year_data["working_capital_millions"] = round(cur_assets - cur_liab, 2)
+            per_year[year] = {"balance_sheet": year_data}
+
+    return per_year
+
+
+def extract_cash_flow_multiyear(facts: dict, n_years: int = 5) -> dict:
+    """
+    Return cash-flow metrics for each available fiscal year.
+
+    Mirrors extract_income_multiyear but for CASHFLOW_CONCEPTS (duration facts).
+    Returns:
+        { "2025": { "cash_flow": { "free_cash_flow_millions": ..., ... } },
+          "2024": { "cash_flow": { ... } }, ... }
+
+    free_cash_flow_millions is computed as operating_cash_flow - capex when both
+    are present. No break between candidate concepts: cash-flow filers sometimes
+    switch between tags across years (same as balance sheet).
+    """
+    from collections import defaultdict
+
+    by_field_year: dict = defaultdict(dict)
+
+    for field, concepts in CASHFLOW_CONCEPTS.items():
+        for concept in concepts:
+            for r in _annual_rows(facts, "us-gaap", concept, "USD"):
+                end = r["end"]
+                existing = by_field_year[field].get(end)
+                if existing is None or r.get("filed", "") > existing.get("filed", ""):
+                    by_field_year[field][end] = r
+
+    all_ends: set = set()
+    for end_map in by_field_year.values():
+        all_ends.update(end_map.keys())
+    if not all_ends:
+        return {}
+
+    sorted_ends = sorted(all_ends, reverse=True)[:n_years]
+
+    per_year: dict = {}
+    for end in sorted_ends:
+        year = end[:4]
+        year_data: dict = {}
+        for field, end_map in by_field_year.items():
+            row = end_map.get(end)
+            if row is not None:
+                year_data[field] = _millions(row["val"])
+        if year_data:
+            ocf = year_data.get("operating_cash_flow_millions")
+            cap = year_data.get("capex_millions")
+            if ocf is not None and cap is not None:
+                year_data["free_cash_flow_millions"] = round(ocf - cap, 2)
+            per_year[year] = {"cash_flow": year_data}
+
+    return per_year
+
+
 def extract_balance_sheet(facts: dict) -> dict:
     """Balance-sheet metrics from XBRL, anchored to the target fiscal year-end."""
     out = {}
@@ -250,7 +448,7 @@ def extract_balance_sheet(facts: dict) -> dict:
 
     for field, concepts in BALANCE_CONCEPTS.items():
         hit = _pick(facts, concepts, "USD", target)
-        if hit:
+        if hit and not hit.get("stale"):
             out[field] = _millions(hit["value"])
 
     if out.get("total_current_assets_millions") and out.get("total_current_liabilities"):
@@ -267,7 +465,7 @@ def extract_cash_flow(facts: dict) -> dict:
 
     for field, concepts in CASHFLOW_CONCEPTS.items():
         hit = _pick(facts, concepts, "USD", target)
-        if hit:
+        if hit and not hit.get("stale"):
             out[field] = _millions(hit["value"])
 
     if out.get("operating_cash_flow_millions") and out.get("capex_millions"):

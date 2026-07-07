@@ -27,7 +27,7 @@ const EXAMPLES: Example[] = [
 
 const STEPS: Step[] = [
   { icon: Search,        title: 'Search EDGAR',   sub: 'find any public filer' },
-  { icon: Layers,        title: 'Fetch and index', sub: '10-K and 10-Q parsed' },
+  { icon: Layers,        title: 'Fetch and index', sub: '10-K filings parsed' },
   { icon: MessageSquare, title: 'Ask anything',    sub: 'summarize and compare' },
 ];
 
@@ -111,8 +111,8 @@ const GettingStarted: React.FC<GettingStartedProps> = ({ onAddCompany }) => {
           Start with a company
         </h1>
         <p style={{ color: c.text2, maxWidth: 440, margin: '0 0 1.75rem', lineHeight: 1.7, fontSize: 15 }}>
-          Search any public company. FinSight pulls its latest 10-K and 10-Q from SEC EDGAR,
-          indexes them, and lets you ask questions, summarize, and compare.
+          Search any public company. FinSight pulls its latest 10-K from SEC EDGAR,
+          indexes it, and lets you ask questions, summarize, and compare.
         </p>
 
         {/* Search row + dropdown — wrapper is the positioning root */}

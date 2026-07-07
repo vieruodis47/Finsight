@@ -14,12 +14,16 @@ import ChatInterface from './components/ChatInterface';
 import AnalysisView from './components/AnalysisView';
 import SplashScreen from './components/SplashScreen';
 import GettingStarted from './components/GettingStarted';
-import { extractCompany, buildContent, getIngestStatus } from './services/gemini';
+import {
+  extractCompany, buildContent,
+  getIngestStatus, retryIngest,
+  getUploadStatus, retryUpload,
+} from './services/gemini';
 
 const NAV_ITEMS: { view: ViewState; label: string; icon: React.ReactNode }[] = [
   { view: 'dashboard', label: 'Dashboard', icon: <LayoutDashboard size={17} /> },
   { view: 'documents', label: 'Documents',  icon: <Files size={17} /> },
-  { view: 'chat',      label: 'RAG chat',   icon: <MessageSquare size={17} /> },
+  { view: 'chat',      label: 'FinChat', icon: <MessageSquare size={17} /> },
   { view: 'analysis',  label: 'Analysis',   icon: <BarChart3 size={17} /> },
   { view: 'help', label: 'Help', icon: <HelpCircle size={17} /> },
 ];
@@ -50,41 +54,61 @@ const App: React.FC = () => {
   };
   const handleRemoveDocument = (id: string) => setDocuments(prev => prev.filter(d => d.id !== id));
   const handleRemoveCompany = (key: string) => setDocuments(prev => prev.filter(d => companyKey(d) !== key));
+  const handleUpdateDocument = (id: string, updates: Partial<Document>) =>
+    setDocuments(prev => prev.map(d => d.id === id ? { ...d, ...updates } : d));
 
-  // Poll for ingest completion on any document currently in the 'indexing' state.
-  // When the backend reports indexed/failed, update the document in place.
+  // Poll for ingest completion on any document that is queued or indexing.
+  // Uploaded files use /upload-status/{doc_id}; EDGAR filings use /ingest-status/{ticker}.
   React.useEffect(() => {
-    const indexing = documents.filter(
-      d => d.indexStatus === 'indexing' && d.ticker && d.form,
+    const pending = documents.filter(
+      d => (d.indexStatus === 'queued' || d.indexStatus === 'indexing' || d.indexStatus === 'waiting_for_quota')
+        && (d.uploadDocId || (d.ticker && d.form)),
     );
-    if (indexing.length === 0) return;
+    if (pending.length === 0) return;
 
     const timer = setInterval(async () => {
-      for (const doc of indexing) {
+      for (const doc of pending) {
         try {
-          const status = await getIngestStatus(doc.ticker!, doc.form!);
-          if (status.status !== 'indexing') {
-            setDocuments(prev =>
-              prev.map(d =>
-                d.id === doc.id
-                  ? {
-                      ...d,
-                      indexStatus: status.status as IndexStatus,
-                      indexChunks: status.chunks,
-                      indexError:  status.error ?? undefined,
-                    }
-                  : d,
-              ),
-            );
-          }
+          const status = doc.uploadDocId
+            ? await getUploadStatus(doc.uploadDocId)
+            : await getIngestStatus(doc.ticker!, doc.form!);
+          setDocuments(prev =>
+            prev.map(d =>
+              d.id === doc.id
+                ? {
+                    ...d,
+                    indexStatus: status.status as IndexStatus,
+                    indexChunks: status.chunks,
+                    indexError:  status.error ?? undefined,
+                  }
+                : d,
+            ),
+          );
         } catch {
-          // Transient network error — keep polling, don't surface it.
+          // Transient network error — keep polling.
         }
       }
     }, 2500);
 
     return () => clearInterval(timer);
   }, [documents]);
+
+  // Retry handler: delegates to the right backend endpoint based on doc type.
+  const handleRetry = React.useCallback(async (doc: Document) => {
+    handleUpdateDocument(doc.id, { indexStatus: 'queued', indexError: undefined });
+    try {
+      if (doc.uploadDocId) {
+        await retryUpload(doc.uploadDocId);
+      } else if (doc.ticker && doc.form) {
+        await retryIngest(doc.ticker, doc.form);
+      }
+    } catch (e) {
+      handleUpdateDocument(doc.id, {
+        indexStatus: 'failed',
+        indexError: e instanceof Error ? e.message : 'Retry request failed',
+      });
+    }
+  }, []);
 
   // Backfill content for docs that were added before the section-extraction fix.
   // Only targets docs that came from /extract (have ticker + metrics) but have no
@@ -97,7 +121,7 @@ const App: React.FC = () => {
     if (stale.length === 0) return;
     const doc = stale[0];
     backfilledRef.current.add(doc.id);
-    extractCompany(doc.ticker!, (doc.form as '10-K' | '10-Q') ?? '10-K')
+    extractCompany(doc.ticker!, (doc.form as '10-K') ?? '10-K')
       .then(data => {
         const content = buildContent(data.sections ?? {});
         if (!content) return;
@@ -108,7 +132,7 @@ const App: React.FC = () => {
                   ...d,
                   content,
                   form: d.form ?? data.form,
-                  indexStatus: 'indexing' as IndexStatus,
+                  indexStatus: 'queued' as IndexStatus,
                   ...(data.sector && !d.sector ? { sector: data.sector } : {}),
                 }
               : d,
@@ -171,7 +195,7 @@ const App: React.FC = () => {
                 form: data.form,
                 metrics: data.metrics,
                 content: buildContent(data.sections ?? {}),
-                indexStatus: 'indexing' as IndexStatus,
+                indexStatus: 'queued' as IndexStatus,
                 ...(data.sector ? { sector: data.sector } : {}),
               }
             : d,
@@ -193,7 +217,7 @@ const App: React.FC = () => {
   const renderView = () => {
     switch (currentView) {
       case 'dashboard': return <Dashboard documents={documents} selectedTicker={selectedTicker} />;
-      case 'documents': return <DocumentManager documents={documents} onAddDocument={handleAddDocument} onRemoveDocument={handleRemoveDocument} onFetched={() => setCurrentView('dashboard')} />;
+      case 'documents': return <DocumentManager documents={documents} onAddDocument={handleAddDocument} onRemoveDocument={handleRemoveDocument} onFetched={() => setCurrentView('dashboard')} onRetry={handleRetry} />;
       case 'chat':      return <ChatInterface documents={documents} />;
       case 'analysis':  return <AnalysisView documents={documents} />;
       case 'help':      return <HelpView />;
