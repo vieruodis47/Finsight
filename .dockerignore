@@ -1,0 +1,29 @@
+# Node
+**/node_modules
+**/npm-debug.log
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# React Native
+**/android/app/build
+
+# Common
+*.log
+**/.git
+**/.gitignore
+**/.env
+LICENSE
+README.md
+
+# Ignore local development files and directories
+company_data/
+experiments/
+tests/
+.claude/
+.env*
+.venv/
+myenv/
+docs/

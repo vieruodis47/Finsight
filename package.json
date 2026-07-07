@@ -7,7 +7,10 @@
   "scripts": {
     "dev-frontend": "npm run dev --prefix frontend",
     "dev-backend": "npm run dev --prefix backend",
-    "dev": "concurrently \"npm run dev-frontend\" \"npm run dev-backend\""
+    "dev-python": "python -m uvicorn backend.data_extract.app:app --reload --port 8000",
+    "dev": "concurrently -n vite,node,python -c cyan,green,yellow \"npm run dev-frontend\" \"npm run dev-backend\" \"npm run dev-python\"",
+    "build": "npm run build --prefix frontend",
+    "start": "npm run start --prefix backend"
   },
   "devDependencies": {
     "@types/react": "^19.2.17",
