@@ -16,10 +16,10 @@ React (Vite dev :5173 / built bundle served by Node)
 Node.js / Express (:5000)          ← auth (Google ADC Vertex proxy), sessions, serves React bundle
   │  forwards /api, /extract, /ingest-status, /market, /search, /compare-metrics, /health
   ▼
-Python / FastAPI (:8000)           ← ALL Gemini calls (gemini-1.5-flash), RAG, SEC data, RavenDB
+Python / FastAPI (:8000)           ← ALL Gemini calls (gemini-3.1-lite), RAG, SEC data, RavenDB
 ```
 
-Only the Python service talks to Gemini (via `google-genai`, model `gemini-1.5-flash` by default). Node never calls Gemini; it owns browser sessions (signed cookie, `X-Session-Id` forwarded to Python), the authenticated Vertex AI proxy (`/api-proxy`, `/ws-proxy`), and serving the production frontend bundle.
+Only the Python service talks to Gemini (via `google-genai`, model `gemini-3.1-lite` by default). Node never calls Gemini; it owns browser sessions (signed cookie, `X-Session-Id` forwarded to Python), the authenticated Vertex AI proxy (`/api-proxy`, `/ws-proxy`), and serving the production frontend bundle.
 
 ## Prerequisites
 
@@ -54,7 +54,7 @@ Only the Python service talks to Gemini (via `google-genai`, model `gemini-1.5-f
 ### Python — `backend/.env.python`
 
 *   `GEMINI_API_KEY`: Gemini Developer API key. (If unset, `embeddings.get_genai_client()` falls back to Vertex mode via ADC.)
-*   `GEMINI_GEN_MODEL`: generation model (default `gemini-1.5-flash` — leave as is for now).
+*   `GEMINI_GEN_MODEL`: generation model (default `gemini-3.1-lite`; only set this to override).
 *   `RAVENDB_URLS` / `RAVENDB_DATABASE`: RavenDB vector store for RAG.
 *   `FRONTEND_ORIGIN`: CORS origin for direct access (default `http://localhost:5173`; irrelevant when calls go through Node).
 

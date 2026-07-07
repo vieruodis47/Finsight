@@ -108,7 +108,7 @@ Use when: iterating on the API, or the frontend runs elsewhere (local dev, Verce
 gcloud run deploy finsight-python \
   --image $REPO/finsight-python:v1 \
   --set-secrets GEMINI_API_KEY=GEMINI_API_KEY:latest \
-  --set-env-vars GEMINI_GEN_MODEL=gemini-1.5-flash,RAVENDB_URLS=<url>,RAVENDB_DATABASE=<db> \
+  --set-env-vars GEMINI_GEN_MODEL=gemini-3.1-lite,RAVENDB_URLS=<url>,RAVENDB_DATABASE=<db> \
   --memory 1Gi --cpu 1 \
   --min-instances 0 --max-instances 1 \
   --no-cpu-throttling \
