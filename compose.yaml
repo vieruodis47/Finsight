@@ -1,26 +1,36 @@
-networks:
-  default:
-    name: finsight_default
 services:
-  server:
+  node:
+    build:
+      context: .                          # repo root — both Dockerfiles need it
+      dockerfile: backend/Dockerfile.node
+    ports:
+      - "5000:5000"                       # the ONLY port your browser needs
+    environment:
+      - PY_BACKEND_URL=http://python:8000 # service name = hostname
+    env_file:
+      - backend/.env.local                # GOOGLE_CLOUD_*, PROXY_HEADER, SESSION_SECRET
+    depends_on:
+      - python
+
+  python:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: backend/Dockerfile.python
     environment:
-      - PYTHONUNBUFFERED=1
-    ports:
-      - 3000:3000
-    
-    web:
-      build: "finsight/web:latest"
-      ports:
-        - "8080:8080"
-      depends_on:
-        - database
-        - orchestration
-      networks:
-        - default
-    database:
-      image: "raven:latest"
-    orchestration:
-      image: "finsight/orchestration:latest"
+      - RAVENDB_URLS=http://ravendb:8080
+    env_file:
+      - backend/.env.python               # GEMINI_API_KEY, GEMINI_GEN_MODEL, RAVENDB_DATABASE
+    depends_on:
+      - ravendb
+    # no ports: — only node needs to reach it, and that happens on the internal network
+
+  ravendb:
+    image: ravendb/ravendb
+    environment:
+      - RAVEN_Setup_Mode=Unsecured        # local dev only
+      - RAVEN_License_Eula_Accepted=true
+    volumes:
+      - ravendb-data:/var/lib/ravendb/data  # survives docker compose down
+
+volumes:
+  ravendb-data:
