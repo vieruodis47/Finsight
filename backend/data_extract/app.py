@@ -239,12 +239,30 @@ def _run_ingest(
 
     except Exception as e:
         try:
-            from .embeddings import DailyQuotaExceededError
-            is_daily = isinstance(e, DailyQuotaExceededError)
+            from .embeddings import DailyQuotaExceededError, PerMinuteQuotaError
+            is_daily   = isinstance(e, DailyQuotaExceededError)
+            is_per_min = isinstance(e, PerMinuteQuotaError)
         except ImportError:
-            is_daily = False
+            is_daily   = False
+            is_per_min = False
 
-        if is_daily:
+        if is_per_min:
+            # Per-minute rate limit — retry after a short fixed backoff (~90s).
+            resume_after = (
+                datetime.now(timezone.utc) + timedelta(seconds=90)
+            ).isoformat()
+            logger.warning(
+                "Per-minute quota hit for %s %s — will retry after %s",
+                ticker, form, resume_after,
+            )
+            _set_job_status(
+                key, "waiting_for_quota",
+                error=str(e),
+                quota_resume_after=resume_after,
+                quota_attempt=1,
+                first_quota_hit_at=datetime.now(timezone.utc).isoformat(),
+            )
+        elif is_daily:
             with _status_lock:
                 old = _ingest_status.get(key, {})
                 quota_attempts = old.get("quota_attempts", 0) + 1

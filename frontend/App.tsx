@@ -23,7 +23,7 @@ import {
 const NAV_ITEMS: { view: ViewState; label: string; icon: React.ReactNode }[] = [
   { view: 'dashboard', label: 'Dashboard', icon: <LayoutDashboard size={17} /> },
   { view: 'documents', label: 'Documents',  icon: <Files size={17} /> },
-  { view: 'chat',      label: 'RAG chat',   icon: <MessageSquare size={17} /> },
+  { view: 'chat',      label: 'FinChat', icon: <MessageSquare size={17} /> },
   { view: 'analysis',  label: 'Analysis',   icon: <BarChart3 size={17} /> },
   { view: 'help', label: 'Help', icon: <HelpCircle size={17} /> },
 ];

@@ -71,20 +71,47 @@ def run(ticker: str, form_type: str = "10-K") -> dict:
         metrics = extract_all_metrics(company_facts, sections)
 
         # Derive fiscal year from the XBRL period-end date, not the filing date.
-        # A Dec-FY company (e.g. Meta, Amazon) files its annual 10-K in Jan/Feb of
-        # the following calendar year, so filing_date[:4] would be one year too high.
         period_end = xbrl.target_period_end(company_facts) or ""
         fiscal_year_end = period_end[:4] if period_end else filing["date"][:4]
+
+        # Multi-year metrics — one entry per fiscal year for YoY comparisons.
+        income_by_year    = xbrl.extract_income_multiyear(company_facts, n_years=5)
+        balance_by_year   = xbrl.extract_balance_multiyear(company_facts, n_years=5)
+        cash_flow_by_year = xbrl.extract_cash_flow_multiyear(company_facts, n_years=5)
+        all_years = sorted(
+            set(income_by_year) | set(balance_by_year) | set(cash_flow_by_year),
+            reverse=True,
+        )
+        metrics_by_year: dict = {}
+        for year in all_years:
+            income  = income_by_year.get(year, {}).get("income_statement", {})
+            balance = balance_by_year.get(year, {}).get("balance_sheet", {})
+            cf      = cash_flow_by_year.get(year, {}).get("cash_flow", {})
+            year_data: dict = {}
+            if income:
+                year_data["income_statement"] = income
+            if balance:
+                year_data["balance_sheet"] = balance
+            if cf:
+                year_data["cash_flow"] = cf
+            if income or balance:
+                ratios = compute_ratios(income, balance, cf)
+                if ratios:
+                    year_data["computed_ratios"] = ratios
+            if year_data:
+                metrics_by_year[year] = year_data
 
         return {
             "ticker": ticker.upper(),
             "form": form_type,
             "filing_date": filing["date"],
             "fiscal_year_end": fiscal_year_end,
+            "period_end": period_end,
             "accession_number": filing["accession"],
             "source_url": url,
             "char_count": len(text),
             "metrics": metrics,
+            "metrics_by_year": metrics_by_year,
             "sections": sections,
             "sector": sector,
         }
