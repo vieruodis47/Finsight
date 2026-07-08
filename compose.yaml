@@ -4,7 +4,7 @@ services:
       context: .
       dockerfile: backend/Dockerfile.node
     ports:
-      - "5000:5000"
+      - "5001:5000"  # 5001 on host (AirPlay Receiver owns *:5000 on macOS; use 5000:5000 in prod)
     environment:
       - PY_BACKEND_URL=http://python:8000
       - API_BACKEND_HOST=0.0.0.0
