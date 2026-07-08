@@ -3,6 +3,7 @@ import { Send, Bot, User, Loader2, FileText } from 'lucide-react';
 import { Document, ChatMessage } from '../types';
 import { askFinSight } from '../services/gemini';
 import { c, font } from '../theme';
+import { companyLabel } from '../utils/company';
 
 interface ChatInterfaceProps {
   documents: Document[];
@@ -42,34 +43,6 @@ const pathBadge = (path: string): React.CSSProperties => ({
 // ── Ticker → company name map ─────────────────────────────────────────────────
 // Covers common S&P 500 names. Falls back to the ticker if not found.
 
-const TICKER_NAMES: Record<string, string> = {
-  AAPL: 'Apple',        MSFT: 'Microsoft',     GOOGL: 'Alphabet',    GOOG: 'Alphabet',
-  AMZN: 'Amazon',       META: 'Meta',           NVDA: 'Nvidia',       TSLA: 'Tesla',
-  NFLX: 'Netflix',      INTC: 'Intel',          AMD: 'AMD',           QCOM: 'Qualcomm',
-  AVGO: 'Broadcom',     CRM: 'Salesforce',      ORCL: 'Oracle',       IBM: 'IBM',
-  AMAT: 'Applied Materials', MU: 'Micron',
-  JPM: 'JPMorgan',      BAC: 'Bank of America', WFC: 'Wells Fargo',   GS: 'Goldman Sachs',
-  MS: 'Morgan Stanley', AXP: 'American Express', V: 'Visa',           MA: 'Mastercard',
-  BRK: 'Berkshire',     JNJ: 'J&J',             UNH: 'UnitedHealth',
-  PFE: 'Pfizer',        MRK: 'Merck',           ABBV: 'AbbVie',       LLY: 'Eli Lilly',
-  XOM: 'ExxonMobil',    CVX: 'Chevron',         COP: 'ConocoPhillips',
-  WMT: 'Walmart',       TGT: 'Target',          COST: 'Costco',       HD: 'Home Depot',
-  MCD: "McDonald's",    NKE: 'Nike',            SBUX: 'Starbucks',    CMG: 'Chipotle',
-  DIS: 'Disney',        CMCSA: 'Comcast',
-  F: 'Ford',            GM: 'General Motors',
-  BA: 'Boeing',         LMT: 'Lockheed Martin', RTX: 'Raytheon',
-  CAT: 'Caterpillar',   DE: 'Deere',            MMM: '3M',
-  GE: 'GE',             HON: 'Honeywell',
-  HPQ: 'HP',            DELL: 'Dell',           HPE: 'HPE',
-  EL: 'Estée Lauder',   PG: 'P&G',              KO: 'Coca-Cola',      PEP: 'PepsiCo',
-  TPR: 'Tapestry',
-};
-
-// Returns the human-readable company name for a document, falling back to ticker.
-const companyLabel = (doc: Document): string => {
-  const ticker = doc.ticker?.toUpperCase();
-  return (ticker && TICKER_NAMES[ticker]) || ticker || doc.name;
-};
 
 // Returns "Name (TICKER)" when we have a proper name, plain ticker otherwise.
 const companyDisplay = (doc: Document): string => {

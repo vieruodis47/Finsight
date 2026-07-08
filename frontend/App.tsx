@@ -19,6 +19,7 @@ import {
   getIngestStatus, retryIngest,
   getUploadStatus, retryUpload,
 } from './services/gemini';
+import { companyKey } from './utils/company';
 
 const NAV_ITEMS: { view: ViewState; label: string; icon: React.ReactNode }[] = [
   { view: 'dashboard', label: 'Dashboard', icon: <LayoutDashboard size={17} /> },
@@ -37,7 +38,6 @@ const TOPBAR_SUBTITLES: Record<ViewState, string> = {
 };
 
 const FF = font.ui;
-const companyKey = (d: Document) => (d.ticker || d.name).toUpperCase();
 
 const App: React.FC = () => {
   const [showSplash, setShowSplash]         = useState(true);

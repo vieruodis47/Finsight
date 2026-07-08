@@ -7,6 +7,7 @@ import { Document } from '../types';
 import { c, font } from '../theme';
 import CompanyLogo from './CompanyLogo';
 import { fetchMarketData, MarketResponse } from '../services/gemini';
+import { companyKey } from '../utils/company';
 
 interface DashboardProps {
   documents: Document[];
@@ -87,7 +88,7 @@ const Stat: React.FC<{ label: string; value: string }> = ({ label, value }) => (
   </div>
 );
 
-const companyKey = (d: Document) => (d.ticker || d.name).toUpperCase();
+
 
 // --- Component ---------------------------------------------------------------
 
