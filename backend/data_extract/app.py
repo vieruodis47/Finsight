@@ -76,6 +76,7 @@ from .rag import router as chat_router
 from .market import router as market_router
 from .search import router as search_router
 from .compare_metrics import router as compare_metrics_router
+from .embeddings import DailyQuotaExceededError, PerMinuteQuotaError
 
 logger = logging.getLogger(__name__)
 
@@ -211,7 +212,7 @@ def _run_ingest(
     exponential backoff. Any other exception → failed.
     """
     try:
-        from .embeddings import ingest, check_already_indexed, DailyQuotaExceededError
+        from .embeddings import ingest, check_already_indexed
 
         is_indexed, n_existing = check_already_indexed(
             ticker, form, accession_number, source_url=source,
@@ -238,13 +239,8 @@ def _run_ingest(
         logger.info("Ingest complete: %s %s -> %d chunks stored", ticker, form, n)
 
     except Exception as e:
-        try:
-            from .embeddings import DailyQuotaExceededError, PerMinuteQuotaError
-            is_daily   = isinstance(e, DailyQuotaExceededError)
-            is_per_min = isinstance(e, PerMinuteQuotaError)
-        except ImportError:
-            is_daily   = False
-            is_per_min = False
+        is_daily   = isinstance(e, DailyQuotaExceededError)
+        is_per_min = isinstance(e, PerMinuteQuotaError)
 
         if is_per_min:
             # Per-minute rate limit — retry after a short fixed backoff (~90s).

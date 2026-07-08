@@ -549,11 +549,11 @@ def save_filing_metrics(
             # RavenDB forbids changing a document's collection via update — delete via
             # the HTTP API and recreate in the correct collection.
             import urllib.parse
-            import requests as _req
+            import requests as _requests
             base = store.urls[0].rstrip("/")
             db   = store.database
             enc  = urllib.parse.quote(mid, safe="")
-            _req.delete(f"{base}/databases/{db}/docs?id={enc}", timeout=10)
+            _requests.delete(f"{base}/databases/{db}/docs?id={enc}", timeout=10)
             logger.info("Deleted orphan doc %s from wrong collection — retrying in %s",
                         mid, METRICS_COLLECTION)
             _do_store(store, mid)
