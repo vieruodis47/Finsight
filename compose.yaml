@@ -1,0 +1,29 @@
+services:
+  node:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile.node
+    ports:
+      - "5001:5000"  # 5001 on host (AirPlay Receiver owns *:5000 on macOS; use 5000:5000 in prod)
+    environment:
+      - PY_BACKEND_URL=http://python:8000
+      - API_BACKEND_HOST=0.0.0.0
+    env_file:
+      - backend/.env.local
+    depends_on:
+      python:
+        condition: service_healthy
+
+  python:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile.python
+    environment:
+      - RAVENDB_URLS=http://host.docker.internal:8080  # standalone ravendb container on host, port 8080
+    env_file:
+      - backend/.env.python               # GEMINI_API_KEY, GEMINI_GEN_MODEL, RAVENDB_DATABASE
+    extra_hosts:
+      - "host.docker.internal:host-gateway"  # resolves to host on Linux; macOS Docker Desktop provides this natively
+    # no ports: — only node needs to reach it, and that happens on the internal network
+    # depends_on ravendb removed — python now uses the standalone host ravendb, not the compose service
+

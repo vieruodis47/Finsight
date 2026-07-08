@@ -10,7 +10,13 @@ import { GoogleAuth } from 'google-auth-library';
 import fetch from 'node-fetch';
 import rateLimit from 'express-rate-limit';
 import { WebSocketServer, WebSocket } from 'ws';
-import { askGemini } from "./services/gemini.js";
+import path from 'path';
+import fs from 'fs';
+import { fileURLToPath } from 'url';
+import { sessionMiddleware } from './services/session.js';
+import { pythonApiForwarder, PY_BACKEND_URL } from './services/pyProxy.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const app = express();
 app.use(express.json({limit: process?.env?.API_PAYLOAD_MAX_SIZE || "7mb"}));
@@ -183,29 +189,22 @@ function getRequestHeaders(accessToken) {
   };
 }
 
-app.post("/api/chat", async (req, res) => {
-  try {
-    const { question, context } = req.body;
+// --- Sessions ---
+// Node owns the browser session. A signed cookie identifies the session; the
+// session ID is forwarded to the Python service as X-Session-Id.
+app.use(sessionMiddleware);
 
-    if (!question || !context) {
-      return res.status(400).json({
-        error: "question and context are required",
-      });
-    }
-
-    const answer = await askGemini(question, context);
-
-    res.json({
-      answer,
-    });
-  } catch (error) {
-    console.error("Gemini Error:", error);
-
-    res.status(500).json({
-      error: "Failed to generate response.",
-    });
-  }
+app.get('/api/session', (req, res) => {
+  res.json({ sessionId: req.sessionID, createdAt: req.session.createdAt });
 });
+
+// --- FinSight API forwarding (Node -> Python/FastAPI) ---
+// All Gemini calls live in the Python service (backend/data_extract, port 8000).
+// Node forwards the FinSight API surface so the browser talks to one origin.
+// NOTE: '/api' does NOT match '/api-proxy' (Express mounts on path boundaries),
+// so the Vertex AI proxy below is unaffected.
+const PY_ROUTES = ['/api', '/extract', '/ingest-status', '/market', '/search', '/compare-metrics', '/health'];
+app.use(PY_ROUTES, pythonApiForwarder);
 
 // --- Proxy Endpoint ---
 app.post('/api-proxy', async (req, res) => {
@@ -348,8 +347,20 @@ app.post('/api-proxy', async (req, res) => {
   }
 });
 
+// --- Production static serving ---
+// In Docker the React bundle is copied to /app/frontend/dist by Dockerfile.node.
+// Only activate when the dist directory actually exists so dev mode (no build) still works.
+const FRONTEND_DIST = path.join(__dirname, '..', 'frontend', 'dist');
+if (fs.existsSync(FRONTEND_DIST)) {
+  app.use(express.static(FRONTEND_DIST));
+  // SPA catch-all: unknown routes → index.html so client-side routing works.
+  // Express 5 / path-to-regexp v8 requires a named wildcard; bare '*' throws.
+  app.get('/{*path}', (_req, res) => res.sendFile(path.join(FRONTEND_DIST, 'index.html')));
+  console.log(`[Node] Serving static frontend from ${FRONTEND_DIST}`);
+}
+
 const server = app.listen(PORT, API_BACKEND_HOST, () => {
-  console.log(`Vertex AI Backend listening at http://localhost:${PORT}`);
+  console.log(`FinSight Node server listening at http://${API_BACKEND_HOST}:${PORT}`);
 });
 
 
