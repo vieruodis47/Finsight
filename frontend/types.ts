@@ -1,3 +1,5 @@
+// 'indexed' = embedding complete and chunks stored in RavenDB (searchable via RAG).
+// 'waiting_for_quota' = Gemini daily embedding quota exhausted; retrying with backoff.
 export type IndexStatus = 'queued' | 'indexing' | 'indexed' | 'failed' | 'waiting_for_quota';
 
 export interface Document {
