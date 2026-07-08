@@ -35,19 +35,23 @@ jobs:
 
       - name: Build python-service image
         run: |
-          gcloud builds submit . \
-            --config backend/cloudbuild-python.yaml \
-            --substitutions=_TAG=${{ github.sha }} \
-            --suppress-logs \
-            --project=${{ env.PROJECT }}
+          docker build \
+            -f backend/Dockerfile.python \
+            -t ${{ env.REGISTRY }}/python-service:${{ github.sha }} \
+            -t ${{ env.REGISTRY }}/python-service:latest \
+            .
+          docker push ${{ env.REGISTRY }}/python-service:${{ github.sha }}
+          docker push ${{ env.REGISTRY }}/python-service:latest
 
       - name: Build node-service image
         run: |
-          gcloud builds submit . \
-            --config backend/cloudbuild-node.yaml \
-            --substitutions=_TAG=${{ github.sha }} \
-            --suppress-logs \
-            --project=${{ env.PROJECT }}
+          docker build \
+            -f backend/Dockerfile.node \
+            -t ${{ env.REGISTRY }}/node-service:${{ github.sha }} \
+            -t ${{ env.REGISTRY }}/node-service:latest \
+            .
+          docker push ${{ env.REGISTRY }}/node-service:${{ github.sha }}
+          docker push ${{ env.REGISTRY }}/node-service:latest
 
       - name: Deploy python-service (image only — preserves all env vars and secret mounts)
         run: |
