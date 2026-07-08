@@ -51,3 +51,7 @@ export const font = {
   ui:    "'Inter', system-ui, sans-serif",
   prose: "'Libre Baskerville', Georgia, serif",
 } as const;
+
+export const breakpoint = {
+  tablet: 1024,
+} as const;
