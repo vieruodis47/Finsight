@@ -3,6 +3,7 @@ import { Search, TrendingUp, Layers, MessageSquare } from 'lucide-react';
 import { c, font } from '../theme';
 import { searchCompanies, SearchResult } from '../services/gemini';
 import SearchDropdown from './SearchDropdown';
+import { useDebounce } from '../utils/hooks';
 
 interface GettingStartedProps {
   onAddCompany: (query: string) => void;
@@ -39,19 +40,16 @@ const GettingStarted: React.FC<GettingStartedProps> = ({ onAddCompany }) => {
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Debounced search — fires 200 ms after the user stops typing.
+  const debouncedQuery = useDebounce(query, 200);
   useEffect(() => {
-    const q = query.trim();
+    const q = debouncedQuery.trim();
     if (!q) { setSuggestions([]); setShowDrop(false); return; }
-
-    const timer = setTimeout(async () => {
-      const results = await searchCompanies(q);
+    searchCompanies(q).then(results => {
       setSuggestions(results);
       setShowDrop(results.length > 0);
       setHighlightIdx(-1);
-    }, 200);
-
-    return () => clearTimeout(timer);
-  }, [query]);
+    });
+  }, [debouncedQuery]);
 
   const selectSuggestion = (s: SearchResult) => {
     setShowDrop(false);
