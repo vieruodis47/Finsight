@@ -38,6 +38,7 @@ jobs:
           gcloud builds submit . \
             --config backend/cloudbuild-python.yaml \
             --substitutions=_TAG=${{ github.sha }} \
+            --suppress-logs \
             --project=${{ env.PROJECT }}
 
       - name: Build node-service image
@@ -45,6 +46,7 @@ jobs:
           gcloud builds submit . \
             --config backend/cloudbuild-node.yaml \
             --substitutions=_TAG=${{ github.sha }} \
+            --suppress-logs \
             --project=${{ env.PROJECT }}
 
       - name: Deploy python-service (image only — preserves all env vars and secret mounts)
