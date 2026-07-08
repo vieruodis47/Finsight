@@ -10,7 +10,13 @@ import { GoogleAuth } from 'google-auth-library';
 import fetch from 'node-fetch';
 import rateLimit from 'express-rate-limit';
 import { WebSocketServer, WebSocket } from 'ws';
-import { askGemini } from "./services/gemini.js";
+import path from 'path';
+import fs from 'fs';
+import { fileURLToPath } from 'url';
+import { sessionMiddleware } from './services/session.js';
+import { pythonApiForwarder, PY_BACKEND_URL } from './services/pyProxy.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const app = express();
 app.use(express.json({limit: process?.env?.API_PAYLOAD_MAX_SIZE || "7mb"}));
@@ -183,29 +189,22 @@ function getRequestHeaders(accessToken) {
   };
 }
 
-app.post("/api/chat", async (req, res) => {
-  try {
-    const { question, context } = req.body;
+// --- Sessions ---
+// Node owns the browser session. A signed cookie identifies the session; the
+// session ID is forwarded to the Python service as X-Session-Id.
+app.use(sessionMiddleware);
 
-    if (!question || !context) {
-      return res.status(400).json({
-        error: "question and context are required",
-      });
-    }
-
-    const answer = await askGemini(question, context);
-
-    res.json({
-      answer,
-    });
-  } catch (error) {
-    console.error("Gemini Error:", error);
-
-    res.status(500).json({
-      error: "Failed to generate response.",
-    });
-  }
+app.get('/api/session', (req, res) => {
+  res.json({ sessionId: req.sessionID, createdAt: req.session.createdAt });
 });
+
+// --- FinSight API forwarding (Node -> Python/FastAPI) ---
+// All Gemini calls live in the Python service (backend/data_extract, port 8000).
+// Node forwards the FinSight API surface so the browser talks to one origin.
+// NOTE: '/api' does NOT match '/api-proxy' (Express mounts on path boundaries),
+// so the Vertex AI proxy below is unaffected.
+const PY_ROUTES = ['/api', '/extract', '/ingest-status', '/market', '/search', '/compare-metrics', '/health'];
+app.use(PY_ROUTES, pythonApiForwarder);
 
 // --- Proxy Endpoint ---
 app.post('/api-proxy', async (req, res) => {
@@ -348,8 +347,27 @@ app.post('/api-proxy', async (req, res) => {
   }
 });
 
+// --- Serve the React bundle (production) ---
+// In dev, Vite (:5173) serves the frontend and proxies API calls here.
+// In production, build first (`npm run build --prefix frontend`), then Node
+// serves frontend/dist directly.
+const FRONTEND_DIST = path.resolve(__dirname, '../frontend/dist');
+if (fs.existsSync(FRONTEND_DIST)) {
+  app.use(express.static(FRONTEND_DIST));
+  // SPA fallback: any unmatched GET that accepts HTML gets index.html.
+  app.use((req, res, next) => {
+    if (req.method === 'GET' && req.accepts('html')) {
+      return res.sendFile(path.join(FRONTEND_DIST, 'index.html'));
+    }
+    next();
+  });
+  console.log(`Serving React bundle from ${FRONTEND_DIST}`);
+} else {
+  console.log('No frontend/dist found - dev mode (use Vite on :5173) or run: npm run build --prefix frontend');
+}
+
 const server = app.listen(PORT, API_BACKEND_HOST, () => {
-  console.log(`Vertex AI Backend listening at http://localhost:${PORT}`);
+  console.log(`FinSight Node server listening at http://localhost:${PORT} (FinSight API -> ${PY_BACKEND_URL})`);
 });
 
 
