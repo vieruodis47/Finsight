@@ -1,0 +1,14 @@
+steps:
+- name: 'gcr.io/cloud-builders/docker'
+  args:
+  - build
+  - -f
+  - backend/Dockerfile.node
+  - -t
+  - us-central1-docker.pkg.dev/project-36a4970e-04a7-4bb6-b8d/finsight/node-service:$_TAG
+  - -t
+  - us-central1-docker.pkg.dev/project-36a4970e-04a7-4bb6-b8d/finsight/node-service:latest
+  - .
+images:
+- us-central1-docker.pkg.dev/project-36a4970e-04a7-4bb6-b8d/finsight/node-service:$_TAG
+- us-central1-docker.pkg.dev/project-36a4970e-04a7-4bb6-b8d/finsight/node-service:latest
