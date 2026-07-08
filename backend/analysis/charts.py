@@ -777,7 +777,7 @@ def answer_metric_query(user_query, all_raw_metrics, all_ratios, all_figures):
 # DYNAMIC SINGLE OR DUAL COMPANY EXECUTION ENGINE
 # =====================================================================
 
-if __name__ == "__main__":
+def main() -> None:
     from metrics import (
         COMPANIES, COMPANY_NAMES,
         get_company_metrics, calculate_ratios,
@@ -986,3 +986,7 @@ if __name__ == "__main__":
             print(f"📊 Chart Link Established: '{matched_chart.layout.title.text}'")
         else:
             print("💡 Tip: Try keywords like 'Revenue', 'Operating Income', 'Net Income', or 'Gross Margin'.")
+
+
+if __name__ == "__main__":
+    main()
