@@ -24,7 +24,10 @@ drop stale hits entirely and leave the field absent rather than pollute the outp
 with cross-year contamination.
 """
 
+from __future__ import annotations
+
 from datetime import date
+from typing import Optional
 
 # field -> ordered list of candidate us-gaap concepts. Multiple candidates
 # because filers tag the same line differently / older filings use legacy tags.
@@ -183,7 +186,7 @@ def target_period_end(facts):
     return max(ends) if ends else None
 
 
-def _pick(facts, concepts, unit="USD", target_end=None):
+def _pick(facts: dict, concepts: list[str], unit: str = "USD", target_end: Optional[str] = None) -> Optional[dict]:
     """First candidate concept with a value anchored to ``target_end``.
 
     Resolution order, per the candidate list:
