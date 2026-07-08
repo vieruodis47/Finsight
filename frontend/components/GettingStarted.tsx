@@ -115,8 +115,8 @@ const GettingStarted: React.FC<GettingStartedProps> = ({ onAddCompany }) => {
 
         {/* Search row + dropdown — wrapper is the positioning root */}
         <div style={{ position: 'relative', width: '100%', maxWidth: 480, marginBottom: 16 }}>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <div style={{ position: 'relative', flex: 1 }}>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <div style={{ position: 'relative', flex: 1, minWidth: 200 }}>
               <Search
                 size={18}
                 color={c.textFaint}

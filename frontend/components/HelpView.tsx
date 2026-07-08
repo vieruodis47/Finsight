@@ -177,7 +177,7 @@ const HelpView: React.FC = () => {
       </div>
 
       {/* Good vs bad questions */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 20 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 14, marginBottom: 20 }}>
 
         <div style={{ border: `0.5px solid ${c.border}`, borderRadius: 10, overflow: 'hidden' }}>
           <div style={{ padding: '11px 14px', borderBottom: `0.5px solid ${c.border}`, background: c.posSurface, display: 'flex', alignItems: 'center', gap: 7 }}>
@@ -215,7 +215,7 @@ const HelpView: React.FC = () => {
         <div style={{ padding: '11px 14px', borderBottom: `0.5px solid ${c.border}`, background: c.surface }}>
           <p style={{ fontSize: 12, fontWeight: 500, color: c.text2, margin: 0 }}>4 tips for better answers</p>
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))' }}>
           {TIPS.map(({ icon, title, body }, i) => (
             <div
               key={i}
