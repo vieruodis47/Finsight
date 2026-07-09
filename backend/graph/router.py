@@ -30,6 +30,7 @@ import logging
 import os
 import re
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 from rdflib import Graph
@@ -1048,14 +1049,23 @@ def route_question(
         # Surface the fallback honestly so the frontend can show a distinct indicator.
         return ans, chunks, "vector_no_graph" if vpath == "vector" else vpath
 
-    # path == "both": run both, merge if possible
-    graph_ans, had_graph = _answer_from_graph(question)
-    try:
-        vec_ans, chunks = answer_question(question, k=k, ticker=ticker, form=form)
-    except DailyQuotaExceededError:
-        vec_ans, chunks = _QUOTA_MSG, []
-    except PerMinuteQuotaError:
-        vec_ans, chunks = _PER_MINUTE_QUOTA_MSG, []
+    # path == "both": run both retrieval paths concurrently. Both are read-only
+    # w.r.t. the rdflib graph within a single request — the only writer is
+    # register_filing(), called from /extract, not from either function here.
+    # See _answer_from_graph / answer_question for the read-only trace.
+    def _run_vector() -> tuple[str, list]:
+        try:
+            return answer_question(question, k=k, ticker=ticker, form=form)
+        except DailyQuotaExceededError:
+            return _QUOTA_MSG, []
+        except PerMinuteQuotaError:
+            return _PER_MINUTE_QUOTA_MSG, []
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        fut_graph = pool.submit(_answer_from_graph, question)
+        fut_vector = pool.submit(_run_vector)
+        graph_ans, had_graph = fut_graph.result()
+        vec_ans, chunks = fut_vector.result()
 
     if had_graph and chunks:
         merged = (
