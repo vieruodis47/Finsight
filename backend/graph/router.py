@@ -74,6 +74,29 @@ def register_filing(result: dict, persist: bool = True) -> None:
         _dirty = True
     logger.info("Graph registry: registered %s (%d total)", ticker, len(_registry))
 
+    # Invalidate any /compare-metrics cache entries for this ticker -- a fresh
+    # register_filing() call (from any of its three callers) is our signal
+    # that new XBRL data may exist upstream for this ticker. Fail closed: if
+    # the targeted invalidation can't be trusted to have run, drop the whole
+    # cache rather than risk serving a stale comparison.
+    try:
+        from ..data_extract.compare_metrics import invalidate_ticker
+        invalidate_ticker(ticker)
+    except Exception as e:
+        try:
+            from ..data_extract.compare_metrics import clear_cache
+            clear_cache()
+        except Exception:
+            logger.error(
+                "compare-metrics cache invalidation AND fail-safe clear both "
+                "failed for %s -- cache may now be stale: %s", ticker, e,
+            )
+        else:
+            logger.warning(
+                "compare-metrics cache invalidation failed for %s -- cleared "
+                "entire cache as a fail-safe: %s", ticker, e,
+            )
+
     if not persist:
         return
 

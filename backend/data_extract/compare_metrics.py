@@ -4,8 +4,19 @@ GET /compare-metrics?a=AAPL&b=MSFT
 Returns Recharts-ready multi-year comparison data for two tickers.
 Inlines the XBRL extraction logic from analysis/metrics.py so no
 cross-package import is needed.
+
+In-process cache, keyed on frozenset({a, b}) so order doesn't matter.
+Primary invalidation is ingest-based: invalidate_ticker() is wired into
+graph.router.register_filing() and fires on every fresh filing ingest through
+that path, with a fail-closed full clear if it can't be trusted to have run.
+Cached response dicts are stored and returned by reference -- safe because
+compare_metrics() is only ever reached through the FastAPI route and consumed
+across the HTTP/JSON boundary; nothing in-process holds or mutates the object
+after return.
 """
 
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
@@ -14,6 +25,39 @@ from fastapi import APIRouter, HTTPException, Query
 from .sec_client import get_cik, get_company_facts
 
 router = APIRouter()
+
+# Belt-and-suspenders TTL on top of ingest-based invalidation -- NOT because
+# the underlying XBRL expires (it's immutable once ingested), but because
+# backend/scripts/bulk_ingest.py ingests filings in a separate OS process that
+# never calls register_filing() and so cannot reach or invalidate this
+# in-process cache. Bounds worst-case staleness to 1h instead of "until this
+# process happens to restart."
+_CACHE_TTL_SECONDS = 3600
+_cache: dict[frozenset[str], tuple[float, dict]] = {}
+_cache_lock = threading.Lock()
+
+
+def invalidate_ticker(ticker: str) -> None:
+    """Drop every cached pair that includes this ticker.
+
+    Called from graph.router.register_filing() whenever a filing is
+    (re-)ingested for a ticker -- that's our signal that fresh XBRL data may
+    now exist upstream, so any cached pair including it is potentially stale.
+    """
+    ticker = ticker.upper()
+    with _cache_lock:
+        stale = [key for key in _cache if ticker in key]
+        for key in stale:
+            del _cache[key]
+
+
+def clear_cache() -> None:
+    """Drop the entire cache. Fail-safe for when invalidate_ticker() can't be
+    trusted to have removed the right entries -- losing the cache is cheap,
+    serving a stale comparison is not."""
+    with _cache_lock:
+        _cache.clear()
+
 
 # ── XBRL field name lists (fallback order) ─────────────────────────────────
 
@@ -172,6 +216,20 @@ def _fetch_ticker(ticker: str) -> dict:
 def compare_metrics(a: str = Query(...), b: str = Query(...)):
     """Return Recharts-ready multi-year comparison data for two tickers."""
     a, b = a.upper().strip(), b.upper().strip()
+    cache_key = frozenset({a, b})
+
+    with _cache_lock:
+        cached = _cache.get(cache_key)
+    if cached is not None:
+        cached_at, cached_data = cached
+        if time.monotonic() - cached_at < _CACHE_TTL_SECONDS:
+            # Returned by reference, not copied: this dict is shared with the
+            # cache entry. Safe today because this route has no response_model
+            # (FastAPI's jsonable_encoder builds a new structure, never mutates
+            # the input) and no other code in the repo calls compare_metrics()
+            # directly. If either of those stops being true, mutate a
+            # copy.deepcopy() of this, never the object itself.
+            return cached_data
 
     try:
         with ThreadPoolExecutor(max_workers=2) as pool:
@@ -187,7 +245,19 @@ def compare_metrics(a: str = Query(...), b: str = Query(...)):
     series_a = _compute(_pull(facts_a))
     series_b = _compute(_pull(facts_b))
 
-    return {
+    result = {
         "tickers": {"a": a, "b": b},
         **{k: _merge(series_a, series_b, k) for k in _SERIES_KEYS},
     }
+
+    with _cache_lock:
+        now = time.monotonic()
+        # Single-pass eviction of expired entries on write, same as #3's
+        # /market cache, so the dict doesn't grow unbounded over the process
+        # lifetime.
+        expired = [k for k, (cached_at, _) in _cache.items() if now - cached_at >= _CACHE_TTL_SECONDS]
+        for k in expired:
+            del _cache[k]
+        _cache[cache_key] = (now, result)
+
+    return result
