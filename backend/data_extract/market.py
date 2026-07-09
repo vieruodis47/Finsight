@@ -7,14 +7,31 @@ cap, volume, 52-week range, P/E) plus a daily close series.
 
 Self-contained on purpose: it calls yfinance directly rather than importing the
 analysis/ pipeline, so the market route has no cross-package dependency.
+
+In-process cache, 60s TTL, keyed on (ticker, period) — not ticker alone, since
+period changes the returned history/snapshot. Time-based only: market prices
+aren't tied to ingested filings, so no ingest event invalidates this.
+
+Not a request-coalescing cache: the lock only protects the dict itself from
+concurrent-write corruption, not the check-then-fetch sequence. Two requests
+that miss on the same key at the same time will both hit yfinance and both
+write the result — last write wins. Acceptable here since both calls fetch
+the same data; this is not a cache to rely on for de-duplicating in-flight
+upstream calls.
 """
 
+import threading
+import time
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, HTTPException
 import yfinance as yf
 
 router = APIRouter(prefix="/market", tags=["market"])
+
+_CACHE_TTL_SECONDS = 60
+_cache: dict[tuple[str, str], tuple[float, dict]] = {}
+_cache_lock = threading.Lock()
 
 
 def _extract_domain(url: str) -> str | None:
@@ -32,6 +49,14 @@ def get_market(ticker: str, period: str = "1y"):
     period: '1mo','3mo','6mo','1y','2y','5y','max'
     """
     ticker = ticker.strip().upper()
+    cache_key = (ticker, period)
+
+    with _cache_lock:
+        cached = _cache.get(cache_key)
+    if cached is not None:
+        cached_at, cached_data = cached
+        if time.monotonic() - cached_at < _CACHE_TTL_SECONDS:
+            return cached_data
 
     try:
         t = yf.Ticker(ticker)
@@ -68,4 +93,15 @@ def get_market(ticker: str, period: str = "1y"):
         "website":    _extract_domain(info.get("website", "")),
     }
 
-    return {"ticker": ticker, "period": period, "snapshot": snapshot, "history": history}
+    result = {"ticker": ticker, "period": period, "snapshot": snapshot, "history": history}
+
+    with _cache_lock:
+        now = time.monotonic()
+        # Single pass eviction of expired entries on write, so the dict doesn't
+        # grow unbounded across many tickers x periods over the process lifetime.
+        expired = [k for k, (cached_at, _) in _cache.items() if now - cached_at >= _CACHE_TTL_SECONDS]
+        for k in expired:
+            del _cache[k]
+        _cache[cache_key] = (now, result)
+
+    return result
