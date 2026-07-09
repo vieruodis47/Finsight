@@ -40,6 +40,11 @@ SECTOR_LABELS: dict[str, str] = {sid: label for sid, label, _ in SECTORS}
 SECTOR_ETF: dict[str, str] = {sid: etf for sid, _, etf in SECTORS}
 
 
+# SIC ranges below are derived from the SEC's official SIC code list:
+# https://www.sec.gov/info/edgar/siccodes.htm
+# Each GICS sector maps to one or more non-contiguous SIC ranges; the order
+# of checks matters — narrower carve-outs (Real Estate, Health Care, IT) must
+# come before the broad Financials/Industrials bands that would otherwise absorb them.
 def _in_any(code: int, ranges: list[tuple[int, int]]) -> bool:
     return any(lo <= code <= hi for lo, hi in ranges)
 

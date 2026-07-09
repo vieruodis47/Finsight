@@ -75,29 +75,31 @@ const renderMarkdown = (text: string): React.ReactNode => {
       // Drop separator rows (|---|---|)
       const rows = tableLines.filter(l => !/^\|[\s|:-]+\|$/.test(l.trim()));
       nodes.push(
-        <table key={`tbl-${i}`} style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, marginBottom: 14 }}>
-          <tbody>
-            {rows.map((row, ri) => {
-              const cells = row.split('|').slice(1, -1); // trim leading/trailing pipes
-              const isHeader = ri === 0;
-              return (
-                <tr key={ri}>
-                  {cells.map((cell, ci) =>
-                    isHeader ? (
-                      <th key={ci} style={{ padding: '5px 12px', textAlign: 'left', fontWeight: 600, borderBottom: `1px solid ${c.border}`, color: c.text, fontFamily: FF }}>
-                        {cell.trim()}
-                      </th>
-                    ) : (
-                      <td key={ci} style={{ padding: '5px 12px', borderBottom: `0.5px solid ${c.borderFaint}`, color: c.text2 }}>
-                        {parseBold(cell.trim())}
-                      </td>
-                    )
-                  )}
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+        <div key={`tbl-${i}`} style={{ overflowX: 'auto', marginBottom: 14 }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+            <tbody>
+              {rows.map((row, ri) => {
+                const cells = row.split('|').slice(1, -1); // trim leading/trailing pipes
+                const isHeader = ri === 0;
+                return (
+                  <tr key={ri}>
+                    {cells.map((cell, ci) =>
+                      isHeader ? (
+                        <th key={ci} style={{ padding: '5px 12px', textAlign: 'left', fontWeight: 600, borderBottom: `1px solid ${c.border}`, color: c.text, fontFamily: FF }}>
+                          {cell.trim()}
+                        </th>
+                      ) : (
+                        <td key={ci} style={{ padding: '5px 12px', borderBottom: `0.5px solid ${c.borderFaint}`, color: c.text2 }}>
+                          {parseBold(cell.trim())}
+                        </td>
+                      )
+                    )}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       );
       continue;
     }
@@ -190,7 +192,7 @@ const CompareCharts: React.FC<{ data: CompareMetricsResult }> = ({ data }) => {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
 
       {/* Row 1: Revenue | Net Income */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 12 }}>
         <ChartPanel title="Revenue">
           <ResponsiveContainer width="100%" height={210}>
             <BarChart data={data.revenue} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
@@ -222,7 +224,7 @@ const CompareCharts: React.FC<{ data: CompareMetricsResult }> = ({ data }) => {
       </div>
 
       {/* Row 2: Gross Margin | Operating Margin | Net Margin */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 12 }}>
         {(
           [
             ['gross_margin_pct',     'Gross Margin %'],
@@ -248,7 +250,7 @@ const CompareCharts: React.FC<{ data: CompareMetricsResult }> = ({ data }) => {
       </div>
 
       {/* Row 3: Revenue Growth | Free Cash Flow */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 12 }}>
         <ChartPanel title="Revenue Growth %">
           <ResponsiveContainer width="100%" height={200}>
             <BarChart data={data.revenue_growth_pct} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
@@ -281,7 +283,7 @@ const CompareCharts: React.FC<{ data: CompareMetricsResult }> = ({ data }) => {
       </div>
 
       {/* Row 4: Debt-to-Equity | Current Ratio */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 12 }}>
         <ChartPanel title="Debt-to-Equity">
           <ResponsiveContainer width="100%" height={180}>
             <LineChart data={data.debt_to_equity} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
@@ -468,7 +470,7 @@ const AnalysisView: React.FC<AnalysisViewProps> = ({ documents }) => {
       {mode === 'compare' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
           <div style={{ background: c.bg, border: `0.5px solid ${c.border}`, borderRadius: 10, padding: '16px 18px' }}>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 14 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 14, marginBottom: 14 }}>
 
               {/* Document A */}
               <div>

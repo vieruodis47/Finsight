@@ -35,6 +35,7 @@ from typing import Optional
 from rdflib import Graph
 
 from .rdf_graph import build_graph, run_sparql, results_to_markdown, MULTI_METRIC_QUERY
+from ..data_extract.embeddings import DailyQuotaExceededError, PerMinuteQuotaError
 
 logger = logging.getLogger(__name__)
 
@@ -1025,7 +1026,6 @@ def route_question(
     )
 
     def _vector() -> tuple[str, list, str]:
-        from ..data_extract.embeddings import DailyQuotaExceededError, PerMinuteQuotaError
         try:
             ans, chunks = answer_question(question, k=k, ticker=ticker, form=form)
         except DailyQuotaExceededError:
@@ -1050,7 +1050,6 @@ def route_question(
 
     # path == "both": run both, merge if possible
     graph_ans, had_graph = _answer_from_graph(question)
-    from ..data_extract.embeddings import DailyQuotaExceededError, PerMinuteQuotaError
     try:
         vec_ans, chunks = answer_question(question, k=k, ticker=ticker, form=form)
     except DailyQuotaExceededError:

@@ -71,6 +71,7 @@ logger = logging.getLogger(__name__)
 
 RAVENDB_URLS = [u.strip() for u in os.getenv("RAVENDB_URLS", "http://127.0.0.1:8080").split(",")]
 RAVENDB_DATABASE = os.getenv("RAVENDB_DATABASE", "finsight")
+RAVENDB_CERT_PATH = os.getenv("RAVENDB_CERT_PATH")  # set for RavenDB Cloud; unset for local dev
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GOOGLE_CLOUD_PROJECT = os.getenv("GOOGLE_CLOUD_PROJECT")
@@ -101,6 +102,9 @@ def get_store() -> DocumentStore:
     global _store
     if _store is None:
         store = DocumentStore(RAVENDB_URLS, RAVENDB_DATABASE)
+
+        if RAVENDB_CERT_PATH:
+            store.certificate_pem_path = RAVENDB_CERT_PATH
 
         # The RavenDB Python client uses inflect to pluralize class names for
         # collection names.  "FilingMetrics" (already plural in English) becomes
@@ -549,11 +553,11 @@ def save_filing_metrics(
             # RavenDB forbids changing a document's collection via update — delete via
             # the HTTP API and recreate in the correct collection.
             import urllib.parse
-            import requests as _req
+            import requests as _requests
             base = store.urls[0].rstrip("/")
             db   = store.database
             enc  = urllib.parse.quote(mid, safe="")
-            _req.delete(f"{base}/databases/{db}/docs?id={enc}", timeout=10)
+            _requests.delete(f"{base}/databases/{db}/docs?id={enc}", timeout=10)
             logger.info("Deleted orphan doc %s from wrong collection — retrying in %s",
                         mid, METRICS_COLLECTION)
             _do_store(store, mid)

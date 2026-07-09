@@ -19,6 +19,8 @@ import {
   getIngestStatus, retryIngest,
   getUploadStatus, retryUpload,
 } from './services/gemini';
+import { companyKey } from './utils/company';
+import { useIsTablet } from './utils/hooks';
 
 const NAV_ITEMS: { view: ViewState; label: string; icon: React.ReactNode }[] = [
   { view: 'dashboard', label: 'Dashboard', icon: <LayoutDashboard size={17} /> },
@@ -37,14 +39,16 @@ const TOPBAR_SUBTITLES: Record<ViewState, string> = {
 };
 
 const FF = font.ui;
-const companyKey = (d: Document) => (d.ticker || d.name).toUpperCase();
 
 const App: React.FC = () => {
+  const isTablet = useIsTablet();
   const [showSplash, setShowSplash]         = useState(true);
   const [currentView, setCurrentView]       = useState<ViewState>('dashboard');
   const [documents, setDocuments]           = useState<Document[]>([]);
   const [collapsed, setCollapsed]           = useState(false);
   const [selectedTicker, setSelectedTicker] = useState<string | null>(null);
+
+  React.useEffect(() => { setCollapsed(isTablet); }, [isTablet]);
 
   const [hoveredCompany, setHoveredCompany] = useState<string | null>(null);
 

@@ -7,6 +7,7 @@ import { Document } from '../types';
 import { c, font } from '../theme';
 import CompanyLogo from './CompanyLogo';
 import { fetchMarketData, MarketResponse } from '../services/gemini';
+import { companyKey } from '../utils/company';
 
 interface DashboardProps {
   documents: Document[];
@@ -87,7 +88,7 @@ const Stat: React.FC<{ label: string; value: string }> = ({ label, value }) => (
   </div>
 );
 
-const companyKey = (d: Document) => (d.ticker || d.name).toUpperCase();
+
 
 // --- Component ---------------------------------------------------------------
 
@@ -158,7 +159,7 @@ const Dashboard: React.FC<DashboardProps> = ({ documents, selectedTicker }) => {
       )}
 
       {/* Filing fundamentals — from the extractor */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 16 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10, marginBottom: 16 }}>
         <MetricCard label="Revenue"          value={fmtUSD(rev)} />
         <MetricCard label="Gross margin"     value={fmtPct(grossPct)} note={inc?.gross_margin_millions != null ? `${fmtUSD(inc.gross_margin_millions)} gross profit` : undefined} />
         <MetricCard label="Operating income" value={fmtUSD(inc?.operating_income_millions)} note={opPct != null ? `${fmtPct(opPct)} margin` : undefined} />
@@ -170,7 +171,7 @@ const Dashboard: React.FC<DashboardProps> = ({ documents, selectedTicker }) => {
       </div>
 
       {/* Margin breakdown (filled) + Market snapshot (live) */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 12, marginBottom: 12 }}>
 
         <div style={panel}>
           <p style={panelTitle}>Margin breakdown</p>

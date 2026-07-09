@@ -30,4 +30,8 @@ USER node
 EXPOSE 5000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
     CMD node -e "fetch('http://localhost:5000/health').then(r => process.exit(r.ok ? 0 : 1))"
+<<<<<<< HEAD
 CMD ["node", "backend/server.js"]
+=======
+CMD ["node", "backend/server.js"]
+>>>>>>> cfd2a823066af4e8a727c06e2762e45bc35843ac

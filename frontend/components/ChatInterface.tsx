@@ -1,8 +1,10 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, Bot, User, Loader2, FileText } from 'lucide-react';
+import { Send, Bot, User, Loader2, FileText, ChevronRight, ChevronLeft } from 'lucide-react';
 import { Document, ChatMessage } from '../types';
 import { askFinSight } from '../services/gemini';
 import { c, font } from '../theme';
+import { companyLabel } from '../utils/company';
+import { useIsTablet } from '../utils/hooks';
 
 interface ChatInterfaceProps {
   documents: Document[];
@@ -42,34 +44,6 @@ const pathBadge = (path: string): React.CSSProperties => ({
 // ── Ticker → company name map ─────────────────────────────────────────────────
 // Covers common S&P 500 names. Falls back to the ticker if not found.
 
-const TICKER_NAMES: Record<string, string> = {
-  AAPL: 'Apple',        MSFT: 'Microsoft',     GOOGL: 'Alphabet',    GOOG: 'Alphabet',
-  AMZN: 'Amazon',       META: 'Meta',           NVDA: 'Nvidia',       TSLA: 'Tesla',
-  NFLX: 'Netflix',      INTC: 'Intel',          AMD: 'AMD',           QCOM: 'Qualcomm',
-  AVGO: 'Broadcom',     CRM: 'Salesforce',      ORCL: 'Oracle',       IBM: 'IBM',
-  AMAT: 'Applied Materials', MU: 'Micron',
-  JPM: 'JPMorgan',      BAC: 'Bank of America', WFC: 'Wells Fargo',   GS: 'Goldman Sachs',
-  MS: 'Morgan Stanley', AXP: 'American Express', V: 'Visa',           MA: 'Mastercard',
-  BRK: 'Berkshire',     JNJ: 'J&J',             UNH: 'UnitedHealth',
-  PFE: 'Pfizer',        MRK: 'Merck',           ABBV: 'AbbVie',       LLY: 'Eli Lilly',
-  XOM: 'ExxonMobil',    CVX: 'Chevron',         COP: 'ConocoPhillips',
-  WMT: 'Walmart',       TGT: 'Target',          COST: 'Costco',       HD: 'Home Depot',
-  MCD: "McDonald's",    NKE: 'Nike',            SBUX: 'Starbucks',    CMG: 'Chipotle',
-  DIS: 'Disney',        CMCSA: 'Comcast',
-  F: 'Ford',            GM: 'General Motors',
-  BA: 'Boeing',         LMT: 'Lockheed Martin', RTX: 'Raytheon',
-  CAT: 'Caterpillar',   DE: 'Deere',            MMM: '3M',
-  GE: 'GE',             HON: 'Honeywell',
-  HPQ: 'HP',            DELL: 'Dell',           HPE: 'HPE',
-  EL: 'Estée Lauder',   PG: 'P&G',              KO: 'Coca-Cola',      PEP: 'PepsiCo',
-  TPR: 'Tapestry',
-};
-
-// Returns the human-readable company name for a document, falling back to ticker.
-const companyLabel = (doc: Document): string => {
-  const ticker = doc.ticker?.toUpperCase();
-  return (ticker && TICKER_NAMES[ticker]) || ticker || doc.name;
-};
 
 // Returns "Name (TICKER)" when we have a proper name, plain ticker otherwise.
 const companyDisplay = (doc: Document): string => {
@@ -270,6 +244,10 @@ const FinchAvatar: React.FC = () => {
 // ── component ────────────────────────────────────────────────────────────────
 
 const ChatInterface: React.FC<ChatInterfaceProps> = ({ documents }) => {
+  const isTablet = useIsTablet();
+  const [panelCollapsed, setPanelCollapsed] = useState(false);
+  useEffect(() => { setPanelCollapsed(isTablet); }, [isTablet]);
+
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       id: 'welcome',
@@ -384,69 +362,92 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ documents }) => {
   return (
     <div style={{ display: 'flex', height: '100%', ...fs }}>
 
-      {/* ── Left panel ── */}
+      {/* ── Left panel (collapsible) ── */}
       <div
         style={{
-          width: 176, flexShrink: 0,
+          width: panelCollapsed ? 28 : 176, flexShrink: 0,
           background: c.surface,
           borderRight: `0.5px solid ${c.border}`,
-          padding: '14px 12px',
-          display: 'flex', flexDirection: 'column', gap: 16,
-          overflowY: 'auto',
+          display: 'flex', flexDirection: 'column',
+          overflow: 'hidden',
+          transition: 'width 0.18s ease',
         }}
       >
-        {/* Companies */}
-        <div>
-          <p style={{ fontSize: 11, color: c.textFaint, textTransform: 'uppercase', letterSpacing: '0.05em', margin: '0 0 8px' }}>
-            Companies
-          </p>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-            {documents.length === 0 ? (
-              <span style={{ fontSize: 12, color: c.textFaint, fontStyle: 'italic' }}>No filings loaded</span>
-            ) : (
-              <>
-                <button
-                  style={selectedDocIds.length === 0 ? pillActive : pillInactive}
-                  onClick={() => setSelectedDocIds([])}
-                >
-                  All
-                </button>
-                {documents.map(doc => (
-                  <button
-                    key={doc.id}
-                    style={selectedDocIds.includes(doc.id) ? pillActive : pillInactive}
-                    onClick={() => toggleDoc(doc.id)}
-                    title={doc.name}
-                  >
-                    {doc.name.length > 12 ? doc.name.slice(0, 12) + '…' : doc.name}
-                  </button>
-                ))}
-              </>
-            )}
-          </div>
-        </div>
+        {/* Toggle button */}
+        <button
+          onClick={() => setPanelCollapsed(p => !p)}
+          title={panelCollapsed ? 'Show companies' : 'Hide companies'}
+          style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            width: '100%', height: 36, flexShrink: 0,
+            border: 'none', background: 'transparent', cursor: 'pointer',
+            color: c.textFaint, borderBottom: `0.5px solid ${c.border}`,
+          }}
+        >
+          {panelCollapsed ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
+        </button>
 
-        {/* Loaded filings list */}
-        {documents.length > 0 && (
+        {/* Panel content */}
+        <div style={{
+          padding: '14px 12px', display: 'flex', flexDirection: 'column',
+          gap: 16, overflowY: 'auto', flex: 1,
+          opacity: panelCollapsed ? 0 : 1,
+          transition: 'opacity 0.12s ease',
+          pointerEvents: panelCollapsed ? 'none' : 'auto',
+        }}>
+          {/* Companies */}
           <div>
             <p style={{ fontSize: 11, color: c.textFaint, textTransform: 'uppercase', letterSpacing: '0.05em', margin: '0 0 8px' }}>
-              Loaded filings
+              Companies
             </p>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-              {documents.map(doc => (
-                <div
-                  key={doc.id}
-                  style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: c.textMuted }}
-                >
-                  <FileText size={12} style={{ flexShrink: 0 }} />
-                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {doc.name}
-                  </span>
-                </div>
-              ))}
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+              {documents.length === 0 ? (
+                <span style={{ fontSize: 12, color: c.textFaint, fontStyle: 'italic' }}>No filings loaded</span>
+              ) : (
+                <>
+                  <button
+                    style={selectedDocIds.length === 0 ? pillActive : pillInactive}
+                    onClick={() => setSelectedDocIds([])}
+                  >
+                    All
+                  </button>
+                  {documents.map(doc => (
+                    <button
+                      key={doc.id}
+                      style={selectedDocIds.includes(doc.id) ? pillActive : pillInactive}
+                      onClick={() => toggleDoc(doc.id)}
+                      title={doc.name}
+                    >
+                      {doc.name.length > 12 ? doc.name.slice(0, 12) + '…' : doc.name}
+                    </button>
+                  ))}
+                </>
+              )}
             </div>
           </div>
-        )}
+
+          {/* Loaded filings list */}
+          {documents.length > 0 && (
+            <div>
+              <p style={{ fontSize: 11, color: c.textFaint, textTransform: 'uppercase', letterSpacing: '0.05em', margin: '0 0 8px' }}>
+                Loaded filings
+              </p>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                {documents.map(doc => (
+                  <div
+                    key={doc.id}
+                    style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: c.textMuted }}
+                  >
+                    <FileText size={12} style={{ flexShrink: 0 }} />
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {doc.name}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* ── Chat area ── */}

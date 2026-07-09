@@ -26,4 +26,8 @@ tests/
 .env*
 .venv/
 myenv/
+<<<<<<< HEAD
 docs/
+=======
+docs/
+>>>>>>> cfd2a823066af4e8a727c06e2762e45bc35843ac

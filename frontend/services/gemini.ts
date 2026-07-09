@@ -83,7 +83,11 @@ export interface ExtractResponse {
 
 // Key narrative sections in 10-K order; financial_statements omitted because
 // the numbers are already captured in metrics.
+// Sections to include in the LLM context, in reading order (financial_statements
+// excluded — numbers are already captured in structured metrics).
 const SECTION_ORDER = ['business', 'risk_factors', 'mda'] as const;
+// Per-section character cap: keeps combined context under ~60k chars (~15k tokens)
+// so we stay within Gemini's effective attention window for long filings.
 const PER_SECTION_CAP = 20_000;
 
 export function buildContent(sections: Record<string, string>): string {

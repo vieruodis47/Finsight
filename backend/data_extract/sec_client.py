@@ -5,16 +5,19 @@ This is the low-level I/O layer. Everything here talks to sec.gov; no module
 above this one should call ``requests`` directly.
 """
 
+import logging
+import os
+import re
+
+import requests
 from bs4 import BeautifulSoup
 
-import re
-import requests
+logger = logging.getLogger(__name__)
 
-
-# SEC requires a descriptive User-Agent or you'll get 403s
-# Replace with your name and UW email
+# SEC requires a descriptive User-Agent string or requests return 403.
+# Set SEC_USER_AGENT in the environment; fall back to a generic placeholder.
 SEC_HEADERS = {
-    "User-Agent": "FinSight rahmansyah@wisc.edu",
+    "User-Agent": os.getenv("SEC_USER_AGENT", "FinSight contact@example.com"),
     "Accept-Encoding": "gzip, deflate",
 }
 
@@ -28,7 +31,7 @@ def get_sic(cik: str) -> str | None:
         sic = r.json().get("sic")
         return str(sic) if sic else None
     except Exception as e:
-        print(f"Warning: could not fetch SIC for CIK {cik}: {e}")
+        logger.warning("Could not fetch SIC for CIK %s: %s", cik, e)
         return None
 
 
@@ -41,15 +44,11 @@ def get_company_facts(cik: str) -> dict:
         return r.json()
 
     except requests.exceptions.Timeout as e:
-        print(f"Timeout error fetching company facts for CIK {cik}: {e}")
+        logger.error("Timeout fetching company facts for CIK %s: %s", cik, e)
         raise
 
     except requests.RequestException as e:
-        print(f"Error fetching company facts for CIK {cik}: {e}")
-        raise
-
-    except Exception as e:
-        print(f"Unexpected error fetching company facts for CIK {cik}: {e}")
+        logger.error("Request error fetching company facts for CIK %s: %s", cik, e)
         raise
 
 
@@ -66,15 +65,11 @@ def get_cik(ticker: str) -> str:
         raise ValueError(f"Ticker '{ticker}' not found in SEC database")
 
     except requests.exceptions.Timeout as e:
-        print(f"Request timed out: {e}")
+        logger.error("Request timed out fetching CIK for %s: %s", ticker, e)
         raise
 
     except requests.exceptions.RequestException as e:
-        print(f"Request failed: {e}")
-        raise
-
-    except Exception as e:
-        print(f"An error occurred: {e}")
+        logger.error("Request failed fetching CIK for %s: %s", ticker, e)
         raise
 
 
@@ -103,28 +98,19 @@ def get_filings(cik: str, form_type: str = "10-K", limit: int = 5) -> list:
         return results
 
     except requests.exceptions.Timeout as e:
-        print(f"Timeout error fetching filings for CIK {cik}: {e}")
+        logger.error("Timeout fetching filings for CIK %s: %s", cik, e)
         raise
 
     except requests.RequestException as e:
-        print(f"Error fetching filings for CIK {cik}: {e}")
-        raise
-
-    except Exception as e:
-        print(f"Unexpected error fetching filings for CIK {cik}: {e}")
+        logger.error("Request error fetching filings for CIK %s: %s", cik, e)
         raise
 
 
 def get_document_url(cik: str, accession: str, primary_doc: str) -> str:
     """Build the full URL to the filing document on SEC EDGAR."""
-    try:
-        accession_clean = accession.replace("-", "")
-        cik_int = int(cik)
-        return f"https://www.sec.gov/Archives/edgar/data/{cik_int}/{accession_clean}/{primary_doc}"
-    
-    except Exception as e:
-        print(f"Error constructing document URL for CIK {cik}, accession {accession}: {e}")
-        raise
+    accession_clean = accession.replace("-", "")
+    cik_int = int(cik)
+    return f"https://www.sec.gov/Archives/edgar/data/{cik_int}/{accession_clean}/{primary_doc}"
 
 
 def fetch_and_parse(url: str) -> str:
@@ -133,16 +119,16 @@ def fetch_and_parse(url: str) -> str:
         r = requests.get(url, headers={**SEC_HEADERS, "Host": "www.sec.gov"})
         r.raise_for_status()
         soup = BeautifulSoup(r.content, "lxml")
-    
-    except Exception as e:
-        print(f"Error fetching document for URL {url}: {e}")
+
+    except requests.RequestException as e:
+        logger.error("Error fetching document %s: %s", url, e)
         raise
 
     # Remove noise tags
     for tag in soup(["script", "style", "meta", "noscript", "img", "head"]):
         tag.decompose()
 
-    # Strip inline XBRL tags but keep their text content
+    # Strip inline XBRL tags (ix:*) but keep their text content
     for tag in soup.find_all(re.compile(r"^ix:")):
         tag.unwrap()
 

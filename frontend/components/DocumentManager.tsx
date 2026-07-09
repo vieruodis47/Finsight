@@ -10,6 +10,7 @@ import {
   uploadFile,
 } from '../services/gemini';
 import CompanyLogo from './CompanyLogo';
+import { useDebounce } from '../utils/hooks';
 import SearchDropdown from './SearchDropdown';
 
 interface DocumentManagerProps {
@@ -52,18 +53,17 @@ const DocumentManager: React.FC<DocumentManagerProps> = ({
   const [dragOver, setDragOver]         = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const debouncedInput = useDebounce(inputValue, 200);
   useEffect(() => {
     if (resolvedTicker) { setSuggestions([]); setShowDrop(false); return; }
-    const q = inputValue.trim();
+    const q = debouncedInput.trim();
     if (!q) { setSuggestions([]); setShowDrop(false); return; }
-    const timer = setTimeout(async () => {
-      const results = await searchCompanies(q);
+    searchCompanies(q).then(results => {
       setSuggestions(results);
       setShowDrop(results.length > 0);
       setHighlightIdx(-1);
-    }, 200);
-    return () => clearTimeout(timer);
-  }, [inputValue, resolvedTicker]);
+    });
+  }, [debouncedInput, resolvedTicker]);
 
   const selectSuggestion = (s: SearchResult) => {
     setInputValue(s.name);

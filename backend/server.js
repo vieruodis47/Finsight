@@ -21,8 +21,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 app.use(express.json({limit: process?.env?.API_PAYLOAD_MAX_SIZE || "7mb"}));
 
-const PORT = process?.env?.API_BACKEND_PORT || 5000;
-const API_BACKEND_HOST = process?.env?.API_BACKEND_HOST || "127.0.0.1";
+// Cloud Run injects PORT; local dev uses API_BACKEND_PORT; fallback to 5000.
+const PORT = process?.env?.PORT || process?.env?.API_BACKEND_PORT || 5000;
+// Cloud Run health checks come from outside the container — must bind 0.0.0.0.
+const API_BACKEND_HOST = process?.env?.API_BACKEND_HOST || "0.0.0.0";
 
 const GOOGLE_CLOUD_LOCATION = process?.env?.GOOGLE_CLOUD_LOCATION;
 const GOOGLE_CLOUD_PROJECT = process?.env?.GOOGLE_CLOUD_PROJECT;
@@ -347,6 +349,7 @@ app.post('/api-proxy', async (req, res) => {
   }
 });
 
+<<<<<<< HEAD
 // --- Serve the React bundle (production) ---
 // In dev, Vite (:5173) serves the frontend and proxies API calls here.
 // In production, build first (`npm run build --prefix frontend`), then Node
@@ -368,6 +371,22 @@ if (fs.existsSync(FRONTEND_DIST)) {
 
 const server = app.listen(PORT, API_BACKEND_HOST, () => {
   console.log(`FinSight Node server listening at http://localhost:${PORT} (FinSight API -> ${PY_BACKEND_URL})`);
+=======
+// --- Production static serving ---
+// In Docker the React bundle is copied to /app/frontend/dist by Dockerfile.node.
+// Only activate when the dist directory actually exists so dev mode (no build) still works.
+const FRONTEND_DIST = path.join(__dirname, '..', 'frontend', 'dist');
+if (fs.existsSync(FRONTEND_DIST)) {
+  app.use(express.static(FRONTEND_DIST));
+  // SPA catch-all: unknown routes → index.html so client-side routing works.
+  // Express 5 / path-to-regexp v8 requires a named wildcard; bare '*' throws.
+  app.get('/{*path}', (_req, res) => res.sendFile(path.join(FRONTEND_DIST, 'index.html')));
+  console.log(`[Node] Serving static frontend from ${FRONTEND_DIST}`);
+}
+
+const server = app.listen(PORT, API_BACKEND_HOST, () => {
+  console.log(`FinSight Node server listening at http://${API_BACKEND_HOST}:${PORT}`);
+>>>>>>> cfd2a823066af4e8a727c06e2762e45bc35843ac
 });
 
 

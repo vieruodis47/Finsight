@@ -1,0 +1,68 @@
+name: Deploy to Cloud Run
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  id-token: write   # required for Workload Identity Federation
+
+env:
+  PROJECT: project-36a4970e-04a7-4bb6-b8d
+  REGION: us-central1
+  REGISTRY: us-central1-docker.pkg.dev/project-36a4970e-04a7-4bb6-b8d/finsight
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/582986331404/locations/global/workloadIdentityPools/github-pool/providers/github
+          service_account: github-deploy@project-36a4970e-04a7-4bb6-b8d.iam.gserviceaccount.com
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - name: Build python-service image
+        run: |
+          docker build \
+            -f backend/Dockerfile.python \
+            -t ${{ env.REGISTRY }}/python-service:${{ github.sha }} \
+            -t ${{ env.REGISTRY }}/python-service:latest \
+            .
+          docker push ${{ env.REGISTRY }}/python-service:${{ github.sha }}
+          docker push ${{ env.REGISTRY }}/python-service:latest
+
+      - name: Build node-service image
+        run: |
+          docker build \
+            -f backend/Dockerfile.node \
+            -t ${{ env.REGISTRY }}/node-service:${{ github.sha }} \
+            -t ${{ env.REGISTRY }}/node-service:latest \
+            .
+          docker push ${{ env.REGISTRY }}/node-service:${{ github.sha }}
+          docker push ${{ env.REGISTRY }}/node-service:latest
+
+      - name: Deploy python-service (image only — preserves all env vars and secret mounts)
+        run: |
+          gcloud run services update python-service \
+            --image ${{ env.REGISTRY }}/python-service:${{ github.sha }} \
+            --region ${{ env.REGION }} \
+            --project ${{ env.PROJECT }}
+
+      - name: Deploy node-service (image only — preserves all env vars and secret mounts)
+        run: |
+          gcloud run services update node-service \
+            --image ${{ env.REGISTRY }}/node-service:${{ github.sha }} \
+            --region ${{ env.REGION }} \
+            --project ${{ env.PROJECT }}

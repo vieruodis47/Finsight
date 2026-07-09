@@ -38,4 +38,13 @@ __pycache__/
 .claude/
 =======
 **/.DS_Store
+<<<<<<< HEAD
 >>>>>>> 844ffdc18551b60f983a62eaeec96d8dabcfe3d5
+=======
+node_modules/
+frontend/node_modules/
+backend/.env.local
+.env.local
+secrets/
+*.ravendbdump
+>>>>>>> cfd2a823066af4e8a727c06e2762e45bc35843ac

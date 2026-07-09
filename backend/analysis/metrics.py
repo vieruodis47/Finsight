@@ -7,13 +7,19 @@ Company ticker -> CIK resolution comes entirely from the generated SEC registry
 Used by the FinSight app to power charts and comparisons.
 """
 
-import requests
-from datetime import datetime
+import logging
 import json
 import os
 import re
+from datetime import datetime
 
-HEADERS = {"User-Agent": "FinSight rahmansyah@wisc.edu"}  # SEC requires a real contact
+import requests
+
+logger = logging.getLogger(__name__)
+
+# SEC requires a descriptive User-Agent string or requests return 403.
+# Set SEC_USER_AGENT in the environment; fall back to a generic placeholder.
+HEADERS = {"User-Agent": os.getenv("SEC_USER_AGENT", "FinSight contact@example.com")}
 
 # Ticker -> 10-digit CIK. Populated from the generated SEC registry below.
 COMPANIES = {}
@@ -45,14 +51,15 @@ if os.path.exists(JSON_PATH):
                     COMPANIES[clean_ticker] = clean_cik
                     COMPANY_NAMES[clean_ticker] = str(item.get("name") or clean_ticker)
 
-        print(f"[Success] Loaded SEC registry: {len(COMPANIES)} companies mapped.")
+        logger.info("Loaded SEC registry: %d companies mapped.", len(COMPANIES))
     except Exception as e:
-        print(f"[Error] Failed to read SEC registry at {JSON_PATH}: {e}")
+        logger.error("Failed to read SEC registry at %s: %s", JSON_PATH, e)
 else:
-    print(
-        f"[Error] SEC registry not found at {JSON_PATH}. "
-        f"Generate it first by running company_name/extract_name.py. "
-        f"Until then, no tickers can be resolved."
+    logger.error(
+        "SEC registry not found at %s. "
+        "Generate it first by running company_name/extract_name.py. "
+        "Until then, no tickers can be resolved.",
+        JSON_PATH,
     )
 
 # Fallback field names for each metric (different companies use different XBRL tags)
