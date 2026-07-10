@@ -1151,10 +1151,32 @@ def route_question(
         vec_ans, chunks = fut_vector.result()
 
     if had_graph and chunks:
+        # Coverage-qualified filing-text header. The graph half answers on every
+        # company in scope, but the vector half only returns chunks for the
+        # companies that actually have indexed filing text AND surfaced in the
+        # top-k. When the requested scope named more companies than the returned
+        # chunks cover, qualify the header so a "both" answer can't imply filing
+        # text for a company it never read. We name the COVERED companies, NOT a
+        # reason: at this point we can't distinguish "not indexed" from "indexed
+        # but no top-k passages" (a company can be indexed yet absent here), and
+        # asserting "not indexed" would be wrong in exactly the both-indexed case
+        # the compare-view strip runs in. Badge stays "both" -- both paths ran;
+        # the header, not the badge, carries coverage.
+        text_header = "**From SEC filing text:**"
+        if vector_scope:
+            requested = list(dict.fromkeys(vector_scope))  # de-dup, preserve order
+            covered = {c.ticker.upper() for c in chunks}    # always a subset (IN filter)
+            if len(covered) < len(requested):
+                shown = [t for t in requested if t in covered]
+                names = (
+                    f"{shown[0]} only" if len(shown) == 1
+                    else f"{', '.join(shown[:-1])} and {shown[-1]} only"
+                )
+                text_header = f"**From SEC filing text ({names}):**"
         merged = (
             f"**From structured financial data (XBRL metrics):**\n\n{graph_ans}"
             f"\n\n---\n\n"
-            f"**From SEC filing text:**\n\n{vec_ans}"
+            f"{text_header}\n\n{vec_ans}"
         )
         return merged, chunks, "both"
 
