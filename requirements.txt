@@ -18,3 +18,16 @@ rdflib>=7.6.0
 pyparsing>=3.1.0
 # FastAPI file upload support (UploadFile / File form data)
 python-multipart
+# In-process bge-m3 embeddings (one producer for ingest + query). Pinned to the
+# EXACT versions the stored-doc parity was validated against (cosine >= 0.99997)
+# and that the tested deploy image was built from — so a CI rebuild embeds
+# identically and can't silently shift the vector space. transformers/tokenizers
+# are the model-loading + tokenization path, so they are pinned too, not just the
+# top-level packages. torch is installed CPU-only in Dockerfile.python via the
+# PyTorch CPU wheel index — do NOT rely on the default PyPI wheel (~5GB of CUDA).
+sentence-transformers==5.6.0
+torch==2.13.0
+transformers==5.13.0
+tokenizers==0.22.2
+huggingface_hub==1.23.0
+safetensors==0.8.0

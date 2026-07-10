@@ -6,13 +6,18 @@ RavenDB-backed embedding ingest + semantic search for FinSight.
 Design preserved from the Chroma version:
   - Paragraph-aware chunking with single-newline fallback for SEC filing prose
   - Explicit L2 normalization of vectors
-  - Task-type asymmetry (RETRIEVAL_DOCUMENT for ingest, RETRIEVAL_QUERY for search)
   - Deterministic document IDs (re-ingest = upsert, never duplicates)
   - CLI with `ingest` / `search` subcommands
 
-Embeddings are generated with gemini-embedding-001 via google-genai and stored on
-the document as a plain float array. RavenDB indexes pre-made numerical arrays
-directly (no transformation), so all generation control stays in this module.
+Embeddings are generated with bge-m3 (1024-dim, MIT) in-process by
+sentence-transformers and stored on the document as a plain float array. One
+producer for BOTH ingest and query, in local dev and in the deployed
+python-service — no separate embedding service, no network hop. Unlike
+gemini-embedding-001, bge-m3 uses the SAME encoder for documents and queries (no
+RETRIEVAL_DOCUMENT / RETRIEVAL_QUERY task-type asymmetry). RavenDB indexes
+pre-made numerical arrays directly (no transformation), so all generation control
+stays in this module. Generation (answers / summaries) still uses Gemini via
+get_genai_client().
 
 Deduplication
 -------------
@@ -44,7 +49,7 @@ Auth (auto-detected by get_genai_client):
 
 Prerequisites:
   - A running RavenDB server (7.x) using the Corax search engine
-  - pip install ravendb google-genai numpy
+  - pip install ravendb google-genai numpy sentence-transformers torch
   - Env: RAVENDB_URLS, RAVENDB_DATABASE, and either GEMINI_API_KEY
     or (GOOGLE_CLOUD_PROJECT + GOOGLE_CLOUD_LOCATION) for Vertex mode
 """
@@ -56,13 +61,11 @@ import hashlib
 import logging
 import os
 import re
-import time
 from datetime import datetime, timezone
 from typing import Iterable, Optional
 
 import numpy as np
 from google import genai
-from google.genai import types
 from ravendb import DocumentStore
 
 logger = logging.getLogger(__name__)
@@ -78,23 +81,78 @@ GOOGLE_CLOUD_PROJECT = os.getenv("GOOGLE_CLOUD_PROJECT")
 # "global" is not valid for the embedding model on Vertex; default to a region.
 GOOGLE_CLOUD_LOCATION = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
 
-EMBED_MODEL = "gemini-embedding-001"
-EMBED_DIM = int(os.getenv("EMBED_DIM", "1536"))  # must stay consistent across all docs
+# Embeddings are generated in-process by sentence-transformers (bge-m3). Same
+# encoder for docs and queries — no task-type prefix on either side.
+EMBED_MODEL = os.getenv("EMBED_MODEL", "BAAI/bge-m3")
+# Pin the exact model revision so the query producer is byte-identical to the one
+# validated for stored-doc parity: the Ollama-embedded corpus vs this encoder
+# measured cosine >= 0.99997 across 51 chunks (long / table / short). Bump ONLY
+# with a re-run of that parity gate, or stored docs and new queries drift apart.
+EMBED_MODEL_REVISION = os.getenv("EMBED_MODEL_REVISION", "5617a9f61b028005a4858fdac845db406aefb181")
+# bge-m3 has a fixed 1024-dim output. This is the EXPECTED dimension, enforced by
+# an assertion in the ingest path (see ingest()). Keep any env override in sync
+# with the model — do NOT leave a stale 1536 in .env.python.
+EMBED_DIM = int(os.getenv("EMBED_DIM", "1024"))
 COLLECTION = "FilingChunks"
 MANIFEST_COLLECTION = "IngestManifests"
 JOB_COLLECTION = "IngestJobs"
 METRICS_COLLECTION = "FilingMetrics"
 
-# Batch size for embed_content calls. Small value (8) avoids per-minute token
-# quota spikes on the free tier while still saving round-trips vs. one-at-a-time.
-EMBED_BATCH = int(os.getenv("EMBED_BATCH", "8"))
-# Seconds to sleep between embedding batches (prevents 429 on free-tier RPM cap).
-EMBED_BATCH_DELAY = float(os.getenv("EMBED_BATCH_DELAY", "1.0"))
+# Batch size for sentence-transformers encode(): texts are embedded in batches,
+# not one at a time, so ingest throughput is higher than the old per-call loop.
+EMBED_BATCH = int(os.getenv("EMBED_BATCH", "32"))
+
+# ---------------------------------------------------------------------------
+# Vector-search recall floor (min_similarity). CALIBRATED — read before changing.
+#
+# The old default 0.75 was tuned for Gemini's RETRIEVAL_DOCUMENT / RETRIEVAL_QUERY
+# asymmetry (doc and query encoded differently, cosines run high). bge-m3 uses the
+# SAME encoder on both sides, so its cosines run lower and cluster tighter: at
+# 0.75, vector.search() returns ZERO chunks for EVERY query and fails SILENTLY —
+# _vector() then emits NO_CONTEXT_MESSAGE with a `none` badge and no error.
+#
+# This is a RECALL FLOOR / off-corpus guard, NOT a precision filter. On the 20-Q
+# calibration set the chunks the generator actually cited had cosines as low as
+# 0.554, which OVERLAPS the rank-21..50 noise band (up to 0.580) — no single
+# threshold separates signal from noise. Precision comes from top-k ranking and
+# the `ticker IN (...)` filter, not from this number. (A foreign company's chunk
+# scored 0.588 / rank-2 on a cross-company question — above any viable threshold —
+# so the ticker filter, not min_similarity, is what excludes it; lowering this
+# does NOT increase contamination.)
+#
+# Worst observed rank-5 cosine was 0.5143, so 0.45 leaves ~0.06 margin (rank-5
+# always survives) and sits below the 0.554 used-chunk floor (no cited chunk is
+# cut). Calibrated on a 387-chunk subset; production is ~7026 chunks (18x) with
+# unseen questions — hence env-tunable without a redeploy. The data says do NOT
+# tighten this without real traffic proving otherwise.
+MIN_SIMILARITY = float(os.getenv("MIN_SIMILARITY", "0.45"))
 
 # --- Singletons -------------------------------------------------------------
 
 _store: Optional[DocumentStore] = None
 _genai_client: Optional[genai.Client] = None
+_embed_model = None  # lazy-loaded sentence-transformers bge-m3 encoder
+
+
+def get_embed_model():
+    """
+    Lazily load and cache the in-process bge-m3 encoder.
+
+    Loaded on the FIRST embed (first ingest or first query), NOT at import — so
+    the service boots and serves non-RAG endpoints (market data, metrics, price
+    history) without paying the ~10s model load. That cost is felt only by the
+    first FinChat ask on a cold instance; every embed after that is warm (~0.4s).
+
+    In the deployed image the weights are baked at build time and HF_HUB_OFFLINE=1,
+    so this reads from the in-image cache and never touches the network.
+    """
+    global _embed_model
+    if _embed_model is None:
+        from sentence_transformers import SentenceTransformer
+        logger.info("loading embedding model %s (revision %s) ...", EMBED_MODEL, EMBED_MODEL_REVISION)
+        _embed_model = SentenceTransformer(EMBED_MODEL, revision=EMBED_MODEL_REVISION)
+        logger.info("embedding model %s loaded", EMBED_MODEL)
+    return _embed_model
 
 
 def get_store() -> DocumentStore:
@@ -352,59 +410,42 @@ def _normalize(vec: Iterable[float]) -> list:
 
 def embed_texts(texts: list[str], task_type: str) -> list[list]:
     """
-    Embed a list of texts with the given task type, normalized.
+    Embed a list of texts with bge-m3 via in-process sentence-transformers,
+    L2-normalized.
 
-    Uses small batches (EMBED_BATCH) with inter-batch sleep to pace the free-
-    tier quota. On 429 RESOURCE_EXHAUSTED:
-      - Daily quota ("PerDay" in error): raises DailyQuotaExceededError immediately.
-        The caller must handle this specially — do NOT retry, the quota is gone
-        for the day.
-      - Per-minute RPM cap:
-        RETRIEVAL_QUERY (user-facing chat): short retries [5s, 20s] so the
-          response comes back quickly; raises PerMinuteQuotaError on exhaustion.
-        RETRIEVAL_DOCUMENT (background ingest): long retries [62s, 72s, 82s] to
-          let the RPM window reset; raises PerMinuteQuotaError on exhaustion.
-        Callers must catch PerMinuteQuotaError separately from DailyQuotaExceededError
-        and surface the correct "try again in ~60s" message.
+    `task_type` is kept in the signature for backwards compatibility — callers
+    still pass RETRIEVAL_DOCUMENT (ingest) and RETRIEVAL_QUERY (search) — but it
+    is IGNORED: bge-m3 uses the same encoder for documents and queries, so there
+    is no task-type prefix or asymmetry to apply on either side.
+
+    The encoder batches (EMBED_BATCH) rather than one-per-call. Every vector is
+    passed through _normalize() for cosine consistency with the stored corpus and
+    vector.search(). sentence-transformers already returns unit vectors, so this
+    is belt-and-suspenders — and it keeps the EXACT code path that was parity-
+    validated (>= 0.99997) against the Ollama-embedded documents already in RavenDB.
+
+    No quota / rate handling: the encoder runs in-process with no per-day or
+    per-minute quota. DailyQuotaExceededError / PerMinuteQuotaError are no longer
+    raised from here (they remain defined and are still caught upstream in app.py,
+    router.py and bulk_ingest.py — they simply never fire now).
     """
-    client = get_genai_client()
-    is_query = (task_type == "RETRIEVAL_QUERY")
-    retry_waits = [5, 20] if is_query else [62, 72, 82]
-    out: list[list] = []
-    for i, start in enumerate(range(0, len(texts), EMBED_BATCH)):
-        if i > 0 and EMBED_BATCH_DELAY > 0:
-            time.sleep(EMBED_BATCH_DELAY)
-        batch = texts[start:start + EMBED_BATCH]
-
-        for attempt in range(len(retry_waits) + 1):  # initial attempt + retries
-            try:
-                resp = client.models.embed_content(
-                    model=EMBED_MODEL,
-                    contents=batch,
-                    config=types.EmbedContentConfig(
-                        task_type=task_type,
-                        output_dimensionality=EMBED_DIM,
-                    ),
-                )
-                out.extend(_normalize(e.values) for e in resp.embeddings)
-                break
-            except Exception as e:
-                if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
-                    if is_daily_quota_error(e):
-                        raise DailyQuotaExceededError(str(e)) from e
-                    if attempt < len(retry_waits):
-                        wait = retry_waits[attempt]
-                        logger.warning(
-                            "Embedding 429 (per-minute) on batch %d/%d "
-                            "(attempt %d/%d), waiting %ds…",
-                            i + 1, (len(texts) + EMBED_BATCH - 1) // EMBED_BATCH,
-                            attempt + 1, len(retry_waits) + 1, wait,
-                        )
-                        time.sleep(wait)
-                    else:
-                        raise PerMinuteQuotaError(str(e)) from e
-                else:
-                    raise
+    _ = task_type  # intentionally ignored (symmetric encoder); see docstring
+    if not texts:
+        return []
+    model = get_embed_model()
+    vecs = model.encode(
+        texts,
+        batch_size=EMBED_BATCH,
+        normalize_embeddings=False,
+        show_progress_bar=False,
+    )
+    out = [_normalize(v) for v in vecs]
+    for i, v in enumerate(out):
+        if not v:
+            raise RuntimeError(
+                f"Empty embedding for text #{i} (model={EMBED_MODEL}, "
+                f"revision={EMBED_MODEL_REVISION})."
+            )
     return out
 
 
@@ -985,9 +1026,24 @@ def ingest(
         logger.warning("No chunks produced for %s %s (%s)", ticker, form, source)
         return 0
 
-    logger.info("Embedding %d chunks for %s %s (batch=%d, delay=%.1fs)…",
-                len(chunks), ticker, form, EMBED_BATCH, EMBED_BATCH_DELAY)
+    logger.info("Embedding %d chunks for %s %s (model=%s, batch=%d)…",
+                len(chunks), ticker, form, EMBED_MODEL, EMBED_BATCH)
     vectors = embed_texts(chunks, task_type="RETRIEVAL_DOCUMENT")
+
+    # Dimension guard — crash LOUDLY here rather than fail silently at query time.
+    # vector.search() returns nothing on a dim mismatch with no error, so if
+    # EMBED_DIM and the real model ever disagree (bad env, model swap, unexpected
+    # encoder output), we must stop BEFORE writing to RavenDB — not discover it as
+    # mystery empty results days later. Cheap insurance against the exact failure
+    # mode this migration is navigating around.
+    for idx, vec in enumerate(vectors):
+        if len(vec) != EMBED_DIM:
+            raise ValueError(
+                f"Embedding dimension mismatch for {ticker} {form} chunk #{idx}: "
+                f"got {len(vec)}, expected EMBED_DIM={EMBED_DIM} "
+                f"(model={EMBED_MODEL}). Refusing to store; check the model and "
+                f"the EMBED_DIM env agree."
+            )
 
     store = get_store()
     with store.open_session() as session:
@@ -1024,7 +1080,7 @@ def search(
     ticker: Optional[str] = None,
     tickers: Optional[list[str]] = None,
     form: Optional[str] = None,
-    min_similarity: float = 0.75,
+    min_similarity: float = MIN_SIMILARITY,
     candidates: int = 32,
 ) -> list[FilingChunk]:
     """
@@ -1072,7 +1128,21 @@ def search(
             q = q.add_parameter(f"tk{i}", t)
         if form:
             q = q.add_parameter("form", form)
-        return list(q)
+        results = list(q)
+
+    # Silent-truncation breadcrumb. A GLOBAL (unfiltered) query returning fewer
+    # than k chunks almost always means min_similarity is too high for the
+    # current embedding model, not that the corpus is thin. A ticker/form-filtered
+    # query legitimately returns fewer, so we only warn when unfiltered. Not an
+    # error — just a log trail so a bad threshold shows up here instead of as
+    # quietly thinner (or empty) answers with a `none` badge.
+    if not scope and not form and len(results) < k:
+        logger.warning(
+            "search() returned %d/%d chunks for an unfiltered query "
+            "(min_similarity=%.3f) — threshold may be too high for %r",
+            len(results), k, min_similarity, query[:80],
+        )
+    return results
 
 
 # --- CLI --------------------------------------------------------------------
@@ -1095,7 +1165,7 @@ def _cli() -> None:
     p_search.add_argument("--k", type=int, default=5)
     p_search.add_argument("--ticker", default=None)
     p_search.add_argument("--form", default=None, choices=["10-K", "10-Q", None])
-    p_search.add_argument("--min-similarity", type=float, default=0.75)
+    p_search.add_argument("--min-similarity", type=float, default=MIN_SIMILARITY)
 
     args = parser.parse_args()
 
