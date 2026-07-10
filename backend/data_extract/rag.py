@@ -125,6 +125,13 @@ class ChatRequest(BaseModel):
     question: str = Field(min_length=1)
     k: int = Field(default=5, ge=1, le=20)
     ticker: Optional[str] = None
+    # Explicit vector-search scope. The compare-view FinChat strip always sends
+    # [anchor, peer] so a pair question that names no company ("which has better
+    # margins?") is still confined to the two companies on screen. Additive and
+    # optional: a request that omits it (e.g. ChatInterface) behaves exactly as
+    # before. Takes precedence over `ticker` and over name-based resolution
+    # inside route_question.
+    tickers: Optional[list[str]] = None
     form: Optional[Literal["10-K"]] = None
 
 
@@ -149,11 +156,15 @@ def chat(req: ChatRequest) -> ChatResponse:
     try:
         from backend.graph.router import route_question
         answer, chunks, path = route_question(
-            req.question, k=req.k, ticker=ticker, form=req.form
+            req.question, k=req.k, ticker=ticker, tickers=req.tickers, form=req.form
         )
     except Exception as exc:
         logger.warning("GraphRAG router error, falling back to pure vector: %s", exc)
-        answer, chunks = answer_question(req.question, k=req.k, ticker=ticker, form=req.form)
+        # Keep the same scope on the fallback path so a router failure can't
+        # widen a pair question back out to a global search.
+        answer, chunks = answer_question(
+            req.question, k=req.k, ticker=ticker, tickers=req.tickers, form=req.form
+        )
         path = "vector" if chunks else "none"
         if not chunks:
             answer = NO_CONTEXT_MESSAGE

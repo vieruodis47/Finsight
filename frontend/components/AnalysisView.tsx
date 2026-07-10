@@ -7,6 +7,7 @@ import { FileText, GitCompare, Download, Loader2, AlertCircle, AlertTriangle } f
 import { Document } from '../types';
 import { generateSummary, compareDocuments, fetchCompareMetrics, CompareMetricsResult } from '../services/gemini';
 import { c, font } from '../theme';
+import { fmtM, fmtPct, fmtRatio } from '../utils/format';
 
 interface AnalysisViewProps {
   documents: Document[];
@@ -152,15 +153,6 @@ const tooltipStyle = {
   },
   cursor: { fill: c.surface },
 };
-
-const fmtM  = (v: number | null | undefined): string => {
-  if (v == null) return '—';
-  const abs = Math.abs(v);
-  if (abs >= 1000) return `$${(v / 1000).toFixed(1)}B`;
-  return `$${v.toFixed(0)}M`;
-};
-const fmtPct   = (v: number | null | undefined): string => v == null ? '—' : `${v.toFixed(1)}%`;
-const fmtRatio = (v: number | null | undefined): string => v == null ? '—' : v.toFixed(2);
 
 const ChartPanel: React.FC<{ title: string; children: React.ReactNode }> = ({ title, children }) => (
   <div style={{ background: c.bg, border: `0.5px solid ${c.border}`, borderRadius: 10, padding: '14px 16px' }}>

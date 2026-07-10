@@ -76,6 +76,8 @@ from .rag import router as chat_router
 from .market import router as market_router
 from .search import router as search_router
 from .compare_metrics import router as compare_metrics_router
+from .indexed import router as indexed_router
+from .filing_metrics import router as filing_metrics_router
 from .embeddings import DailyQuotaExceededError, PerMinuteQuotaError
 
 logger = logging.getLogger(__name__)
@@ -501,6 +503,8 @@ app.include_router(chat_router)
 app.include_router(market_router)
 app.include_router(search_router)
 app.include_router(compare_metrics_router)
+app.include_router(indexed_router)
+app.include_router(filing_metrics_router)
 
 
 # ---------------------------------------------------------------------------

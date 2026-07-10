@@ -74,11 +74,19 @@ def register_filing(result: dict, persist: bool = True) -> None:
         _dirty = True
     logger.info("Graph registry: registered %s (%d total)", ticker, len(_registry))
 
-    # Invalidate any /compare-metrics cache entries for this ticker -- a fresh
-    # register_filing() call (from any of its three callers) is our signal
-    # that new XBRL data may exist upstream for this ticker. Fail closed: if
-    # the targeted invalidation can't be trusted to have run, drop the whole
-    # cache rather than risk serving a stale comparison.
+    # Cache invalidation fan-out. register_filing() is the single signal that a
+    # ticker's XBRL/ingest state may have changed, so it must invalidate every
+    # in-process cache derived from that data. THREE caches subscribe here, each
+    # invalidated independently (one failing must not skip the others):
+    #   1. /compare-metrics  -- per-ticker XBRL comparison results
+    #   2. /indexed          -- IngestManifest presence (single cached set)
+    #   3. /metrics          -- per-ticker single-filing dashboard metrics
+    # Each has a 60s TTL as its own backstop, so a missed invalidation self-heals
+    # within a minute; the hook just tightens that window on the common path.
+
+    # 1. /compare-metrics -- fail closed: if the targeted per-ticker invalidation
+    # can't be trusted to have run, drop the whole cache rather than risk serving
+    # a stale comparison.
     try:
         from ..data_extract.compare_metrics import invalidate_ticker
         invalidate_ticker(ticker)
@@ -96,6 +104,27 @@ def register_filing(result: dict, persist: bool = True) -> None:
                 "compare-metrics cache invalidation failed for %s -- cleared "
                 "entire cache as a fail-safe: %s", ticker, e,
             )
+
+    # 2. /indexed -- single cached set; invalidate() already clears everything,
+    # so on failure the 60s TTL is the only fallback (no redundant second clear).
+    try:
+        from ..data_extract.indexed import invalidate as invalidate_indexed_cache
+        invalidate_indexed_cache()
+    except Exception as e:
+        logger.warning(
+            "indexed-ticker cache invalidation failed for %s -- will self-heal "
+            "within the 60s TTL: %s", ticker, e,
+        )
+
+    # 3. /metrics -- per-ticker; drop just this ticker's entry, TTL backs it up.
+    try:
+        from ..data_extract.filing_metrics import invalidate_ticker as invalidate_metrics_ticker
+        invalidate_metrics_ticker(ticker)
+    except Exception as e:
+        logger.warning(
+            "metrics cache invalidation failed for %s -- will self-heal "
+            "within the 60s TTL: %s", ticker, e,
+        )
 
     if not persist:
         return
@@ -1018,6 +1047,7 @@ def route_question(
     question: str,
     k: int = 5,
     ticker: Optional[str] = None,
+    tickers: Optional[list[str]] = None,
     form: Optional[str] = None,
 ) -> tuple[str, list, str]:
     """
@@ -1042,17 +1072,26 @@ def route_question(
     # chunks can't silently retrieve ANOTHER company's filing text (the graph
     # and vector halves must agree on scope; the graph path already resolves a
     # specific company from the text, the vector path historically searched
-    # globally). Precedence:
-    #   1. an explicit caller ticker (e.g. FinChat single-select) wins;
-    #   2. else the companies named in the question that we actually have data
+    # globally). Precedence, highest first:
+    #   1. an explicit caller ticker LIST (e.g. the compare-view FinChat strip,
+    #      which always sends [anchor, peer]) wins outright over anything the
+    #      question does or doesn't name -- "which has better margins?" names no
+    #      company, and this is exactly the case that must NOT fall to global
+    #      scope. Filters to `ticker IN (...)`, an OR over the list, so a chunk
+    #      from a third company can never be retrieved.
+    #   2. else a single caller ticker (e.g. FinChat single-select);
+    #   3. else the companies named in the question that we actually have data
     #      for (same _extract_tickers resolution the graph path uses, filtered
     #      to registered tickers so stray uppercase words don't false-scope);
-    #   3. else None -> global search, the correct behavior for a genuinely
+    #   4. else None -> global search, the correct behavior for a genuinely
     #      corpus-wide question ("which of my companies flags supply-chain risk?").
     known = _graph_tickers()
     mentioned = [t for t in _extract_tickers(question, known_tickers=known) if t in known]
-    if ticker:
-        vector_scope: Optional[list[str]] = [ticker.strip().upper()]
+    explicit = [t.strip().upper() for t in (tickers or []) if t and t.strip()]
+    if explicit:
+        vector_scope: Optional[list[str]] = explicit
+    elif ticker:
+        vector_scope = [ticker.strip().upper()]
     elif mentioned:
         vector_scope = mentioned
     else:
@@ -1112,10 +1151,32 @@ def route_question(
         vec_ans, chunks = fut_vector.result()
 
     if had_graph and chunks:
+        # Coverage-qualified filing-text header. The graph half answers on every
+        # company in scope, but the vector half only returns chunks for the
+        # companies that actually have indexed filing text AND surfaced in the
+        # top-k. When the requested scope named more companies than the returned
+        # chunks cover, qualify the header so a "both" answer can't imply filing
+        # text for a company it never read. We name the COVERED companies, NOT a
+        # reason: at this point we can't distinguish "not indexed" from "indexed
+        # but no top-k passages" (a company can be indexed yet absent here), and
+        # asserting "not indexed" would be wrong in exactly the both-indexed case
+        # the compare-view strip runs in. Badge stays "both" -- both paths ran;
+        # the header, not the badge, carries coverage.
+        text_header = "**From SEC filing text:**"
+        if vector_scope:
+            requested = list(dict.fromkeys(vector_scope))  # de-dup, preserve order
+            covered = {c.ticker.upper() for c in chunks}    # always a subset (IN filter)
+            if len(covered) < len(requested):
+                shown = [t for t in requested if t in covered]
+                names = (
+                    f"{shown[0]} only" if len(shown) == 1
+                    else f"{', '.join(shown[:-1])} and {shown[-1]} only"
+                )
+                text_header = f"**From SEC filing text ({names}):**"
         merged = (
             f"**From structured financial data (XBRL metrics):**\n\n{graph_ans}"
             f"\n\n---\n\n"
-            f"**From SEC filing text:**\n\n{vec_ans}"
+            f"{text_header}\n\n{vec_ans}"
         )
         return merged, chunks, "both"
 

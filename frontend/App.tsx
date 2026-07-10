@@ -3,7 +3,7 @@ import {
   LayoutDashboard, Files, MessageSquare, BarChart3,
   TrendingUp, Building2, Plus, Settings,
   PanelLeftClose, PanelLeftOpen,
-  HelpCircle, X,
+  HelpCircle, X, ArrowLeftRight,
 } from 'lucide-react';
 import { ViewState, Document, IndexStatus } from './types';
 import { c, font } from './theme';
@@ -12,15 +12,18 @@ import Dashboard from './components/Dashboard';
 import DocumentManager from './components/DocumentManager';
 import ChatInterface from './components/ChatInterface';
 import AnalysisView from './components/AnalysisView';
+import CompareView from './components/CompareView';
+import PeerPicker from './components/PeerPicker';
 import SplashScreen from './components/SplashScreen';
 import GettingStarted from './components/GettingStarted';
 import {
   extractCompany, buildContent,
   getIngestStatus, retryIngest,
   getUploadStatus, retryUpload,
+  fetchMetrics,
 } from './services/gemini';
 import { companyKey } from './utils/company';
-import { useIsTablet } from './utils/hooks';
+import { useIsTablet, useRoute, useOnClickOutside } from './utils/hooks';
 
 const NAV_ITEMS: { view: ViewState; label: string; icon: React.ReactNode }[] = [
   { view: 'dashboard', label: 'Dashboard', icon: <LayoutDashboard size={17} /> },
@@ -42,13 +45,29 @@ const FF = font.ui;
 
 const App: React.FC = () => {
   const isTablet = useIsTablet();
+  const { route, navigate }                 = useRoute();
   const [showSplash, setShowSplash]         = useState(true);
   const [currentView, setCurrentView]       = useState<ViewState>('dashboard');
   const [documents, setDocuments]           = useState<Document[]>([]);
   const [collapsed, setCollapsed]           = useState(false);
   const [selectedTicker, setSelectedTicker] = useState<string | null>(null);
+  const [comparePickerOpen, setComparePickerOpen] = useState(false);
+  const comparePickerWrapRef = React.useRef<HTMLDivElement>(null);
+  useOnClickOutside(comparePickerWrapRef, () => setComparePickerOpen(false), comparePickerOpen);
 
   React.useEffect(() => { setCollapsed(isTablet); }, [isTablet]);
+
+  // Single place that changes "which company is selected" — always updates
+  // the URL, which then flows back into state via the effect below.
+  const navigateToCompany = (ticker: string) => navigate(`/company/${encodeURIComponent(ticker)}`);
+
+  // Single writer for the compare route. Guard: a falsy anchor or peer is
+  // dropped rather than routed, so no caller (topbar CTA, cycler, or picker)
+  // can ever produce /compare/x/undefined.
+  const navigateToCompare = (anchor: string, peer: string) => {
+    if (!anchor || !peer) return;
+    navigate(`/compare/${encodeURIComponent(anchor)}/${encodeURIComponent(peer)}`);
+  };
 
   const [hoveredCompany, setHoveredCompany] = useState<string | null>(null);
 
@@ -159,6 +178,26 @@ const App: React.FC = () => {
     return out;
   }, [documents]);
 
+  // Companies other than the currently selected one — the topbar "Compare with
+  // peers" fast path routes to the first of these (sidebar order, uppercase keys).
+  const otherCompanies = React.useMemo(
+    () => companies.map(co => co.key).filter(k => k !== (selectedTicker ?? '').toUpperCase()),
+    [companies, selectedTicker],
+  );
+
+  // Stable peer cycle for the compare view: sidebar-ordered loaded companies
+  // with the anchor removed, plus the route's peer appended at the tail when it
+  // isn't loaded (a deep link to an unloaded company). Deterministic for a given
+  // (route, companies), so the cycler's wraparound order is stable across
+  // re-renders and the peer being viewed is always a member.
+  const comparePeers = React.useMemo(() => {
+    if (route.name !== 'compare') return [];
+    const anchorKey = route.anchor.toUpperCase();
+    const peerKey = route.peer.toUpperCase();
+    const loaded = companies.map(co => co.key).filter(k => k !== anchorKey);
+    return loaded.includes(peerKey) ? loaded : [...loaded, peerKey];
+  }, [route, companies]);
+
   // Keep the selection valid: if nothing is selected yet, or the selected
   // company was deleted, fall back to the most recent filing (or clear it).
   React.useEffect(() => {
@@ -186,7 +225,7 @@ const App: React.FC = () => {
       content: '',
       ticker,
     });
-    setCurrentView('dashboard');
+    navigateToCompany(ticker);
 
     try {
       const data = await extractCompany(ticker, '10-K');
@@ -210,11 +249,63 @@ const App: React.FC = () => {
     }
   };
 
+  // /company/:ticker -> dashboard view + selection. This is the one direction
+  // (URL -> state) the router owns; the other direction goes through
+  // navigateToCompany() above so the two never drift apart.
+  React.useEffect(() => {
+    if (route.name !== 'company') return;
+    setSelectedTicker(route.ticker.toUpperCase());
+    setCurrentView('dashboard');
+  }, [route]);
+
+  // Deep-link render WITHOUT ingest. For a /company/:ticker with no local
+  // document yet (a shared link, a bookmark, a fresh session), populate the
+  // dashboard from GET /metrics — a free XBRL read that NEVER enqueues
+  // embedding. This is the key quota property: a passively-opened URL renders
+  // full fundamentals but spends zero Gemini quota. Embedding stays gated
+  // behind an explicit click, and index status now gates only the FinChat
+  // strip (built later), not the dashboard.
+  //
+  // fetchMetrics fails soft to null (bad ticker / transient) -> no document is
+  // added -> the dashboard shows its existing empty state, no crash. Adding to
+  // `documents` reuses the existing Dashboard (which renders from state) with
+  // zero new render path; the `documents.some(...)` guard + `cancelled` flag
+  // prevent double-adds across re-runs and React strict-mode double-invoke.
+  React.useEffect(() => {
+    if (route.name !== 'company') return;
+    const ticker = route.ticker.toUpperCase();
+    if (documents.some(d => companyKey(d) === ticker)) return;
+
+    let cancelled = false;
+    fetchMetrics(ticker).then(data => {
+      if (cancelled || !data) return;
+      handleAddDocument({
+        id: `deeplink-${ticker}-${Date.now()}`,
+        name: data.ticker || ticker,
+        uploadDate: new Date().toISOString().slice(0, 10),
+        size: '—',
+        content: '',
+        ticker,
+        form: data.form,
+        metrics: data.metrics,
+        ...(data.sector ? { sector: data.sector } : {}),
+      });
+    });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [route, documents]);
+
   if (showSplash) {
     return <SplashScreen onGetStarted={() => setShowSplash(false)} />;
   }
 
-  if (documents.length === 0) {
+  // A route that names a ticker (/company/:ticker or /compare/:anchor/:peer)
+  // is intent, even with zero documents added — e.g. a shared link opened in
+  // a fresh session. /company populates the dashboard via the fetchMetrics
+  // effect above (free XBRL read, no embed); /compare fetches directly by
+  // ticker (compare-metrics/market work for any SEC ticker). Neither should be
+  // swallowed by the empty-documents gate.
+  if (documents.length === 0 && route.name === 'other') {
     return <GettingStarted onAddCompany={handleAddCompany} />;
   }
 
@@ -228,6 +319,19 @@ const App: React.FC = () => {
       default:          return <Dashboard documents={documents} selectedTicker={selectedTicker} />;
     }
   };
+
+  // Topbar reflects the real route: a /compare URL shows "Compare · A vs B"
+  // rather than the (stale) current sidebar view. The "Compare with peers" CTA
+  // shows only on a company dashboard with a selection — never on the compare
+  // view itself.
+  const isCompareRoute = route.name === 'compare';
+  const topbarTitle = isCompareRoute
+    ? 'Compare'
+    : (NAV_ITEMS.find(n => n.view === currentView)?.label ?? 'Dashboard');
+  const topbarSubtitle = isCompareRoute
+    ? `${route.anchor.toUpperCase()} vs ${route.peer.toUpperCase()}`
+    : TOPBAR_SUBTITLES[currentView];
+  const showCompareCta = !isCompareRoute && currentView === 'dashboard' && !!selectedTicker;
 
   return (
     <div style={{ display: 'flex', height: '100vh', overflow: 'hidden', fontFamily: FF }}>
@@ -324,7 +428,7 @@ const App: React.FC = () => {
                 onMouseLeave={() => setHoveredCompany(null)}
               >
                 <button
-                  onClick={() => { setSelectedTicker(key); setCurrentView('dashboard'); }}
+                  onClick={() => navigateToCompany(key)}
                   title={collapsed ? label : undefined}
                   style={{
                     display: 'flex', alignItems: 'center', gap: 9, padding: '7px 10px', borderRadius: 6,
@@ -390,13 +494,41 @@ const App: React.FC = () => {
         {/* Topbar */}
         <header style={{ height: 52, borderBottom: `0.5px solid ${c.border}`, display: 'flex', alignItems: 'center', padding: '0 20px', gap: 8, flexShrink: 0 }}>
           <span style={{ fontSize: 15, fontWeight: 500, color: c.text }}>
-            {NAV_ITEMS.find(n => n.view === currentView)?.label ?? 'Dashboard'}
+            {topbarTitle}
           </span>
           <span style={{ color: c.border }}>·</span>
           <span style={{ fontSize: 13, color: c.textMuted }}>
-            {TOPBAR_SUBTITLES[currentView]}
+            {topbarSubtitle}
           </span>
-          <div style={{ marginLeft: 'auto' }}>
+          <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 10 }}>
+            {showCompareCta && (
+              <div ref={comparePickerWrapRef} style={{ position: 'relative' }}>
+                <button
+                  onClick={() => {
+                    const first = otherCompanies[0];
+                    if (first) navigateToCompare(selectedTicker!, first);
+                    else setComparePickerOpen(o => !o);
+                  }}
+                  aria-haspopup={otherCompanies.length === 0 ? 'listbox' : undefined}
+                  aria-expanded={otherCompanies.length === 0 ? comparePickerOpen : undefined}
+                  style={{ display: 'flex', alignItems: 'center', gap: 6, height: 30, padding: '0 12px', borderRadius: 7, border: 'none', background: c.brandDeep, color: c.onBrand, fontSize: 13, fontWeight: 500, cursor: 'pointer', fontFamily: FF }}
+                  onMouseEnter={e => (e.currentTarget.style.background = c.brandDeepHover)}
+                  onMouseLeave={e => (e.currentTarget.style.background = c.brandDeep)}
+                >
+                  <ArrowLeftRight size={14} />
+                  Compare with peers
+                </button>
+                {/* When peers exist the button routes straight to the first; the
+                    picker only opens on the empty-peer-set fallback. */}
+                <PeerPicker
+                  open={comparePickerOpen}
+                  onClose={() => setComparePickerOpen(false)}
+                  onSelect={t => { setComparePickerOpen(false); navigateToCompare(selectedTicker!, t); }}
+                  exclude={selectedTicker ? [selectedTicker.toUpperCase()] : []}
+                  align="right"
+                />
+              </div>
+            )}
             <span style={{ fontSize: 11, fontWeight: 500, padding: '3px 10px', borderRadius: 10, background: c.posSurface, color: c.pos, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
               <span style={{ width: 6, height: 6, borderRadius: '50%', background: c.pos, display: 'inline-block' }} />
               API connected
@@ -406,7 +538,15 @@ const App: React.FC = () => {
 
         {/* Page content */}
         <div style={{ flex: 1, overflow: 'hidden' }}>
-          {renderView()}
+          {route.name === 'compare'
+            ? <CompareView
+                anchor={route.anchor.toUpperCase()}
+                peer={route.peer.toUpperCase()}
+                peers={comparePeers}
+                onBack={() => navigateToCompany(route.anchor)}
+                onSelectPeer={p => navigateToCompare(route.anchor, p)}
+              />
+            : renderView()}
         </div>
       </main>
     </div>

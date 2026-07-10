@@ -590,6 +590,34 @@ def load_all_filing_metrics() -> list:
         return []
 
 
+def load_filing_metrics(ticker: str, form: str = "10-K"):
+    """
+    Load the most recent FilingMetrics doc for one ticker+form, or None.
+
+    Pure read — no SEC call, no embedding. Backs GET /metrics/{ticker}'s fast
+    path for the tickers already extracted at least once (FilingMetrics is
+    written by register_filing() at /extract time, independent of whether the
+    embedding half ever completed).
+    """
+    try:
+        store = get_store()
+        with store.open_session() as session:
+            rows = list(
+                session.advanced.raw_query(
+                    f"from {METRICS_COLLECTION} "
+                    "where ticker = $ticker and form = $form "
+                    "order by filing_date desc",
+                    object_type=FilingMetrics,
+                )
+                .add_parameter("ticker", ticker.strip().upper())
+                .add_parameter("form", form)
+            )
+        return rows[0] if rows else None
+    except Exception as e:
+        logger.warning("Could not load FilingMetrics for %s %s: %s", ticker, form, e)
+        return None
+
+
 def load_all_ingest_manifests() -> list:
     """
     Load every IngestManifest document for the one-time graph migration.
