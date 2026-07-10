@@ -994,19 +994,33 @@ def search(
     query: str,
     k: int = 5,
     ticker: Optional[str] = None,
+    tickers: Optional[list[str]] = None,
     form: Optional[str] = None,
     min_similarity: float = 0.75,
     candidates: int = 32,
 ) -> list[FilingChunk]:
     """
     Embed the query (RETRIEVAL_QUERY) and run a dynamic vector search.
-    Optional ticker/form act as regular filters combined with the vector search.
+    ticker/form act as regular filters combined with the vector search.
+
+    `tickers` (a list) restricts to `ticker IN (...)` — used by route_question
+    to scope a vector search to the companies the question actually names, so an
+    unscoped question about a zero-chunk company can't silently retrieve another
+    company's filing text. When both are given, `tickers` wins. When neither is
+    given, the search is global (a legitimate corpus-wide question).
     """
     qvec = embed_texts([query], task_type="RETRIEVAL_QUERY")[0]
 
+    # Normalize the ticker scope: prefer the multi-ticker list, fall back to the
+    # single ticker. Empty/whitespace entries are dropped.
+    scope = [t.strip().upper() for t in (tickers or []) if t and t.strip()]
+    if not scope and ticker and ticker.strip():
+        scope = [ticker.strip().upper()]
+
     filters = []
-    if ticker:
-        filters.append("ticker = $ticker")
+    if scope:
+        placeholders = ", ".join(f"$tk{i}" for i in range(len(scope)))
+        filters.append(f"ticker in ({placeholders})")
     if form:
         filters.append("form = $form")
     filter_clause = (" and ".join(filters) + " and ") if filters else ""
@@ -1026,8 +1040,8 @@ def search(
             .add_parameter("minSim", min_similarity)
             .add_parameter("candidates", candidates)
         )
-        if ticker:
-            q = q.add_parameter("ticker", ticker.strip().upper())
+        for i, t in enumerate(scope):
+            q = q.add_parameter(f"tk{i}", t)
         if form:
             q = q.add_parameter("form", form)
         return list(q)

@@ -98,10 +98,17 @@ def answer_question(
     question: str,
     k: int = 5,
     ticker: Optional[str] = None,
+    tickers: Optional[list[str]] = None,
     form: Optional[str] = None,
 ) -> tuple[str, list[FilingChunk]]:
-    """Retrieve then generate. Returns (answer, source_chunks)."""
-    chunks = search(question, k=k, ticker=ticker, form=form)
+    """
+    Retrieve then generate. Returns (answer, source_chunks).
+
+    `tickers` scopes the vector search to a set of companies (see search()).
+    route_question passes the companies the question names so an unscoped
+    question can't retrieve a different company's filing text.
+    """
+    chunks = search(question, k=k, ticker=ticker, tickers=tickers, form=form)
     if not chunks:
         logger.info("No context retrieved for question: %s", question[:80])
         return "", []

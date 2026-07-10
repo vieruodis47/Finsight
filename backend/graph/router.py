@@ -1037,6 +1037,27 @@ def route_question(
     path = classify_question(question)
     logger.info("Router: path=%s | %s", path, question[:80])
 
+    # Vector-scope resolution. Scope the vector search to the companies the
+    # question actually names, so an unscoped question about a company with zero
+    # chunks can't silently retrieve ANOTHER company's filing text (the graph
+    # and vector halves must agree on scope; the graph path already resolves a
+    # specific company from the text, the vector path historically searched
+    # globally). Precedence:
+    #   1. an explicit caller ticker (e.g. FinChat single-select) wins;
+    #   2. else the companies named in the question that we actually have data
+    #      for (same _extract_tickers resolution the graph path uses, filtered
+    #      to registered tickers so stray uppercase words don't false-scope);
+    #   3. else None -> global search, the correct behavior for a genuinely
+    #      corpus-wide question ("which of my companies flags supply-chain risk?").
+    known = _graph_tickers()
+    mentioned = [t for t in _extract_tickers(question, known_tickers=known) if t in known]
+    if ticker:
+        vector_scope: Optional[list[str]] = [ticker.strip().upper()]
+    elif mentioned:
+        vector_scope = mentioned
+    else:
+        vector_scope = None
+
     _QUOTA_MSG = (
         "The daily embedding quota is exhausted — vector search is unavailable until "
         "midnight UTC. Try a metrics or comparison question; those use the structured "
@@ -1051,7 +1072,7 @@ def route_question(
 
     def _vector() -> tuple[str, list, str]:
         try:
-            ans, chunks = answer_question(question, k=k, ticker=ticker, form=form)
+            ans, chunks = answer_question(question, k=k, tickers=vector_scope, form=form)
         except DailyQuotaExceededError:
             return _QUOTA_MSG, [], "none"
         except PerMinuteQuotaError:
@@ -1078,7 +1099,7 @@ def route_question(
     # See _answer_from_graph / answer_question for the read-only trace.
     def _run_vector() -> tuple[str, list]:
         try:
-            return answer_question(question, k=k, ticker=ticker, form=form)
+            return answer_question(question, k=k, tickers=vector_scope, form=form)
         except DailyQuotaExceededError:
             return _QUOTA_MSG, []
         except PerMinuteQuotaError:
