@@ -21,8 +21,4 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
 
-<<<<<<< HEAD
 CMD uvicorn backend.data_extract.app:app --host 0.0.0.0 --port ${PORT:-8000}
-=======
-CMD uvicorn backend.data_extract.app:app --host 0.0.0.0 --port ${PORT:-8000}
->>>>>>> cfd2a823066af4e8a727c06e2762e45bc35843ac

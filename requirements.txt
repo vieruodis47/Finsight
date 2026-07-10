@@ -6,22 +6,15 @@ uvicorn
 httpx
 pytest
 pytest-cov
-<<<<<<< HEAD
-# Added 2026-07-01: used by backend/data_extract but previously missing here
-=======
 # Added: used by backend/data_extract but previously missing here
->>>>>>> cfd2a823066af4e8a727c06e2762e45bc35843ac
 google-genai
 python-dotenv
 ravendb
 yfinance
 numpy
 pandas
-<<<<<<< HEAD
-=======
 # Graph / GraphRAG layer (backend/graph/)
 rdflib>=7.6.0
 pyparsing>=3.1.0
 # FastAPI file upload support (UploadFile / File form data)
 python-multipart
->>>>>>> cfd2a823066af4e8a727c06e2762e45bc35843ac

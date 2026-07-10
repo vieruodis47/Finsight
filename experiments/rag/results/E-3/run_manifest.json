@@ -1,0 +1,59 @@
+{
+  "exp": "E-3",
+  "eval_file": "experiments\\rag\\eval\\questions.v1.jsonl",
+  "eval_digest": "be4dca472b749207",
+  "k": 5,
+  "repeats": 3,
+  "variants": [
+    "naive",
+    "prompt_minimal",
+    "prompt_fewshot",
+    "ctx_metadata",
+    "prompt_quote_first"
+  ],
+  "configs": {
+    "naive": {
+      "variant": "naive",
+      "architecture": "vector",
+      "gen_model": "gemini-3.1-flash-lite",
+      "temperature": 0.2,
+      "prompt": "production-v1",
+      "notes": "wraps rag.search + rag.generate_answer (production path)"
+    },
+    "prompt_minimal": {
+      "variant": "prompt_minimal",
+      "architecture": "vector (naive retrieval)",
+      "gen_model": "gemini-3.1-flash-lite",
+      "temperature": 0.2,
+      "prompt": "minimal-v1",
+      "registered_variable": "system prompt"
+    },
+    "prompt_fewshot": {
+      "variant": "prompt_fewshot",
+      "architecture": "vector (naive retrieval)",
+      "gen_model": "gemini-3.1-flash-lite",
+      "temperature": 0.2,
+      "prompt": "production-v1 + fewshot-v1",
+      "registered_variable": "system prompt"
+    },
+    "ctx_metadata": {
+      "variant": "ctx_metadata",
+      "architecture": "vector (naive retrieval)",
+      "gen_model": "gemini-3.1-flash-lite",
+      "temperature": 0.2,
+      "prompt": "production-v1",
+      "registered_variable": "context serialization (ordering + metadata)"
+    },
+    "prompt_quote_first": {
+      "variant": "prompt_quote_first",
+      "architecture": "vector (naive retrieval)",
+      "gen_model": "gemini-3.1-flash-lite",
+      "temperature": 0.2,
+      "prompt": "quote-first-v1 (suggested)",
+      "registered_variable": "system prompt"
+    }
+  },
+  "config_hash": "f90433b7dd03a037",
+  "judge_prompt_version": 1,
+  "started_at": "2026-07-10T07:34:28.550765+00:00"
+}

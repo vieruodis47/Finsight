@@ -1,4 +1,3 @@
-
 /**
  * @license
  * Copyright 2025 Google LLC
@@ -349,29 +348,6 @@ app.post('/api-proxy', async (req, res) => {
   }
 });
 
-<<<<<<< HEAD
-// --- Serve the React bundle (production) ---
-// In dev, Vite (:5173) serves the frontend and proxies API calls here.
-// In production, build first (`npm run build --prefix frontend`), then Node
-// serves frontend/dist directly.
-const FRONTEND_DIST = path.resolve(__dirname, '../frontend/dist');
-if (fs.existsSync(FRONTEND_DIST)) {
-  app.use(express.static(FRONTEND_DIST));
-  // SPA fallback: any unmatched GET that accepts HTML gets index.html.
-  app.use((req, res, next) => {
-    if (req.method === 'GET' && req.accepts('html')) {
-      return res.sendFile(path.join(FRONTEND_DIST, 'index.html'));
-    }
-    next();
-  });
-  console.log(`Serving React bundle from ${FRONTEND_DIST}`);
-} else {
-  console.log('No frontend/dist found - dev mode (use Vite on :5173) or run: npm run build --prefix frontend');
-}
-
-const server = app.listen(PORT, API_BACKEND_HOST, () => {
-  console.log(`FinSight Node server listening at http://localhost:${PORT} (FinSight API -> ${PY_BACKEND_URL})`);
-=======
 // --- Production static serving ---
 // In Docker the React bundle is copied to /app/frontend/dist by Dockerfile.node.
 // Only activate when the dist directory actually exists so dev mode (no build) still works.
@@ -386,7 +362,6 @@ if (fs.existsSync(FRONTEND_DIST)) {
 
 const server = app.listen(PORT, API_BACKEND_HOST, () => {
   console.log(`FinSight Node server listening at http://${API_BACKEND_HOST}:${PORT}`);
->>>>>>> cfd2a823066af4e8a727c06e2762e45bc35843ac
 });
 
 
@@ -526,5 +501,3 @@ server.on('upgrade', async (request, socket, head) => {
     socket.destroy();
   }
 });
-
-

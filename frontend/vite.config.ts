@@ -12,19 +12,6 @@ export default defineConfig(({ mode }) => {
       server: {
         proxy: {
           // Vertex AI proxy routes (must be listed BEFORE '/api' so they win the prefix match)
-<<<<<<< HEAD
-          '/api-proxy': 'http://localhost:5000',
-          '/ws-proxy': {target: 'ws://localhost:5000', ws: true},
-          // FinSight API: dev traffic goes through Node (:5000) so sessions/auth
-          // apply; Node forwards these to the Python/FastAPI service (:8000).
-          '/api': 'http://localhost:5000',
-          '/extract': 'http://localhost:5000',
-          '/ingest-status': 'http://localhost:5000',
-          '/market': 'http://localhost:5000',
-          '/search': 'http://localhost:5000',
-          '/compare-metrics': 'http://localhost:5000',
-          '/health': 'http://localhost:5000',
-=======
           '/api-proxy': 'http://127.0.0.1:5000',
           '/ws-proxy': {target: 'ws://127.0.0.1:5000', ws: true},
           // FinSight API: dev traffic goes through Node (:5000) so sessions/auth
@@ -38,7 +25,6 @@ export default defineConfig(({ mode }) => {
           '/search': 'http://127.0.0.1:5000',
           '/compare-metrics': 'http://127.0.0.1:5000',
           '/health': 'http://127.0.0.1:5000',
->>>>>>> cfd2a823066af4e8a727c06e2762e45bc35843ac
         },
       },
       plugins: react(),
