@@ -14,6 +14,11 @@ export interface ChatResult {
 
 export interface AskOptions {
   ticker?: string;
+  // Explicit vector-search scope sent to /api/chat. The compare-view FinChat
+  // strip passes [anchor, peer] so a pair question is confined to those two
+  // companies even when it names neither. Omitted by ChatInterface, so its
+  // behaviour is unchanged (the backend field is additive/optional).
+  tickers?: string[];
   form?: '10-K';
   k?: number;
 }
@@ -255,4 +260,47 @@ export async function fetchCompareMetrics(a: string, b: string): Promise<Compare
     throw new Error(`Compare metrics failed (${res.status}): ${msg}`);
   }
   return (await res.json()) as CompareMetricsResult;
+}
+
+// Single-ticker dashboard metrics — the read-only, embed-free counterpart to
+// /extract. Backs the /company/:ticker deep link: renders the dashboard for
+// any valid SEC ticker without ever enqueueing embedding work. Fails soft to
+// null (404 = no such ticker/filing, or a transient error) so a deep link
+// degrades to the empty dashboard state rather than crashing.
+export interface MetricsResponse {
+  ticker: string;
+  form: string;
+  filing_date: string;
+  fiscal_year_end: string;
+  accession_number: string;
+  sector: string;
+  metrics: FilingMetrics;
+  source: 'ravendb' | 'sec';
+}
+
+export async function fetchMetrics(ticker: string): Promise<MetricsResponse | null> {
+  try {
+    const res = await fetch(`${API_BASE}/metrics/${encodeURIComponent(ticker)}`);
+    if (!res.ok) return null;
+    return (await res.json()) as MetricsResponse;
+  } catch {
+    return null;
+  }
+}
+
+// Whether each ticker has a completed IngestManifest (fully embedded and
+// searchable), used to gate the ingest CTA on deep links. Fails soft to
+// "not indexed" on any error — unknown and not-indexed are the same thing to
+// the UI, and the alternative (throwing) would block rendering the dashboard
+// shell over a transient network blip.
+export async function fetchIndexedStatus(tickers: string[]): Promise<Record<string, boolean>> {
+  const upper = tickers.map(t => t.toUpperCase());
+  if (upper.length === 0) return {};
+  try {
+    const res = await fetch(`${API_BASE}/indexed?tickers=${encodeURIComponent(upper.join(','))}`);
+    if (!res.ok) return Object.fromEntries(upper.map(t => [t, false]));
+    return (await res.json()) as Record<string, boolean>;
+  } catch {
+    return Object.fromEntries(upper.map(t => [t, false]));
+  }
 }

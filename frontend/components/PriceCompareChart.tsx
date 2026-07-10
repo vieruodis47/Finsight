@@ -134,7 +134,8 @@ const PriceCompareChart: React.FC<PriceCompareChartProps> = ({ anchor, peer }) =
     contentStyle: { fontSize: 12, borderRadius: 8, border: `0.5px solid ${c.border}`, fontFamily: FF, background: c.bg },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     formatter: (v: any, name: any) => [v == null ? '—' : fmtPctSigned(v as number), (name as string) === 'a' ? anchor : peer],
-    labelFormatter: (d: string) => d,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    labelFormatter: (d: any) => d as string,
   }), [anchor, peer]);
 
   const legendEntry = (label: string, color: string, final: number | null) => (

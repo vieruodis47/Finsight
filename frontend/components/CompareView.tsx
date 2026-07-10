@@ -6,6 +6,7 @@ import { fmtM, fmtPct, fmtRatio } from '../utils/format';
 import { fetchCompareMetrics, CompareMetricsResult, ComparePoint } from '../services/gemini';
 import PeerPicker from './PeerPicker';
 import PriceCompareChart from './PriceCompareChart';
+import FinChatStrip from './FinChatStrip';
 
 interface CompareViewProps {
   anchor: string;
@@ -303,6 +304,9 @@ const CompareView: React.FC<CompareViewProps> = ({ anchor, peer, peers, onBack, 
 
       {/* ── Price — normalized % change (independent of the metrics fetch) ── */}
       <PriceCompareChart anchor={anchor} peer={peer} />
+
+      {/* ── FinChat — single-shot, scoped to the pair, gated on /indexed ── */}
+      <FinChatStrip anchor={anchor} peer={peer} />
     </div>
   );
 };
