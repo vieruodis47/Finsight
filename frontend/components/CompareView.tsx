@@ -5,6 +5,7 @@ import { useOnClickOutside } from '../utils/hooks';
 import { fmtM, fmtPct, fmtRatio } from '../utils/format';
 import { fetchCompareMetrics, CompareMetricsResult, ComparePoint } from '../services/gemini';
 import PeerPicker from './PeerPicker';
+import PriceCompareChart from './PriceCompareChart';
 
 interface CompareViewProps {
   anchor: string;
@@ -299,6 +300,9 @@ const CompareView: React.FC<CompareViewProps> = ({ anchor, peer, peers, onBack, 
       )}
 
       {!loading && !error && data && <KeyMetricsPanel data={data} />}
+
+      {/* ── Price — normalized % change (independent of the metrics fetch) ── */}
+      <PriceCompareChart anchor={anchor} peer={peer} />
     </div>
   );
 };
