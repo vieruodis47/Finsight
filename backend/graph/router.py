@@ -994,7 +994,7 @@ def _answer_from_graph(question: str) -> tuple[str, bool]:
     # Period-end disclosure: only when FY-end months differ across compared companies
     period_note = _period_end_note(tickers_with_data, queried_year)
 
-    gen_model = os.getenv("GEMINI_GEN_MODEL", "gemini-1.5-flash")
+    gen_model = os.getenv("GEMINI_GEN_MODEL", "gemini-3.1-flash-lite")
 
     # Schema annotations go BEFORE the table so the model understands column
     # semantics before it reads the data rows, and the question lands at the end.

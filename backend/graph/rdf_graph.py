@@ -306,7 +306,7 @@ def sparql_to_llm(question: str, sparql: str, g: Graph) -> str:
     from backend.data_extract.embeddings import get_genai_client
     from google.genai import types as genai_types
 
-    gen_model = os.getenv("GEMINI_GEN_MODEL", "gemini-1.5-flash")
+    gen_model = os.getenv("GEMINI_GEN_MODEL", "gemini-3.1-flash-lite")
 
     rows = run_sparql(g, sparql)
     table = results_to_markdown(rows)
