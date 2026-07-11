@@ -69,6 +69,17 @@ const App: React.FC = () => {
     navigate(`/compare/${encodeURIComponent(anchor)}/${encodeURIComponent(peer)}`);
   };
 
+  // Switch to a top-level nav view. On a /compare route this MUST also leave the
+  // route: the page-content switch below renders CompareView whenever
+  // route.name === 'compare', taking precedence over currentView — so setting
+  // currentView alone would change state that never renders (the sidebar would
+  // look dead). navigate('/') clears the compare route so renderView() runs.
+  // Not needed on /company routes: those don't override currentView.
+  const selectView = (view: ViewState) => {
+    setCurrentView(view);
+    if (route.name === 'compare') navigate('/');
+  };
+
   const [hoveredCompany, setHoveredCompany] = useState<string | null>(null);
 
   const handleAddDocument = (doc: Document) => {
@@ -384,7 +395,7 @@ const App: React.FC = () => {
             return (
               <button
                 key={view}
-                onClick={() => setCurrentView(view)}
+                onClick={() => selectView(view)}
                 title={collapsed ? label : undefined}
                 style={{
                   display: 'flex', alignItems: 'center', gap: 9,
@@ -463,7 +474,7 @@ const App: React.FC = () => {
             );
           })}
           <button
-            onClick={() => setCurrentView('documents')}
+            onClick={() => selectView('documents')}
             title={collapsed ? 'Add company' : undefined}
             style={{ display: 'flex', alignItems: 'center', gap: 9, padding: '7px 10px', borderRadius: 6, fontSize: 12, color: c.textFaint, background: 'transparent', border: 'none', cursor: 'pointer', width: '100%', textAlign: 'left', whiteSpace: 'nowrap', fontFamily: FF }}
             onMouseEnter={e => { e.currentTarget.style.background = c.hover; e.currentTarget.style.color = c.textMuted; }}
