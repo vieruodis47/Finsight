@@ -61,8 +61,21 @@ import hashlib
 import logging
 import os
 import re
+import threading
 from datetime import datetime, timezone
 from typing import Iterable, Optional
+
+# Constrain native math-library thread pools BEFORE torch / sentence-transformers
+# is imported (that import is lazy, inside get_embed_model). On a 1-vCPU Cloud Run
+# instance, unbounded OpenMP/MKL intra-op threads running bge-m3 inference inside
+# a background daemon thread contend with the async server and can wedge the
+# encode indefinitely — observed as a 326-chunk embed that never returned and
+# blocked the whole ingest queue behind it. One thread per pool keeps CPU
+# inference deterministic and non-blocking. Override via env if given more vCPUs.
+for _thr_var in (
+    "OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS",
+):
+    os.environ.setdefault(_thr_var, os.getenv("EMBED_NUM_THREADS", "1"))
 
 import numpy as np
 from google import genai
@@ -132,26 +145,44 @@ MIN_SIMILARITY = float(os.getenv("MIN_SIMILARITY", "0.45"))
 _store: Optional[DocumentStore] = None
 _genai_client: Optional[genai.Client] = None
 _embed_model = None  # lazy-loaded sentence-transformers bge-m3 encoder
+_embed_model_lock = threading.Lock()  # guards the one-time load below
 
 
 def get_embed_model():
     """
-    Lazily load and cache the in-process bge-m3 encoder.
+    Lazily load and cache the in-process bge-m3 encoder (thread-safe, load-once).
 
     Loaded on the FIRST embed (first ingest or first query), NOT at import — so
     the service boots and serves non-RAG endpoints (market data, metrics, price
     history) without paying the ~10s model load. That cost is felt only by the
     first FinChat ask on a cold instance; every embed after that is warm (~0.4s).
 
+    The lock + double-check make the load happen EXACTLY once even under
+    concurrent first-callers (e.g. the ingest worker and a first FinChat query
+    racing on a cold instance). Two simultaneous ~2GB bge-m3 loads on a 1-vCPU
+    box was a direct cause of the encode wedge; serializing the load fixes it.
+    _embed_model is only published after the load fully completes, so no caller
+    ever sees a half-initialized model.
+
     In the deployed image the weights are baked at build time and HF_HUB_OFFLINE=1,
     so this reads from the in-image cache and never touches the network.
     """
     global _embed_model
     if _embed_model is None:
-        from sentence_transformers import SentenceTransformer
-        logger.info("loading embedding model %s (revision %s) ...", EMBED_MODEL, EMBED_MODEL_REVISION)
-        _embed_model = SentenceTransformer(EMBED_MODEL, revision=EMBED_MODEL_REVISION)
-        logger.info("embedding model %s loaded", EMBED_MODEL)
+        with _embed_model_lock:
+            if _embed_model is None:
+                import torch
+                from sentence_transformers import SentenceTransformer
+                # Pin intra-op parallelism to match the (single) allocated vCPU;
+                # complements the *_NUM_THREADS env set at import time.
+                torch.set_num_threads(int(os.getenv("EMBED_NUM_THREADS", "1")))
+                logger.info(
+                    "loading embedding model %s (revision %s) ...",
+                    EMBED_MODEL, EMBED_MODEL_REVISION,
+                )
+                model = SentenceTransformer(EMBED_MODEL, revision=EMBED_MODEL_REVISION)
+                _embed_model = model
+                logger.info("embedding model %s loaded", EMBED_MODEL)
     return _embed_model
 
 

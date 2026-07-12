@@ -99,6 +99,13 @@ UPLOAD_MAX_MB = int(os.getenv("UPLOAD_MAX_MB", "50"))
 # Maximum hours to wait before declaring a daily-quota job permanently failed.
 QUOTA_DEADLINE_HOURS = int(os.getenv("QUOTA_DEADLINE_HOURS", "72"))
 
+# Hard wall-clock cap on a single ingest job. The worker is single-threaded, so a
+# job that hangs (e.g. a wedged embed) would block every job behind it forever —
+# head-of-line blocking. If a job exceeds this, we mark it failed and move on so
+# the queue keeps draining. Generous enough that a normal large 10-K (a few
+# hundred chunks, single-thread CPU encode) finishes well within it.
+INGEST_JOB_TIMEOUT = int(os.getenv("INGEST_JOB_TIMEOUT", "900"))  # 15 min
+
 
 # ---------------------------------------------------------------------------
 # Shared in-memory state
@@ -384,7 +391,28 @@ def _queue_worker() -> None:
         )
         _set_job_status(key, "indexing")
         try:
-            _run_ingest(ticker, form, sections, source, key, accession_number, filing_date)
+            # Run the job in a helper thread and join with a timeout so a single
+            # hung job (wedged embed) can't block the queue behind it. _run_ingest
+            # sets its own terminal status; we only override on timeout.
+            job_thread = threading.Thread(
+                target=_run_ingest,
+                args=(ticker, form, sections, source, key, accession_number, filing_date),
+                daemon=True,
+                name=f"ingest-{key}",
+            )
+            job_thread.start()
+            job_thread.join(INGEST_JOB_TIMEOUT)
+            if job_thread.is_alive():
+                logger.error(
+                    "Ingest for %s %s exceeded %ds — marking failed and moving on "
+                    "(job thread left running)",
+                    ticker, form, INGEST_JOB_TIMEOUT,
+                )
+                _set_job_status(
+                    key, "failed",
+                    error=f"Ingest exceeded {INGEST_JOB_TIMEOUT}s timeout "
+                          f"(possible embed wedge)",
+                )
         finally:
             _ingest_queue.task_done()
 
