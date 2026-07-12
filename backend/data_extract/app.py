@@ -80,6 +80,17 @@ from .indexed import router as indexed_router
 from .filing_metrics import router as filing_metrics_router
 from .embeddings import DailyQuotaExceededError, PerMinuteQuotaError
 
+# Wire root logging to stdout at import time so app logger.info() lines (worker
+# start, "Enqueued", "Startup recovery", "chunks stored") reach Cloud Logging.
+# Without this, Python's last-resort handler emits WARNING+ only and every INFO
+# line from this module is silently dropped — making the ingest worker invisible.
+# force=True so we win even if a dependency called basicConfig first.
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+    force=True,
+)
+
 logger = logging.getLogger(__name__)
 
 FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "http://localhost:5173")
