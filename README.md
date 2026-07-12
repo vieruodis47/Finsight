@@ -7,136 +7,38 @@ financial data** (revenue, margins, ratios) and **unstructured filing text**
 vector similarity index — are selected per-question by a keyword heuristic
 router with no LLM call needed for routing.
 
----
+Embeddings run **in-process** with the MIT-licensed `bge-m3` model (1024-dim,
+no API, no quota); answer generation uses Gemini.
 
-## Architecture
-
-```
-Browser  (:5173 dev / :5001 Docker)
-  │
-  ▼
-Node / Express  (server.js, :5000 internal)
-  ├── GET  /*          →  serves frontend/dist  (React SPA)
-  ├── POST /api-proxy  →  Vertex AI  (auth-proxied, rate-limited)
-  └── /api  /extract  /ingest-status  /market  /search  /compare-metrics
-              │  pyProxy.js
-              ▼
-Python / FastAPI  (data_extract/app.py, :8000)
-  ├── GET  /extract/{ticker}         EDGAR fetch → XBRL parse → chunk → embed
-  ├── POST /api/chat                 GraphRAG router → Gemini generation
-  ├── GET  /market/{ticker}          yfinance live quote + price history
-  ├── GET  /search?q=                SEC company registry search
-  ├── GET  /compare-metrics?a=&b=    multi-year XBRL for two tickers
-  └── POST /upload  /ingest-retry  /upload-retry  (file ingest + polling)
-              │
-              ├──► RavenDB
-              │      FilingChunks      (text + 1536-dim embedding vectors)
-              │      IngestManifests   (dedup / already-indexed gate)
-              │      IngestJobs        (queue state, persisted across restarts)
-              │      FilingMetrics     (structured XBRL; rehydrates graph on boot)
-              │
-              └──► Gemini API
-                     gemini-embedding-001  (text → 1536-dim vector)
-                     gemini-2.5-flash      (grounded answer generation)
-```
-
-**Request flow for a chat question:**
-
-1. Browser `POST /api/chat` → Vite proxy (dev) or Node (prod)
-2. Node forwards via `pyProxy.js` to FastAPI `POST /api/chat`
-3. `graph/router.py` classifies the question (keyword heuristics, no LLM)
-4. Depending on path: SPARQL over in-memory RDF graph, vector search in
-   RavenDB, or both in parallel
-5. Retrieved context passed to Gemini for a grounded, cited answer
-6. Response includes `retrieval_path` so the UI can show the source badge
+> **Architecture deep-dive:** see [ARCHITECTURE.md](./ARCHITECTURE.md) for the
+> service topology, the GraphRAG router, the embedding design, the data
+> pipeline, the RavenDB storage model, and the full component map.
 
 ---
 
-## Hybrid GraphRAG routing
-
-`backend/graph/router.py` routes each question without calling an LLM. It
-applies four compiled regex sets to the question text:
-
-| Pattern set | Examples |
-|---|---|
-| `_METRIC_KW` | revenue, net income, gross margin, EPS, free cash flow, debt, ROE |
-| `_STRUCTURED_KW` | compare, versus, rank, highest, lowest, which company |
-| `_NARRATIVE_KW` | risk factors, MD&A, strategy, guidance, segment, supply chain |
-| `_YEAR_RE` | FY2024, fiscal 2023, 2022 |
-
-**Routing decision:**
-
-| Signals present | Path | Meaning |
-|---|---|---|
-| metric + year, or structured comparison | `graph` | SPARQL over in-memory RDF graph |
-| direct-lookup phrasing + metric + year | `graph` | overrides any narrative keyword |
-| narrative only | `vector` | RavenDB vector similarity search |
-| narrative + (structured keyword or year) | `both` | parallel graph + vector, merged |
-| graph chosen but in-memory graph is empty | `vector_no_graph` | transparent fallback |
-
-The four paths surface as source badges in the chat UI:
-`◉ financial data` / `◉ filing text` / `◉ financial data + filing text` /
-`◎ filing text · graph data not loaded`.
-
-The in-memory graph is populated when `/extract/{ticker}` is called and also
-rehydrated from the `FilingMetrics` RavenDB collection on startup, so
-structured metric queries survive server restarts without re-ingesting.
-
----
-
-## Data pipeline
-
-### Filing ingest (EDGAR or upload)
+## At a glance
 
 ```
-Ticker input
-  │
-  ▼
-sec_client.py: CIK lookup → filing list → document URL → PDF/text fetch + parse
-  │
-  ▼
-extractor.py: XBRL companyfacts API → income / balance / cash-flow metrics
-              narrative sections extracted from filing text
-  │
-  ▼
-embeddings.py: text chunked → gemini-embedding-001 (1536-dim)
-               FilingChunks stored in RavenDB  (text + embedding + ticker/form metadata)
-               IngestManifest written  (accession number → dedup gate for re-adds)
-               IngestJob updated  (queued → indexing → indexed / failed / waiting_for_quota)
-  │
-  ▼
-graph/router.py: register_filing() → XBRL metrics saved to FilingMetrics collection
-                 in-memory RDF graph rebuilt from updated registry
+Browser ─▶ Node/Express (server.js) ─▶ Python/FastAPI (data_extract/app.py)
+                │                              │
+     serves React SPA + Vertex          ├─▶ RavenDB (chunks, metrics, jobs)
+     AI auth proxy                      ├─▶ bge-m3 in-process (1024-dim embeddings)
+                                        └─▶ Gemini / Vertex AI (answer generation)
 ```
 
-**Ingest queue.** A single background thread drains one filing at a time to
-stay within the Gemini free-tier RPM limit. `IngestJobs` documents persist
-queue state across restarts. When the daily embedding quota is exhausted, jobs
-transition to `waiting_for_quota` with exponential backoff (30 min → 60 →
-120 → 360 min max) and are retried automatically. After 72 hours the job is
-marked `failed`.
+- **Node/Express** serves the React bundle, proxies Vertex AI (auth + rate
+  limiting + SSRF guard), and forwards API routes to Python.
+- **Python/FastAPI** runs the filing pipeline, the GraphRAG router, the ingest
+  queue, and the market/search/compare endpoints.
+- **RavenDB** stores filing chunks (with embedding vectors), XBRL metrics,
+  ingest manifests, and queue state.
+- **bge-m3** (via `sentence-transformers`) embeds text on-CPU, in-process — the
+  same encoder for ingest and query.
+- **Gemini** (`gemini-1.5-flash` by default) generates the grounded answers.
 
-**Already-indexed check.** Before embedding, `check_already_indexed()` looks
-up the accession number in `IngestManifests`. If found, the filing is skipped:
-no embedding calls, no quota consumed, status returns `indexed` immediately.
-
-**RavenDB collections:**
-
-| Collection | Content |
-|---|---|
-| `FilingChunks` | Chunked filing text + 1536-dim `embedding` vector |
-| `IngestManifests` | One doc per indexed filing; accession number for dedup |
-| `IngestJobs` | Queue state (queued / indexing / indexed / failed / waiting_for_quota) |
-| `FilingMetrics` | XBRL structured metrics per ticker/year; rehydrates the RDF graph on startup |
-
-### RDF graph
-
-`graph/rdf_graph.py` builds an in-memory OWL graph from the numeric metric
-categories (`income_statement`, `balance_sheet`, `cash_flow`,
-`computed_ratios`). Qualitative prose lives only in `FilingChunks`.
-
-Ontology namespace: `http://finsight.io/ontology#`  
-Classes: `fs:Company`, `fs:Filing`, `fs:FinancialMetric`
+Key API routes forwarded to Python: `/extract`, `/metrics`, `/api/chat`,
+`/market`, `/search`, `/compare-metrics`, `/indexed`, `/ingest-status`,
+`/health`.
 
 ---
 
@@ -148,8 +50,13 @@ Classes: `fs:Company`, `fs:Filing`, `fs:FinancialMetric`
 - Node.js 20+
 - Python 3.11+
 - A running RavenDB instance (see below)
-- Gemini API key ([free tier](https://aistudio.google.com); embedding quota is 1 000 req/day)
+- Gemini API key ([free tier](https://aistudio.google.com)) — used for answer
+  **generation** only; embeddings are local and need no key
 - Google Cloud project with Vertex AI API enabled (for the Node auth proxy)
+
+> On first run the `bge-m3` weights (~2 GB) are downloaded to the
+> `sentence-transformers` cache. The Docker image bakes them in at build time;
+> native dev fetches them once on the first embed.
 
 ### RavenDB
 
@@ -180,7 +87,7 @@ cd finsight
 # Node dependencies (root workspace + frontend + backend)
 npm install
 
-# Python dependencies
+# Python dependencies (includes torch CPU + sentence-transformers)
 pip install -r requirements.txt
 ```
 
@@ -192,18 +99,22 @@ Create two env files (both are gitignored):
 
 | Variable | Required | Default | Purpose |
 |---|---|---|---|
-| `GEMINI_API_KEY` | **yes** | — | Gemini API key for embeddings + generation |
+| `GEMINI_API_KEY` | **yes** | — | Gemini API key for answer **generation** |
 | `RAVENDB_URLS` | no | `http://127.0.0.1:8080` | Comma-separated RavenDB node URLs |
 | `RAVENDB_DATABASE` | no | `finsight` | RavenDB database name |
 | `RAVENDB_CERT_PATH` | no | — | Path to client cert PEM (RavenDB Cloud only) |
 | `GEMINI_GEN_MODEL` | no | `gemini-1.5-flash` | Generation model name |
-| `EMBED_DIM` | no | `1536` | Embedding dimension (must match existing index) |
-| `EMBED_BATCH` | no | `8` | Chunks per embedding API call |
-| `EMBED_BATCH_DELAY` | no | `1.0` | Seconds between embedding batches |
+| `EMBED_MODEL` | no | `BAAI/bge-m3` | In-process embedding model |
+| `EMBED_MODEL_REVISION` | no | pinned `5617a9f…` | HF revision (keep in sync with the baked image) |
+| `EMBED_DIM` | no | `1024` | Embedding dimension (fixed by bge-m3; must match existing index) |
+| `EMBED_BATCH` | no | `32` | Texts per encode batch |
 | `SEC_USER_AGENT` | no | `FinSight contact@example.com` | SEC rate-limit header — set to your own email |
 | `FRONTEND_ORIGIN` | no | — | CORS allowed origin (e.g. `http://localhost:5173`) |
 | `UPLOAD_MAX_MB` | no | `50` | Max file size for PDF/TXT uploads |
-| `QUOTA_DEADLINE_HOURS` | no | `72` | Hours before a quota-stalled job is marked failed |
+
+> **Embeddings are quota-free.** Because bge-m3 runs in-process, there is no
+> per-day/per-minute embedding quota. The legacy `QUOTA_DEADLINE_HOURS` var and
+> the `waiting_for_quota` job states remain in the code but no longer fire.
 
 Minimal `backend/.env.python`:
 ```
@@ -269,13 +180,12 @@ python -m backend.scripts.bulk_ingest --tickers AAPL,MSFT,NVDA
 # From a text file (one ticker per line)
 python -m backend.scripts.bulk_ingest --file tickers.txt
 
-# Dry run (no embedding calls, no quota consumed)
+# Dry run (no embedding, no writes)
 python -m backend.scripts.bulk_ingest --tickers AAPL --dry-run
 ```
 
-The script loads `backend/.env.python` automatically. It skips
-already-indexed tickers and stops cleanly on daily quota exhaustion — re-run
-the next day to continue from where it left off.
+The script loads `backend/.env.python` automatically and skips already-indexed
+tickers.
 
 ---
 
@@ -286,16 +196,19 @@ Two Cloud Run services:
 | Service | Image source | What it runs |
 |---|---|---|
 | `node-service` | `backend/Dockerfile.node` | Express + React bundle + Vertex auth proxy |
-| `python-service` | `backend/Dockerfile.python` | FastAPI + ingest queue + GraphRAG |
+| `python-service` | `backend/Dockerfile.python` | FastAPI + ingest queue + GraphRAG + bge-m3 |
 
 **Infrastructure:**
-- Container images stored in **Artifact Registry**
+- Container images stored in **Artifact Registry**. `Dockerfile.python` installs
+  CPU-only `torch` from the PyTorch CPU wheel index and bakes the pinned bge-m3
+  weights into an image layer, so a scaled-to-zero instance never does a runtime
+  model fetch.
 - Secrets (API keys, RavenDB client cert) in **Secret Manager**, mounted as
-  env vars or files into the Cloud Run services
+  env vars or files into the Cloud Run services.
 - Database: **RavenDB Cloud**; the Python service connects with a client
-  certificate PEM mounted from Secret Manager
+  certificate PEM mounted from Secret Manager.
 - `node-service` reaches `python-service` via `PY_BACKEND_URL` over the
-  Cloud Run internal network
+  Cloud Run internal network.
 
 **CI/CD (`.github/workflows/deploy.yml`):**
 
@@ -317,94 +230,43 @@ grant the deploy service account `roles/run.developer` and
 
 ```
 finsight/
+├── ARCHITECTURE.md                # Deep-dive: topology, router, pipeline, storage
 ├── compose.yaml                   # Docker Compose: node + python services
 ├── package.json                   # NPM workspace root; dev scripts
-├── requirements.txt               # Python dependencies
+├── requirements.txt               # Python dependencies (incl. torch + bge-m3)
 │
 ├── backend/
 │   ├── server.js                  # Node/Express: serves SPA, Vertex proxy, pyProxy
 │   ├── Dockerfile.node            # Two-stage: Vite build → Express runtime
-│   ├── Dockerfile.python          # python:3.11-slim → uvicorn
-│   ├── .env.local                 # Node env (gitignored)
-│   ├── .env.python                # Python env (gitignored)
-│   │
-│   ├── data_extract/
-│   │   ├── app.py                 # FastAPI app + ingest queue daemon
-│   │   ├── embeddings.py          # RavenDB client, Gemini embed, ingest/search
-│   │   ├── extractor.py           # Pipeline orchestrator: EDGAR → metrics + sections
-│   │   ├── sec_client.py          # All SEC EDGAR network calls
-│   │   ├── facts.py               # XBRL → standardized financial fields
-│   │   ├── ratios.py              # Computed financial ratios (ROE, current ratio, …)
-│   │   ├── sections.py            # Filing section splitter (Risk Factors, MD&A, …)
-│   │   ├── rag.py                 # RAG: retrieve chunks → Gemini generation
-│   │   ├── compare_metrics.py     # /compare-metrics endpoint
-│   │   ├── market.py              # /market endpoint (yfinance)
-│   │   ├── search.py              # /search endpoint (SEC registry)
-│   │   ├── sectors.py             # SIC code → GICS sector mapper
-│   │   └── text_metrics.py        # Regex fallback metric extractor
-│   │
-│   ├── graph/
-│   │   ├── router.py              # GraphRAG router: classifier + answer orchestrator
-│   │   └── rdf_graph.py           # RDF/SPARQL graph (rdflib), OWL ontology
-│   │
+│   ├── Dockerfile.python          # python:3.11-slim → CPU torch + baked bge-m3 → uvicorn
+│   ├── data_extract/              # FastAPI app, embeddings, extractor, endpoints
+│   ├── graph/                     # GraphRAG router + RDF/SPARQL graph
 │   ├── analysis/                  # Standalone offline analysis tools
-│   │   ├── charts.py              # Plotly chart generator
-│   │   └── metrics.py             # XBRL extractor (standalone)
-│   │
-│   ├── scripts/
-│   │   └── bulk_ingest.py         # CLI bulk ingestion; quota-aware, resumable
-│   │
-│   ├── services/
-│   │   ├── pyProxy.js             # Node → Python HTTP forwarder
-│   │   └── session.js             # Express session middleware
-│   │
-│   └── company_name/
-│       └── sec_companies.json     # Full SEC ticker → CIK registry (~12 000 companies)
+│   ├── scripts/bulk_ingest.py     # CLI bulk ingestion; resumable
+│   ├── services/                  # pyProxy.js, session.js
+│   └── company_name/              # SEC ticker → CIK registry
 │
 ├── frontend/
 │   ├── App.tsx                    # Root shell: layout, routing, document state
-│   ├── types.ts                   # TypeScript types (Document, FilingMetrics, …)
-│   ├── theme.ts                   # Design tokens: colors, fonts, breakpoints
-│   ├── vite.config.ts             # Vite config + dev proxy to Node (:5000)
-│   │
-│   ├── components/
-│   │   ├── Dashboard.tsx          # Metrics cards + margin chart + market snapshot
-│   │   ├── ChatInterface.tsx      # Finch chat: markdown, citations, filter pills
-│   │   ├── DocumentManager.tsx    # Filing fetch/upload, status badges, retry
-│   │   ├── AnalysisView.tsx       # AI summary + two-company XBRL comparison charts
-│   │   ├── HelpView.tsx           # Question tips, quality checker, FAQ
-│   │   ├── GettingStarted.tsx     # Onboarding screen (no filings loaded)
-│   │   ├── SplashScreen.tsx       # First-load landing screen
-│   │   ├── SearchDropdown.tsx     # Autocomplete company dropdown
-│   │   └── CompanyLogo.tsx        # Favicon-based company logo with fallbacks
-│   │
-│   ├── services/
-│   │   └── gemini.ts              # All frontend fetch() wrappers for backend APIs
-│   │
-│   └── utils/
-│       ├── company.ts             # Ticker → name/domain maps, companyLabel()
-│       └── hooks.ts               # useDebounce, useIsTablet (matchMedia)
+│   ├── components/                # Dashboard, ChatInterface, CompareView, …
+│   ├── services/gemini.ts         # Frontend fetch() wrappers for backend APIs
+│   └── utils/                     # Ticker maps + React hooks
 │
-└── .github/
-    └── workflows/
-        └── deploy.yml             # CI/CD: WIF auth → docker build → Cloud Run deploy
+└── .github/workflows/deploy.yml   # CI/CD: WIF auth → docker build → Cloud Run
 ```
+
+See [ARCHITECTURE.md](./ARCHITECTURE.md) for the annotated, file-by-file
+component map.
 
 ---
 
 ## Known limitations
 
-**Gemini embedding quota.** The free tier allows 1 000 embedding requests per
-day. A typical 10-K produces ~200–400 chunks. Filings that hit the daily quota
-automatically retry with exponential backoff (30 min → 6 hr max). Use
-`bulk_ingest.py` to spread large jobs across multiple days; already-indexed
-filings are always skipped.
-
-**Graph requires a filing extract after Python restart.** The in-memory RDF
-graph is rebuilt at startup from the `FilingMetrics` RavenDB collection. If
-`FilingMetrics` is populated, graph features are available immediately. If the
-collection is empty (fresh database), structured metric questions fall back to
-`vector_no_graph` until the first `/extract/{ticker}` call.
+**Graph requires a filing extract after a fresh database.** The in-memory RDF
+graph is rebuilt at startup from the `FilingMetrics` RavenDB collection. If it
+is populated, graph features are available immediately. If empty (fresh
+database), structured metric questions fall back to `vector_no_graph` until the
+first `/extract/{ticker}` call.
 
 **Silent DB degradation on startup.** RavenDB connection calls in the FastAPI
 lifespan handler are wrapped in `try/except`. If RavenDB is unreachable, the
