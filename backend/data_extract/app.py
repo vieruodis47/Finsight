@@ -657,6 +657,14 @@ class IngestStatusResponse(BaseModel):
     error: Optional[str] = None
 
 
+# Statuses a persisted IngestJob can legitimately carry; guards the response
+# model against an unexpected value read from RavenDB (which would 500 on
+# validation). Excludes "unknown", which is only ever synthesized here.
+_INGEST_STATUS_VALUES = {
+    "queued", "indexing", "indexed", "failed", "waiting_for_quota",
+}
+
+
 @app.get("/ingest-status/{ticker}", response_model=IngestStatusResponse)
 def ingest_status(
     ticker: str,
@@ -670,15 +678,50 @@ def ingest_status(
     - "failed":           embedding or RavenDB write failed; `error` has details
     - "waiting_for_quota": daily Gemini quota hit; will auto-retry on a schedule
     - "unknown":          no ingest has been triggered (or server was restarted)
+
+    Read authoritatively from RavenDB, NOT the per-process in-memory dict. With
+    more than one instance, the in-memory status reflects only the requests THIS
+    instance handled, so it routinely disagreed with /indexed (e.g. a stale
+    "failed" from a timed-out attempt on one instance while another instance had
+    finished and written the manifest). Resolution order:
+      1. Manifest present (the /indexed truth) -> "indexed" — this wins over any
+         job status, so /ingest-status and /indexed can never disagree.
+      2. Else the shared IngestJob doc — the live lifecycle every instance writes.
+      3. Else the in-memory dict — covers the brief window before the first
+         RavenDB persist; else "unknown".
     """
     key = _ingest_key(ticker, form)
+    tkr = ticker.strip().upper()
+
+    # 1. Manifest = definitive "indexed" (same source and cache as /indexed).
+    try:
+        from .indexed import get_indexed_map
+        indexed_map = get_indexed_map()
+        if tkr in indexed_map:
+            return IngestStatusResponse(status="indexed", chunks=indexed_map[tkr])
+    except Exception as e:
+        logger.warning("ingest-status: indexed-map lookup failed for %s: %s", key, e)
+
+    # 2. Shared IngestJob doc — authoritative in-flight lifecycle across instances.
+    try:
+        from .embeddings import load_ingest_job
+        job = load_ingest_job(key)
+    except Exception as e:
+        logger.warning("ingest-status: job load failed for %s: %s", key, e)
+        job = None
+    if job is not None and job.status in _INGEST_STATUS_VALUES:
+        return IngestStatusResponse(
+            status=job.status, chunks=job.chunks or 0, error=job.last_error,
+        )
+
+    # 3. In-memory fallback (pre-persist window), else unknown.
     with _status_lock:
         info = _ingest_status.get(key)
-    if info is None:
-        return IngestStatusResponse(status="unknown", chunks=0)
-    return IngestStatusResponse(
-        status=info["status"], chunks=info["chunks"], error=info.get("error"),
-    )
+    if info is not None:
+        return IngestStatusResponse(
+            status=info["status"], chunks=info["chunks"], error=info.get("error"),
+        )
+    return IngestStatusResponse(status="unknown", chunks=0)
 
 
 class RetryRequest(BaseModel):

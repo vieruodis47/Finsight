@@ -32,32 +32,43 @@ from fastapi import APIRouter, Query
 router = APIRouter()
 
 _CACHE_TTL_SECONDS = 60
-_cache: tuple[float, set[str]] | None = None
+# ticker (upper) -> chunk_count of its manifest. Membership answers "indexed?";
+# the value gives /ingest-status an accurate chunk count from the SAME source
+# /indexed uses, so the two endpoints can never disagree about indexed-ness.
+_cache: tuple[float, dict[str, int]] | None = None
 _cache_lock = threading.Lock()
 
 
-def _load_indexed_tickers() -> set[str]:
+def _load_indexed_map() -> dict[str, int]:
     from .embeddings import load_all_ingest_manifests
     manifests = load_all_ingest_manifests()
-    return {m.ticker.upper() for m in manifests if m.ticker}
+    out: dict[str, int] = {}
+    for m in manifests:
+        if not m.ticker:
+            continue
+        t = m.ticker.upper()
+        # Keep the largest chunk_count if a ticker somehow has multiple manifests.
+        out[t] = max(out.get(t, 0), int(getattr(m, "chunk_count", 0) or 0))
+    return out
 
 
-def _get_indexed_tickers() -> set[str]:
+def get_indexed_map() -> dict[str, int]:
+    """Cached {ticker: chunk_count} of all fully-indexed filings (60s TTL)."""
     global _cache
     with _cache_lock:
         if _cache is not None:
-            cached_at, tickers = _cache
+            cached_at, mapping = _cache
             if time.monotonic() - cached_at < _CACHE_TTL_SECONDS:
-                return tickers
+                return mapping
 
-    tickers = _load_indexed_tickers()
+    mapping = _load_indexed_map()
     with _cache_lock:
-        _cache = (time.monotonic(), tickers)
-    return tickers
+        _cache = (time.monotonic(), mapping)
+    return mapping
 
 
 def invalidate() -> None:
-    """Drop the cached indexed-ticker set. Called from register_filing()."""
+    """Drop the cached indexed map. Called from register_filing()."""
     global _cache
     with _cache_lock:
         _cache = None
@@ -67,5 +78,5 @@ def invalidate() -> None:
 def indexed(tickers: str = Query(...)) -> dict[str, bool]:
     """Return {ticker: isIndexed} for a comma-separated list of tickers."""
     requested = [t.strip().upper() for t in tickers.split(",") if t.strip()]
-    indexed_set = _get_indexed_tickers()
-    return {t: t in indexed_set for t in requested}
+    indexed_map = get_indexed_map()
+    return {t: t in indexed_map for t in requested}

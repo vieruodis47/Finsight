@@ -1001,6 +1001,24 @@ def update_job_status(
         logger.warning("Could not update job status for %s: %s", key, e)
 
 
+def load_ingest_job(key: str) -> Optional["IngestJob"]:
+    """
+    Point-load a single IngestJob by key (ticker-form) from RavenDB, or None.
+
+    This is the cross-instance-authoritative status: every instance writes job
+    transitions to the same document, so reading it here is consistent no matter
+    which instance serves the request — unlike the per-process in-memory status
+    dict. Fails soft (returns None) on any RavenDB error so callers can degrade.
+    """
+    try:
+        store = get_store()
+        with store.open_session() as session:
+            return session.load(_job_id(key), object_type=IngestJob)
+    except Exception as e:
+        logger.warning("Could not load ingest job %s: %s", key, e)
+        return None
+
+
 def load_active_jobs() -> list[IngestJob]:
     """
     Load all non-indexed jobs from RavenDB for startup recovery.
