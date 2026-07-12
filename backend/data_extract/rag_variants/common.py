@@ -45,7 +45,6 @@ from google.genai import types  # noqa: E402
 
 from ..embeddings import (  # noqa: E402
     FilingChunk,
-    embed_texts,
     get_genai_client,
     get_store,
     COLLECTION,

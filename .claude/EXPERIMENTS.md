@@ -28,9 +28,9 @@ Pre-registration + verdicts for RAG architecture comparisons. Same contract disc
 - **Hypothesis:** the production naive/vector pipeline handles single-hop lookups well but degrades on the slices that need multiple facts (multi-hop, aggregation, temporal).
 - **Prediction (falsifiable):** on `questions.v1.jsonl` (test split), naive scores ≥ 0.70 mean correctness on single-hop; multi-hop and aggregation each land ≥ 0.10 below single-hop; recall@5 ≥ 0.6 overall. Refuted if multi-hop/aggregation are within 0.05 of single-hop (i.e., no headroom for fancier architectures) or single-hop < 0.5 (pipeline broken, comparisons pointless).
 - **Setup:** variant `naive` (wraps production rag.py, k=5), eval set v1 test split (16 q), n=3 repeats, gen model `gemini-3.1-flash-lite` temp 0.2, judge `gemma-4-31b-it` temp 0, judge prompts v3 (judge plan revised twice pre-scoring 2026-07-10 — first after a scorer bug sent v2 judge calls to the generation model (scores deleted), then after 2.5-gen models proved closed to new users; final: one gemma judge for all experiments, see eval/judge_prompts.md). Config hash recorded in `results/E-1/run_manifest.json`.
-- **Results:** pending
-- **Verdict:** pending — running 2026-07-09 (credential fixed; model id corrected to gemini-3.1-flash-lite pre-run: 'gemini-3.1-lite' does not exist in the API catalogue).
-- **Report:** .claude/evidence/experiments/E-1.md (pending)
+- **Results:** overall correctness 0.917±0.161 | single-hop 1.00 | multi-hop 0.917 | aggregation 0.750 | temporal 1.00 | post-cutoff 0.881 | recall@5 0.813 (aggregation slice: 0.50) | faithfulness 2.0/2 | citation validity 1.00 / support 0.95 | 3,787 tok/q | p50 864 ms | 48/48 runs, 0 errors.
+- **Verdict:** **partially supported** — single-hop ≥0.70 ✓ (1.00), recall@5 ≥0.6 ✓ (0.81); aggregation lands 0.25 below single-hop ✓ but multi-hop only 0.083 below (predicted ≥0.10, refutation bound ≤0.05 — between the two). Architecture headroom is concentrated in aggregation, where recall@5=0.50 shows a retrieval-coverage bottleneck.
+- **Report:** .claude/evidence/experiments/E-1.md
 
 ## E-2 — 2026-07-09 — Architecture comparison: naive vs graph vs hyde vs agentic vs modular
 - **Hypothesis:** architectures that decompose or re-structure retrieval (agentic, modular) beat one-shot vector retrieval exactly where retrieval is the bottleneck — multi-hop and aggregation; the XBRL graph path wins temporal/numeric lookups; HyDE moves little on this domain because filing questions are already explicit.

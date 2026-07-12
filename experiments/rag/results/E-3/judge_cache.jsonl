@@ -255,3 +255,10 @@
 {"key": "3deecbd3a93f11542a978fff3f4394bbeeda8576f61afb7e5612fcb47dce407e", "value": {"faithfulness": 2, "unsupported_claims": [], "citations": [{"n": 1, "supported": true}, {"n": 2, "supported": true}], "relevant": []}}
 {"key": "ca03dd51a52f2527b77b749c1bef5964dd7298bb97e80feabf855285bbd78f86", "value": {"scores": [{"claim": 1, "score": 2, "evidence_quote": "representing a 2% increase compared to the $383,285 million in total net sales reported for fiscal 2023", "reason": "The answer correctly states that net sales increased by 2% from fiscal 2023 to fiscal 2024."}]}}
 {"key": "dd8c2fa924e671ede396e038ed06ac9a5b4105915ad5fe0bc80199743d996d22", "value": {"faithfulness": 2, "unsupported_claims": [], "citations": [{"n": 1, "supported": true}, {"n": 2, "supported": true}], "relevant": []}}
+{"key": "09519c86358b24c19168c530316999e47f2385583797b2990d7f9f784b7b1aa7", "value": {"winner": "tie", "reason": "Both answers provide the correct total net sales figure for fiscal 2024."}}
+{"key": "11bd9e02ac4cd1022098067e270c68c9a19051847bcf46659c7c6cef1402e465", "value": {"winner": "tie", "reason": "Both answers provide the correct total net sales figure for fiscal 2024."}}
+{"key": "24affce3ac750891b464b30c7459835bb42bb04539efce319c57a52b88bc238b", "value": {"winner": "tie", "reason": "Both answers are identical."}}
+{"key": "99097123c571ef9d9c89e42510682e3f4ad4dff3d0038f225156e731fef23b74", "value": {"winner": "tie", "reason": "Both answers provide the exact same figure and citation with negligible differences in wording."}}
+{"key": "8140a3cec1db46963d2ae4d4615a0b7d430249339ce8b5b4de7b0b4baab9025f", "value": {"winner": "tie", "reason": "Both answers provide the exact same value and citation with negligible differences in wording."}}
+{"key": "a76996a1c97ad02c491f9a26f4e5547caf41b9d5842206b6624703ecd9c5433c", "value": {"winner": "tie", "reason": "Both answers are identical."}}
+{"key": "d6e105441897e5791dc781ad514679bcb2352f82cccad5f8655326edfa0b7b7a", "value": {"winner": "A", "reason": "Both answers are factually accurate, but Answer A is more complete as it provides both the percentages and the absolute dollar amounts for the comparison."}}
