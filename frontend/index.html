@@ -12,6 +12,9 @@
       ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
       ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
       @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+      /* Keyboard-only focus ring for the sidebar logo home link (sapphire brand). */
+      .logo-home { outline: none; }
+      .logo-home:focus-visible { outline: 2px solid #2563EB; outline-offset: 2px; }
     </style>
 </head>
 <body class="bg-slate-50 text-slate-900 h-screen overflow-hidden">

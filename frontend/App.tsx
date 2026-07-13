@@ -363,14 +363,33 @@ const App: React.FC = () => {
       >
         {/* Logo row */}
         <div style={{ height: 52, display: 'flex', alignItems: 'center', padding: '0 14px', gap: 9, borderBottom: `0.5px solid ${c.border}`, flexShrink: 0 }}>
-          <div style={{ width: 26, height: 26, minWidth: 26, borderRadius: 6, background: c.brandTint, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-            <TrendingUp size={13} color={c.brand} />
-          </div>
-          {!collapsed && (
-            <span style={{ fontSize: 15, fontWeight: 500, color: c.text, whiteSpace: 'nowrap' }}>
-              Fin<span style={{ color: c.brand }}>Sight</span>
-            </span>
-          )}
+          {/* Logo → home. Uses selectView('dashboard') — the exact navigation the
+              Dashboard nav item uses. A <button> (not <a href>) because top-level
+              screens are state-based views in this SPA router, not URLs; an href
+              would trigger a full reload and drop in-memory state. */}
+          <button
+            type="button"
+            className="logo-home"
+            onClick={() => selectView('dashboard')}
+            aria-label="FinSight home"
+            style={{
+              display: 'flex', alignItems: 'center', gap: 9,
+              background: 'transparent', border: 'none', cursor: 'pointer',
+              padding: '3px 4px', margin: '-3px -4px', borderRadius: 8,
+              fontFamily: FF, textAlign: 'left',
+            }}
+            onMouseEnter={e => (e.currentTarget.style.background = c.hover)}
+            onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+          >
+            <div style={{ width: 26, height: 26, minWidth: 26, borderRadius: 6, background: c.brandTint, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+              <TrendingUp size={13} color={c.brand} />
+            </div>
+            {!collapsed && (
+              <span style={{ fontSize: 15, fontWeight: 500, color: c.text, whiteSpace: 'nowrap' }}>
+                Fin<span style={{ color: c.brand }}>Sight</span>
+              </span>
+            )}
+          </button>
           <button
             onClick={() => setCollapsed(c => !c)}
             title={collapsed ? 'Expand' : 'Collapse'}
