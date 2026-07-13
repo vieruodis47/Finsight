@@ -502,12 +502,15 @@ const App: React.FC = () => {
       {/* ── Main ── */}
       <main style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', background: c.bg }}>
 
-        {/* Topbar */}
-        <header style={{ height: 52, borderBottom: `0.5px solid ${c.border}`, display: 'flex', alignItems: 'center', padding: '0 20px', gap: 8, flexShrink: 0 }}>
+        {/* Topbar — explicit white bg so text contrast is computed against a
+            known background (the header is otherwise transparent). */}
+        <header style={{ height: 52, background: c.bg, borderBottom: `0.5px solid ${c.border}`, display: 'flex', alignItems: 'center', padding: '0 20px', gap: 8, flexShrink: 0 }}>
           <span style={{ fontSize: 15, fontWeight: 500, color: c.text }}>
             {topbarTitle}
           </span>
-          <span style={{ color: c.border }}>·</span>
+          {/* Decorative separator — a dot, not a text node, so it carries no
+              contrast obligation (and is hidden from assistive tech). */}
+          <span aria-hidden="true" style={{ width: 3, height: 3, borderRadius: '50%', background: c.border, flexShrink: 0 }} />
           <span style={{ fontSize: 13, color: c.textMuted }}>
             {topbarSubtitle}
           </span>
@@ -540,7 +543,10 @@ const App: React.FC = () => {
                 />
               </div>
             )}
-            <span style={{ fontSize: 11, fontWeight: 500, padding: '3px 10px', borderRadius: 10, background: c.posSurface, color: c.pos, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+            {/* System status — NOT a directional financial signal, so the text
+                uses steel-blue (brand) rather than green. The live dot stays
+                green purely as an indicator. */}
+            <span style={{ fontSize: 11, fontWeight: 500, padding: '3px 10px', borderRadius: 10, background: c.posSurface, color: c.brand, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
               <span style={{ width: 6, height: 6, borderRadius: '50%', background: c.pos, display: 'inline-block' }} />
               API connected
             </span>
