@@ -40,8 +40,8 @@ export const c = {
 
   text:      '#111827', // primary text + metric values
   text2:     '#374151', // body copy / prose
-  textMuted: '#6B7280', // secondary labels
-  textFaint: '#9CA3AF', // tertiary / placeholder / disabled text
+  textMuted: '#575D69', // secondary labels — WCAG AA on light surfaces (≥6.0:1 on #F3F4F6)
+  textFaint: '#6A6E76', // tertiary / placeholder / disabled — WCAG AA on light surfaces (≥4.6:1 on #F3F4F6)
 
   // ── Charts ─────────────────────────────────────────────────────
   peer:      '#CBD5DF', // non-subject comparison bars / prior-period bars
