@@ -1,50 +1,55 @@
-// theme.ts — FinSight design tokens (Steel & honey)
+// theme.ts — FinSight design tokens (Sapphire & slate)
 // Single source of truth for color + fonts. Change a value here and it
-// updates across every component that imports from this file.
+// updates across every component that imports from this file. Kept flat and
+// semantic so a dark variant can later be swapped in behind a toggle.
 
 export const c = {
-  // ── Brand — steel ──────────────────────────────────────────────
-  brand:          '#3E5C76', // sparklines, focus rings, peer subject bar, active accents
-  brandDeep:      '#28425A', // primary buttons, ticker pill, strong brand fills
-  brandDeepHover: '#1B3147', // hover state on primary buttons
-  brandTint:      '#E4EBF1', // soft brand backgrounds (active pills, icon circles)
-  brandLight:     '#6E8CA6', // mid steel — chart ramps / lighter data series
-  onBrand:        '#FFFFFF', // text/icons sitting on brandDeep
+  // ── Brand — sapphire ───────────────────────────────────────────
+  brand:          '#2563EB', // logo, sparklines, active-nav text, primary progress, hero/anchor card fill
+  brandDeep:      '#2563EB', // primary buttons, ticker pill, strong brand fills (same sapphire)
+  brandDeepHover: '#1D4ED8', // hover state on primary buttons (darker sapphire)
+  brandTint:      '#EAF1FC', // active-nav row background / soft brand backgrounds
+  brandLight:     '#60A5FA', // secondary progress-bar tier / lighter data series
+  onBrand:        '#FFFFFF', // text/icons sitting on a sapphire fill (5.17:1 on #2563EB)
+  onBrandMuted:   '#EDF4FE', // muted eyebrow/label text on a sapphire card (4.67:1 on #2563EB)
 
-  // ── Accent — honey ─────────────────────────────────────────────
-  accent:     '#E0A53B', // honey fills (chips, highlight backgrounds)
-  accentInk:  '#3D2900', // text/icons on a honey fill
-  accentFg:   '#8A6410', // honey used AS a foreground icon/text on light bg (darkened for contrast)
-  accentSoft: '#FBEFD6', // light honey tint
+  // ── Secondary series — sapphire-light (peer / "B" entity) ──────
+  // (Replaces the old honey accent. Fills only; peer TEXT uses accentFg.)
+  accent:     '#60A5FA', // peer / secondary data-series fill (bars, lines)
+  accentInk:  '#16202B', // text/icons sitting on a light-sapphire fill
+  accentFg:   '#1D4ED8', // peer/label TEXT on a light bg — AA (6.70:1 on white)
+  accentSoft: '#EAF1FC', // peer chip / soft secondary background
 
-  // ── Directional (semantic only — never use for brand/category) ─
-  pos:        '#16A34A', // favorable move
-  neg:        '#DC2626', // unfavorable move (also the destructive/error red)
+  // ── Directional (semantic only — never brand/category/UI) ──────
+  pos:        '#16A34A', // favorable move (▲) — directional signal only
+  neg:        '#DC2626', // unfavorable move (▼) — also destructive/error red
   posSurface: '#ECFDF3',
   posBorder:  '#BBF7D0',
   negSurface: '#FEF2F2',
   negBorder:  '#FECACA',
 
-  // ── Warning / "could be better" (honey-family) ────────────────
-  warnFg:      '#8A6410',
+  // ── Warning / "could be better" (semantic caution — amber) ─────
+  // Functional status, not brand/category; kept distinct from green/red.
+  warnFg:      '#8A6410', // 4.86:1 on warnSurface
   warnSurface: '#FBF3E2',
   warnBorder:  '#F3DFB0',
 
-  // ── Neutrals ───────────────────────────────────────────────────
-  bg:          '#FFFFFF',
-  surface:     '#F2F5F8', // primary neutral surface (cards, sidebar, bubbles)
-  surfaceAlt:  '#F3F4F6', // segmented controls, inactive pills, subtle hovers
-  hover:       '#EAECEF', // visible row hover on the cool sidebar surface
-  border:      '#E5E7EB',
-  borderFaint: '#F3F4F6',
+  // ── Neutrals — slate ───────────────────────────────────────────
+  bg:          '#FFFFFF', // card / panel background
+  surface:     '#F3F6F9', // canvas/page + sidebar + subtle card fills
+  surfaceAlt:  '#EEF2F6', // track / pill / segmented-control background
+  hover:       '#E4EBF2', // visible row hover on the cool sidebar surface
+  border:      '#DDE4EB', // card / panel border
+  borderFaint: '#E8EDF2', // faint dividers
 
-  text:      '#111827', // primary text + metric values
-  text2:     '#374151', // body copy / prose
-  textMuted: '#575D69', // secondary labels — WCAG AA on light surfaces (≥6.0:1 on #F3F4F6)
-  textFaint: '#6A6E76', // tertiary / placeholder / disabled — WCAG AA on light surfaces (≥4.6:1 on #F3F4F6)
+  text:        '#16202B', // ink — primary text + metric values
+  text2:       '#33414F', // body copy / prose (10.4:1 on white)
+  textMuted:   '#5D6C7C', // secondary labels — AA on light surfaces (≥4.78:1)
+  textFaint:   '#636F7D', // eyebrow / tertiary / placeholder — AA on light surfaces (≥4.55:1)
+  navInactive: '#4C5B6B', // inactive sidebar nav label (6.42:1 on sidebar)
 
   // ── Charts ─────────────────────────────────────────────────────
-  peer:      '#CBD5DF', // non-subject comparison bars / prior-period bars
+  peer:      '#C3CEDA', // non-subject comparison bars / prior-period bars
 } as const;
 
 export const font = {

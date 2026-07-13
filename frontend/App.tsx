@@ -401,7 +401,7 @@ const App: React.FC = () => {
                   display: 'flex', alignItems: 'center', gap: 9,
                   padding: '7px 10px', borderRadius: 6,
                   fontSize: 13, fontWeight: active ? 500 : 400,
-                  color: active ? c.brand : c.textMuted,
+                  color: active ? c.brand : c.navInactive,
                   background: active ? c.brandTint : 'transparent',
                   border: 'none', cursor: 'pointer',
                   width: '100%', textAlign: 'left',
@@ -409,7 +409,7 @@ const App: React.FC = () => {
                   transition: 'background 0.1s, color 0.1s',
                 }}
                 onMouseEnter={e => { if (!active) { e.currentTarget.style.background = c.hover; e.currentTarget.style.color = c.text; } }}
-                onMouseLeave={e => { if (!active) { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = c.textMuted; } }}
+                onMouseLeave={e => { if (!active) { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = c.navInactive; } }}
               >
                 <span style={{ flexShrink: 0, minWidth: 17, display: 'flex' }}>{icon}</span>
                 {!collapsed && <span>{label}</span>}
