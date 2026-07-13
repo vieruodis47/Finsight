@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import { TrendingUp, ArrowRight, FileText, MessageCircle, BarChart2, Sparkles } from 'lucide-react';
 import { c, font } from '../theme';
-import dashboardPreview from '../assets/dashboard-preview.png';
 
 interface SplashScreenProps {
   onGetStarted: () => void;
@@ -81,23 +80,6 @@ const SplashScreen: React.FC<SplashScreenProps> = ({ onGetStarted = () => {} }) 
           Get started
           <ArrowRight size={16} />
         </button>
-
-        {/* Product preview — framed screenshot. width/height are the asset's
-            intrinsic dimensions so the browser reserves space and avoids layout
-            shift; the real screenshot is dropped in at assets/dashboard-preview.png. */}
-        <div style={{
-          width: '100%', maxWidth: 520, marginBottom: 40,
-          borderRadius: 12, border: `1px solid ${c.border}`,
-          overflow: 'hidden', boxShadow: '0 8px 30px rgba(16,32,43,0.12)',
-        }}>
-          <img
-            src={dashboardPreview}
-            alt="FinSight dashboard showing a company's KPI cards, margin breakdown, and live market snapshot"
-            width={1200}
-            height={750}
-            style={{ display: 'block', width: '100%', height: 'auto' }}
-          />
-        </div>
 
         {/* Feature badges — single row on desktop, 2×2 below 640px
             (see .feature-badges in index.html). */}
