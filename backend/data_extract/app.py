@@ -72,6 +72,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from .extractor import run
+from .sec_client import SecRateLimitError
 from .rag import router as chat_router
 from .market import router as market_router
 from .search import router as search_router
@@ -588,6 +589,20 @@ def extract(
         result = run(ticker, form)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except SecRateLimitError as e:
+        # SEC EDGAR throttled us even after ret/backoff. This is transient, not a
+        # bug on our side — surface a 503 with a clear, retryable message (and a
+        # Retry-After hint) so the UI can say "try again shortly" rather than a
+        # generic 502.
+        logger.warning("SEC rate-limited extract for %s %s: %s", ticker, form, e)
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "SEC EDGAR is rate-limiting filing downloads right now "
+                "(429 Too Many Requests). This is temporary — please retry in a minute."
+            ),
+            headers={"Retry-After": "30"},
+        )
     except Exception as e:
         logger.exception("Extraction failed for %s %s", ticker, form)
         raise HTTPException(status_code=502, detail=f"Extraction failed: {e}")

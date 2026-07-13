@@ -1,9 +1,16 @@
 """Fetch SEC's ticker list and save it as JSON (name + ticker + CIK)."""
 import json
+import os
 from datetime import date
 import requests
 
-HEADERS = {"User-Agent": "FinSight rahmansyah@wisc.edu"}  # SEC requires a real contact
+# SEC requires a descriptive User-Agent with contact info. Keep this in sync with
+# the app's SEC_USER_AGENT (backend/data_extract/sec_client.py); overridable via env.
+HEADERS = {
+    "User-Agent": os.getenv(
+        "SEC_USER_AGENT", "FinSight (SAIL UW-Madison) rarunachala2@wisc.edu"
+    )
+}
 
 raw = requests.get("https://www.sec.gov/files/company_tickers.json", headers=HEADERS).json()
 

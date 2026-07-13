@@ -8,6 +8,7 @@ above this one should call ``requests`` directly.
 import json
 import logging
 import os
+import random
 import re
 import threading
 import time
@@ -18,16 +19,31 @@ from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
-# SEC requires a descriptive User-Agent (name + contact email) or requests get
-# 403/429. Prefer the SEC_USER_AGENT env var; the fallback uses a distinct
-# contact address rather than the shared "example.com" placeholder, which is
-# widely reused and therefore quick to get throttled. Override in prod via env.
+# --- SEC User-Agent (single source of truth) --------------------------------
+# SEC requires a descriptive User-Agent with contact info ("AppName
+# contact@email.com") or it returns 403/429. Prefer the SEC_USER_AGENT env var;
+# the default is an institutional (.edu) contact, which fares far better than
+# the widely-reused "example.com" placeholder that SEC throttles first. Every
+# module that talks to sec.gov should import SEC_USER_AGENT / SEC_HEADERS from
+# here rather than defining its own literal.
+SEC_USER_AGENT = os.getenv(
+    "SEC_USER_AGENT", "FinSight (SAIL UW-Madison) rarunachala2@wisc.edu"
+)
 SEC_HEADERS = {
-    "User-Agent": os.getenv(
-        "SEC_USER_AGENT", "FinSight Research finsight.edgar.7c21@gmail.com"
-    ),
+    "User-Agent": SEC_USER_AGENT,
     "Accept-Encoding": "gzip, deflate",
 }
+
+
+class SecRateLimitError(requests.exceptions.HTTPError):
+    """
+    Raised when SEC EDGAR keeps returning 429/503 after all retries.
+
+    Subclasses requests.exceptions.HTTPError so existing ``except
+    requests.RequestException`` handlers still catch it, while the API layer can
+    catch this specific type to tell the user "SEC rate-limited us, retry
+    shortly" instead of surfacing a generic 502.
+    """
 
 # --- SEC fair-access rate limiting ------------------------------------------
 # SEC's published limit is 10 requests/second. We self-throttle well under that
@@ -77,15 +93,20 @@ def _sec_get(url: str, host: str) -> requests.Response:
                 "SEC %s on %s (attempt %d/%d) — backing off %.1fs",
                 r.status_code, url, attempt + 1, _SEC_MAX_RETRIES, delay,
             )
-            last_exc = requests.exceptions.HTTPError(
+            last_exc = SecRateLimitError(
                 f"{r.status_code} Too Many Requests for url: {url}", response=r
             )
-            time.sleep(delay)
+            # Jitter so multiple instances sharing one egress IP don't retry in
+            # lockstep and re-trip the limit together.
+            time.sleep(delay + random.uniform(0, 0.4))
             continue
         r.raise_for_status()
         return r
-    # Exhausted retries on 429/503 — surface the last rate-limit error.
-    raise last_exc
+    # Exhausted retries on 429/503 — surface a typed rate-limit error so the API
+    # layer can distinguish "SEC throttled us" from a real upstream 5xx.
+    raise last_exc if last_exc is not None else RuntimeError(
+        f"SEC request to {url} failed after {_SEC_MAX_RETRIES} attempts"
+    )
 
 
 # --- Local ticker -> CIK registry (avoids hammering company_tickers.json) ----

@@ -17,9 +17,23 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-# SEC requires a descriptive User-Agent string or requests return 403.
-# Set SEC_USER_AGENT in the environment; fall back to a generic placeholder.
-HEADERS = {"User-Agent": os.getenv("SEC_USER_AGENT", "FinSight contact@example.com")}
+# Reuse the app's shared, throttled SEC client (one global throttle + 429 backoff
+# + a single descriptive User-Agent) when imported inside the app package. When
+# run as a standalone analysis script (analysis/ on sys.path, no package), fall
+# back to a direct fetch that uses the SAME institutional (.edu) User-Agent —
+# never the "example.com" placeholder, which SEC rate-limits first.
+try:
+    from backend.data_extract.sec_client import (
+        SEC_USER_AGENT,
+        get_company_facts as _shared_company_facts,
+    )
+except Exception:  # pragma: no cover - standalone script path
+    _shared_company_facts = None
+    SEC_USER_AGENT = os.getenv(
+        "SEC_USER_AGENT", "FinSight (SAIL UW-Madison) rarunachala2@wisc.edu"
+    )
+
+HEADERS = {"User-Agent": SEC_USER_AGENT, "Accept-Encoding": "gzip, deflate"}
 
 # Ticker -> 10-digit CIK. Populated from the generated SEC registry below.
 COMPANIES = {}
@@ -158,9 +172,17 @@ def get_metric_explanation(metric_name):
 
 
 def get_company_facts(cik):
-    """Fetch raw XBRL company facts JSON from SEC EDGAR."""
+    """
+    Fetch raw XBRL company facts JSON from SEC EDGAR.
+
+    Prefers the shared, throttled SEC client so every sec.gov call in the app is
+    coordinated behind one global rate limiter (10 req/s) with 429 backoff.
+    Falls back to a direct fetch (same descriptive User-Agent) for standalone use.
+    """
+    if _shared_company_facts is not None:
+        return _shared_company_facts(cik)
     url = f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
-    response = requests.get(url, headers=HEADERS)
+    response = requests.get(url, headers=HEADERS, timeout=30)
     response.raise_for_status()
     return response.json()
 
