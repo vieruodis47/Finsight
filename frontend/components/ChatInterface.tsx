@@ -165,12 +165,26 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ documents }) => {
   const [inputFocused, setInputFocused]     = useState(false);
   const [hoveredChip, setHoveredChip]       = useState<number | null>(null);
 
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const textareaRef    = useRef<HTMLTextAreaElement>(null);
+  const scrollRef   = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  // Whether the thread is pinned to the bottom. Starts true; scrolling away from
+  // the bottom disables auto-stick (so the user can read history while a reply
+  // arrives), and scrolling back to the bottom re-enables it.
+  const stickToBottomRef = useRef(true);
+
+  const handleScroll = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+  };
+
+  // Auto-scroll to the newest message/loader — but only when pinned to bottom.
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+    if (!stickToBottomRef.current) return;
+    const el = scrollRef.current;
+    if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+  }, [messages, isLoading]);
 
   // Derive single-company context for contextual chips
   const singleCompany = (() => {
@@ -289,11 +303,18 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ documents }) => {
         </div>
       )}
 
-      {/* ── Chat area ── */}
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+      {/* ── Chat area ──
+          minHeight: 0 is the actual scroll fix: without it this flex child's
+          min-height resolves to its content size, so it never shrinks and the
+          inner overflow-y:auto can't engage. */}
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, minHeight: 0 }}>
 
-        {/* Messages — constrained to a centered ~700px reading column */}
-        <div style={{ flex: 1, overflowY: 'auto', padding: '20px 20px 8px' }}>
+        {/* Messages — the only scroll container; centered ~700px reading column */}
+        <div
+          ref={scrollRef}
+          onScroll={handleScroll}
+          style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '20px 20px 8px' }}
+        >
           <div style={{ maxWidth: 700, margin: '0 auto', width: '100%', display: 'flex', flexDirection: 'column', gap: 12 }}>
           {messages.map(msg => {
             const isUser = msg.role === 'user';
@@ -417,7 +438,6 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ documents }) => {
             </div>
           )}
 
-          <div ref={messagesEndRef} />
           </div>
         </div>
 
