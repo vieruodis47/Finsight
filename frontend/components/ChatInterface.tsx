@@ -1,10 +1,9 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, Bot, User, Loader2, FileText, ChevronRight, ChevronLeft } from 'lucide-react';
+import { Send, Bot, User, Loader2 } from 'lucide-react';
 import { Document, ChatMessage } from '../types';
 import { askFinSight } from '../services/gemini';
 import { c, font } from '../theme';
 import { companyLabel } from '../utils/company';
-import { useIsTablet } from '../utils/hooks';
 import { renderChatMarkdown, AnswerMeta } from '../utils/chatRender';
 
 interface ChatInterfaceProps {
@@ -126,10 +125,6 @@ const FinchAvatar: React.FC = () => {
 // ── component ────────────────────────────────────────────────────────────────
 
 const ChatInterface: React.FC<ChatInterfaceProps> = ({ documents }) => {
-  const isTablet = useIsTablet();
-  const [panelCollapsed, setPanelCollapsed] = useState(false);
-  useEffect(() => { setPanelCollapsed(isTablet); }, [isTablet]);
-
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       id: 'welcome',
@@ -237,106 +232,43 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ documents }) => {
   const toggleDoc = (id: string) =>
     setSelectedDocIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
 
-  // Left-edge indent for elements that should align under the bubble, not the avatar.
-  const AVATAR_GAP    = 8;
-  const BUBBLE_INDENT = FINCH_PX + AVATAR_GAP; // 44px
+  const AVATAR_GAP = 8;
 
   return (
-    <div style={{ display: 'flex', height: '100%', ...fs }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', background: c.bg, ...fs }}>
 
-      {/* ── Left panel (collapsible) ── */}
-      <div
-        style={{
-          width: panelCollapsed ? 28 : 176, flexShrink: 0,
-          background: c.surface,
-          borderRight: `0.5px solid ${c.border}`,
-          display: 'flex', flexDirection: 'column',
-          overflow: 'hidden',
-          transition: 'width 0.18s ease',
-        }}
-      >
-        {/* Toggle button */}
-        <button
-          onClick={() => setPanelCollapsed(p => !p)}
-          title={panelCollapsed ? 'Show companies' : 'Hide companies'}
-          style={{
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            width: '100%', height: 36, flexShrink: 0,
-            border: 'none', background: 'transparent', cursor: 'pointer',
-            color: c.textFaint, borderBottom: `0.5px solid ${c.border}`,
-          }}
-        >
-          {panelCollapsed ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
-        </button>
-
-        {/* Panel content */}
-        <div style={{
-          padding: '14px 12px', display: 'flex', flexDirection: 'column',
-          gap: 16, overflowY: 'auto', flex: 1,
-          opacity: panelCollapsed ? 0 : 1,
-          transition: 'opacity 0.12s ease',
-          pointerEvents: panelCollapsed ? 'none' : 'auto',
-        }}>
-          {/* Companies */}
-          <div>
-            <p style={{ fontSize: 11, color: c.textFaint, textTransform: 'uppercase', letterSpacing: '0.05em', margin: '0 0 8px' }}>
-              Companies
-            </p>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-              {documents.length === 0 ? (
-                <span style={{ fontSize: 12, color: c.textFaint, fontStyle: 'italic' }}>No filings loaded</span>
-              ) : (
-                <>
-                  <button
-                    style={selectedDocIds.length === 0 ? pillActive : pillInactive}
-                    onClick={() => setSelectedDocIds([])}
-                  >
-                    All
-                  </button>
-                  {documents.map(doc => (
-                    <button
-                      key={doc.id}
-                      style={selectedDocIds.includes(doc.id) ? pillActive : pillInactive}
-                      onClick={() => toggleDoc(doc.id)}
-                      title={doc.name}
-                    >
-                      {doc.name.length > 12 ? doc.name.slice(0, 12) + '…' : doc.name}
-                    </button>
-                  ))}
-                </>
-              )}
-            </div>
+      {/* ── Filter chips — relocated from the old inner Companies panel. Same
+          selectedDocIds state/logic (empty selection = "All"); the duplicate
+          "Loaded filings" list is dropped since the main sidebar already lists them. */}
+      {documents.length > 0 && (
+        <div style={{ borderBottom: `0.5px solid ${c.border}`, padding: '10px 20px', flexShrink: 0 }}>
+          <div style={{ maxWidth: 700, margin: '0 auto', display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
+            <button
+              style={selectedDocIds.length === 0 ? pillActive : pillInactive}
+              onClick={() => setSelectedDocIds([])}
+            >
+              All
+            </button>
+            {documents.map(doc => (
+              <button
+                key={doc.id}
+                style={selectedDocIds.includes(doc.id) ? pillActive : pillInactive}
+                onClick={() => toggleDoc(doc.id)}
+                title={doc.name}
+              >
+                {doc.name.length > 12 ? doc.name.slice(0, 12) + '…' : doc.name}
+              </button>
+            ))}
           </div>
-
-          {/* Loaded filings list */}
-          {documents.length > 0 && (
-            <div>
-              <p style={{ fontSize: 11, color: c.textFaint, textTransform: 'uppercase', letterSpacing: '0.05em', margin: '0 0 8px' }}>
-                Loaded filings
-              </p>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-                {documents.map(doc => (
-                  <div
-                    key={doc.id}
-                    style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: c.textMuted }}
-                  >
-                    <FileText size={12} style={{ flexShrink: 0 }} />
-                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {doc.name}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
         </div>
-      </div>
+      )}
 
       {/* ── Chat area ── */}
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, background: c.bg }}>
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
 
-        {/* Messages */}
-        <div style={{ flex: 1, overflowY: 'auto', padding: '20px 20px 8px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+        {/* Messages — constrained to a centered ~700px reading column */}
+        <div style={{ flex: 1, overflowY: 'auto', padding: '20px 20px 8px' }}>
+          <div style={{ maxWidth: 700, margin: '0 auto', width: '100%', display: 'flex', flexDirection: 'column', gap: 12 }}>
           {messages.map(msg => {
             const isUser = msg.role === 'user';
             return (
@@ -410,15 +342,16 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ documents }) => {
             );
           })}
 
-          {/* ── Empty state: starter chips ── */}
+          {/* ── Empty state: starter chips — 2×2 grid of equal-width cards
+              (single column below 640px, see .chat-suggest-grid in index.html) ── */}
           {messages.length === 1 && !isLoading && (
-            <div style={{ paddingLeft: BUBBLE_INDENT, marginTop: 6 }}>
+            <div style={{ marginTop: 6 }}>
 
               {/* Suggested question chips */}
               <p style={{ fontSize: 11, color: c.textFaint, margin: '0 0 10px', fontFamily: font.ui, letterSpacing: '0.03em', textTransform: 'uppercase' }}>
                 Suggested questions
               </p>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 7, maxWidth: 460 }}>
+              <div className="chat-suggest-grid">
                 {starterChips.map((chip, i) => (
                   <button
                     key={i}
@@ -458,14 +391,17 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ documents }) => {
           )}
 
           <div ref={messagesEndRef} />
+          </div>
         </div>
 
-        {/* ── Input bar ── */}
+        {/* ── Input bar — inner content constrained to the same ~700px column ── */}
         <div style={{
           padding: '12px 16px 13px',
           borderTop: `1px solid ${c.border}`,
           background: c.surface,
+          flexShrink: 0,
         }}>
+          <div style={{ maxWidth: 700, margin: '0 auto' }}>
           {/* Combined textarea + send button in one bordered container */}
           <div style={{
             display: 'flex',
@@ -522,6 +458,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ documents }) => {
           <p style={{ fontSize: 11, color: c.textFaint, textAlign: 'center', margin: '7px 0 0', fontFamily: font.ui }}>
             AI responses are grounded in your loaded filings — always verify key figures.
           </p>
+          </div>
         </div>
 
       </div>

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { TrendingUp, ArrowRight, FileText, MessageCircle, BarChart2, Sparkles } from 'lucide-react';
 import { c, font } from '../theme';
+import dashboardPreview from '../assets/dashboard-preview.png';
 
 interface SplashScreenProps {
   onGetStarted: () => void;
@@ -56,8 +57,9 @@ const SplashScreen: React.FC<SplashScreenProps> = ({ onGetStarted = () => {} }) 
             margin: '0 0 36px', maxWidth: 400,
           }}
         >
-          Upload 10-K annual reports from SEC EDGAR, ask questions in plain English,
-          and get instant analysis backed by the actual source text.
+          Pull any company's 10-K straight from SEC EDGAR — or upload your own —
+          ask questions in plain English, and get instant analysis backed by the
+          actual source text.
         </p>
 
         {/* CTA */}
@@ -80,8 +82,26 @@ const SplashScreen: React.FC<SplashScreenProps> = ({ onGetStarted = () => {} }) 
           <ArrowRight size={16} />
         </button>
 
-        {/* Feature pills */}
-        <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap', justifyContent: 'center' }}>
+        {/* Product preview — framed screenshot. width/height are the asset's
+            intrinsic dimensions so the browser reserves space and avoids layout
+            shift; the real screenshot is dropped in at assets/dashboard-preview.png. */}
+        <div style={{
+          width: '100%', maxWidth: 520, marginBottom: 40,
+          borderRadius: 12, border: `1px solid ${c.border}`,
+          overflow: 'hidden', boxShadow: '0 8px 30px rgba(16,32,43,0.12)',
+        }}>
+          <img
+            src={dashboardPreview}
+            alt="FinSight dashboard showing a company's KPI cards, margin breakdown, and live market snapshot"
+            width={1200}
+            height={750}
+            style={{ display: 'block', width: '100%', height: 'auto' }}
+          />
+        </div>
+
+        {/* Feature badges — single row on desktop, 2×2 below 640px
+            (see .feature-badges in index.html). */}
+        <div className="feature-badges">
           {[
             { icon: <FileText size={13} />,      label: 'SEC EDGAR filings' },
             { icon: <MessageCircle size={13} />, label: 'RAG-powered Q&A' },

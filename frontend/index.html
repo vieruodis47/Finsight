@@ -15,6 +15,17 @@
       /* Keyboard-only focus ring for the sidebar logo home link (sapphire brand). */
       .logo-home { outline: none; }
       .logo-home:focus-visible { outline: 2px solid #2563EB; outline-offset: 2px; }
+      /* Dashboard KPI cards: fixed 4-col grid, 2-col below 768px. */
+      .kpi-grid { grid-template-columns: repeat(4, 1fr); }
+      @media (max-width: 768px) { .kpi-grid { grid-template-columns: repeat(2, 1fr); } }
+      /* Landing feature badges: single row on desktop, 2×2 below 640px. */
+      .feature-badges { display: flex; flex-wrap: nowrap; gap: 20px; justify-content: center; }
+      @media (max-width: 640px) {
+        .feature-badges { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 20px; justify-items: center; }
+      }
+      /* FinChat suggested questions: 2×2 grid of equal-width cards, 1-col below 640px. */
+      .chat-suggest-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; align-items: stretch; }
+      @media (max-width: 640px) { .chat-suggest-grid { grid-template-columns: 1fr; } }
     </style>
 </head>
 <body class="bg-slate-50 text-slate-900 h-screen overflow-hidden">

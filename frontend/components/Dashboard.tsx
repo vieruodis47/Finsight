@@ -139,6 +139,23 @@ const Dashboard: React.FC<DashboardProps> = ({ documents, selectedTicker }) => {
   const snap = market.data?.snapshot;
   const change = snap?.change_pct;
 
+  // KPI cards — explicit, statement-grouped order (NOT data-arrival order), so
+  // the grid shape is fixed. Row 1 = income statement, row 2 = per-share / cash
+  // / balance sheet. Missing values render an em-dash (via the fmt* helpers) so
+  // every card is always present and the 4×2 grid never collapses.
+  const KPIS: { label: string; value: string; note?: string }[] = [
+    // Row 1 — income statement
+    { label: 'Revenue',          value: fmtUSD(rev) },
+    { label: 'Gross margin',     value: fmtPct(grossPct), note: inc?.gross_margin_millions != null ? `${fmtUSD(inc.gross_margin_millions)} gross profit` : undefined },
+    { label: 'Operating income', value: fmtUSD(inc?.operating_income_millions), note: opPct != null ? `${fmtPct(opPct)} margin` : undefined },
+    { label: 'Net income',       value: fmtUSD(inc?.net_income_millions), note: netPct != null ? `${fmtPct(netPct)} margin` : undefined },
+    // Row 2 — per-share / cash / balance sheet
+    { label: 'EPS (diluted)',    value: fmtEps(inc?.eps_diluted ?? inc?.eps_basic) },
+    { label: 'Free cash flow',   value: fmtUSD(cf?.free_cash_flow_millions), note: fcfPct != null ? `${fmtPct(fcfPct)} margin` : undefined },
+    { label: 'Total assets',     value: fmtUSD(bal?.total_assets_millions) },
+    { label: 'Cash & equiv.',    value: fmtUSD(bal?.cash_and_equivalents_millions) },
+  ];
+
   return (
     <div style={{ padding: 22, height: '100%', overflowY: 'auto', fontFamily: font.ui }}>
 
@@ -158,16 +175,10 @@ const Dashboard: React.FC<DashboardProps> = ({ documents, selectedTicker }) => {
         </div>
       )}
 
-      {/* Filing fundamentals — from the extractor */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10, marginBottom: 16 }}>
-        <MetricCard label="Revenue"          value={fmtUSD(rev)} />
-        <MetricCard label="Gross margin"     value={fmtPct(grossPct)} note={inc?.gross_margin_millions != null ? `${fmtUSD(inc.gross_margin_millions)} gross profit` : undefined} />
-        <MetricCard label="Operating income" value={fmtUSD(inc?.operating_income_millions)} note={opPct != null ? `${fmtPct(opPct)} margin` : undefined} />
-        <MetricCard label="Net income"       value={fmtUSD(inc?.net_income_millions)} note={netPct != null ? `${fmtPct(netPct)} margin` : undefined} />
-        <MetricCard label="EPS (diluted)"    value={fmtEps(inc?.eps_diluted ?? inc?.eps_basic)} />
-        <MetricCard label="Free cash flow"   value={fmtUSD(cf?.free_cash_flow_millions)} note={fcfPct != null ? `${fmtPct(fcfPct)} margin` : undefined} />
-        <MetricCard label="Total assets"     value={fmtUSD(bal?.total_assets_millions)} />
-        <MetricCard label="Cash & equiv."    value={fmtUSD(bal?.cash_and_equivalents_millions)} />
+      {/* Filing fundamentals — fixed 4-col grid (2-col below 768px, see .kpi-grid
+          in index.html). Order + em-dash fallbacks handled by the KPIS array. */}
+      <div className="kpi-grid" style={{ display: 'grid', gap: 10, marginBottom: 16 }}>
+        {KPIS.map(k => <MetricCard key={k.label} label={k.label} value={k.value} note={k.note} />)}
       </div>
 
       {/* Margin breakdown (filled) + Market snapshot (live) */}

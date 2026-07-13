@@ -422,6 +422,8 @@ const App: React.FC = () => {
                   fontSize: 13, fontWeight: active ? 500 : 400,
                   color: active ? c.brand : c.navInactive,
                   background: active ? c.brandTint : 'transparent',
+                  // Active-state left indicator (inset shadow = no layout shift).
+                  boxShadow: active ? `inset 2px 0 0 ${c.brand}` : 'none',
                   border: 'none', cursor: 'pointer',
                   width: '100%', textAlign: 'left',
                   whiteSpace: 'nowrap', fontFamily: FF,

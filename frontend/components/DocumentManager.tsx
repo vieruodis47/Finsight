@@ -517,11 +517,22 @@ const DocRow: React.FC<{
           {doc.name}
         </p>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: c.textFaint, flexWrap: 'wrap' }}>
-          <span>{doc.size}</span>
-          <span>·</span>
-          <span>Added {doc.uploadDate}</span>
-          <span>·</span>
-          <IndexBadge status={doc.indexStatus} chunks={doc.indexChunks} error={doc.indexError} />
+          {(() => {
+            // Render only metadata fields that actually have a value, with the
+            // separator dot placed *between* present fields. A missing field (e.g.
+            // no file size on an EDGAR-fetched filing) drops both its value and its
+            // dot — never a placeholder dash or a gap artifact.
+            const segs: React.ReactNode[] = [];
+            if (doc.size && doc.size !== '—') segs.push(<span key="size">{doc.size}</span>);
+            if (doc.uploadDate) segs.push(<span key="added">Added {doc.uploadDate}</span>);
+            segs.push(<IndexBadge key="badge" status={doc.indexStatus} chunks={doc.indexChunks} error={doc.indexError} />);
+            return segs.map((seg, i) => (
+              <React.Fragment key={i}>
+                {i > 0 && <span aria-hidden="true">·</span>}
+                {seg}
+              </React.Fragment>
+            ));
+          })()}
           {canRetry && (
             <button
               onClick={handleRetry}
