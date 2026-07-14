@@ -214,6 +214,36 @@ export async function fetchMarketData(ticker: string, period = '1y'): Promise<Ma
   return (await res.json()) as MarketResponse;
 }
 
+// --- Forecast (statistical trend projection) --------------------------------
+
+export interface ForecastMetric {
+  metric: string;                         // e.g. "revenue", "gross_margin_pct"
+  unit: 'usd' | 'pct';
+  history: { year: string; value: number }[];
+  predicted_value: number;
+  confidence_low: number;
+  confidence_high: number;
+  next_label: string;                     // e.g. "FY2027 (projected)"
+  trend: 'improving' | 'declining' | 'stable';
+  reliability: 'high' | 'moderate' | 'low';
+  r_squared: number;
+  anomaly_years: string[];
+}
+
+export interface ForecastResult {
+  ticker: string;
+  metrics: ForecastMetric[];
+}
+
+export async function fetchForecast(ticker: string): Promise<ForecastResult> {
+  const res = await fetch(`${API_BASE}/analysis/prediction/${encodeURIComponent(ticker)}`);
+  if (!res.ok) {
+    const msg = await res.text().catch(() => res.statusText);
+    throw new Error(`Forecast failed (${res.status}): ${msg}`);
+  }
+  return (await res.json()) as ForecastResult;
+}
+
 // Company name/ticker search over the SEC registry (~10 k entries).
 export interface SearchResult {
   name: string;

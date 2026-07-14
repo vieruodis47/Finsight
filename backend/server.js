@@ -205,7 +205,7 @@ app.get('/api/session', (req, res) => {
 // Node forwards the FinSight API surface so the browser talks to one origin.
 // NOTE: '/api' does NOT match '/api-proxy' (Express mounts on path boundaries),
 // so the Vertex AI proxy below is unaffected.
-const PY_ROUTES = ['/api', '/extract', '/ingest-status', '/market', '/metrics', '/search', '/compare-metrics', '/indexed', '/health'];
+const PY_ROUTES = ['/api', '/extract', '/ingest-status', '/market', '/metrics', '/search', '/compare-metrics', '/indexed', '/analysis', '/health'];
 app.use(PY_ROUTES, pythonApiForwarder);
 
 // --- Proxy Endpoint ---

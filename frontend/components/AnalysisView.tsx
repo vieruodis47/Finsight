@@ -3,11 +3,15 @@ import {
   BarChart, Bar, LineChart, Line, XAxis, YAxis, Tooltip, Legend,
   ResponsiveContainer, CartesianGrid, ReferenceLine,
 } from 'recharts';
-import { FileText, GitCompare, Download, Loader2, AlertCircle, AlertTriangle } from 'lucide-react';
+import { FileText, GitCompare, TrendingUp, Download, Loader2, AlertCircle, AlertTriangle } from 'lucide-react';
 import { Document } from '../types';
-import { generateSummary, compareDocuments, fetchCompareMetrics, CompareMetricsResult } from '../services/gemini';
+import {
+  generateSummary, compareDocuments, fetchCompareMetrics, CompareMetricsResult,
+  fetchForecast, ForecastResult,
+} from '../services/gemini';
 import { c, font } from '../theme';
 import { fmtM, fmtPct, fmtRatio } from '../utils/format';
+import ForecastPanel from './ForecastPanel';
 
 interface AnalysisViewProps {
   documents: Document[];
@@ -313,15 +317,30 @@ const CompareCharts: React.FC<{ data: CompareMetricsResult }> = ({ data }) => {
 // ── Main component ────────────────────────────────────────────────────────
 
 const AnalysisView: React.FC<AnalysisViewProps> = ({ documents }) => {
-  const [mode, setMode]                           = useState<'summary' | 'compare'>('summary');
+  const [mode, setMode]                           = useState<'summary' | 'compare' | 'forecast'>('summary');
   const [selectedDocForSummary, setSelectedDoc]   = useState('');
   const [summaryResult, setSummaryResult]         = useState('');
   const [doc1Id, setDoc1Id]                       = useState('');
   const [doc2Id, setDoc2Id]                       = useState('');
   const [compareResult, setCompareResult]         = useState('');
   const [chartData, setChartData]                 = useState<CompareMetricsResult | null>(null);
+  const [forecastDocId, setForecastDocId]         = useState('');
+  const [forecastData, setForecastData]           = useState<ForecastResult | null>(null);
   const [isLoading, setIsLoading]                 = useState(false);
   const [error, setError]                         = useState<string | null>(null);
+
+  const handleForecast = async () => {
+    const doc = documents.find(d => d.id === forecastDocId);
+    if (!doc?.ticker) { setError('Pick a filing with a ticker to forecast (EDGAR filings, not uploads).'); return; }
+    setIsLoading(true); setError(null); setForecastData(null);
+    try {
+      setForecastData(await fetchForecast(doc.ticker));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Forecast failed.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   const docA = documents.find(d => d.id === doc1Id);
   const docB = documents.find(d => d.id === doc2Id);
@@ -408,6 +427,10 @@ const AnalysisView: React.FC<AnalysisViewProps> = ({ documents }) => {
           <GitCompare size={14} />
           Compare documents
         </button>
+        <button style={btn(mode === 'forecast')} onClick={() => setMode('forecast')}>
+          <TrendingUp size={14} />
+          Forecast
+        </button>
       </div>
 
       {/* Error */}
@@ -455,6 +478,43 @@ const AnalysisView: React.FC<AnalysisViewProps> = ({ documents }) => {
               onExport={() => handleExport(summaryResult, 'Summary_Report')}
             />
           )}
+        </div>
+      )}
+
+      {/* Forecast mode */}
+      {mode === 'forecast' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <div style={{ background: c.bg, border: `0.5px solid ${c.border}`, borderRadius: 10, padding: '16px 18px' }}>
+            <label style={labelStyle}>Forecast a company's core metrics</label>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <select
+                style={{ ...selectStyle, flex: 1 }}
+                value={forecastDocId}
+                onChange={e => setForecastDocId(e.target.value)}
+                onFocus={e => (e.target.style.borderColor = c.brand)}
+                onBlur={e  => (e.target.style.borderColor = c.border)}
+              >
+                <option value="">— Select a filing —</option>
+                {documents.filter(d => d.ticker).map(d => (
+                  <option key={d.id} value={d.id}>{d.name}{d.sector ? ` — ${d.sector}` : ''}</option>
+                ))}
+              </select>
+              <button
+                onClick={handleForecast}
+                disabled={!forecastDocId || isLoading}
+                style={primaryBtn(!forecastDocId || isLoading)}
+                onMouseEnter={e => { if (forecastDocId && !isLoading) e.currentTarget.style.background = c.brandDeepHover; }}
+                onMouseLeave={e => { if (forecastDocId && !isLoading) e.currentTarget.style.background = c.brandDeep; }}
+              >
+                {isLoading
+                  ? <><Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> Forecasting…</>
+                  : <><TrendingUp size={14} /> Forecast</>
+                }
+              </button>
+            </div>
+          </div>
+
+          {forecastData && <ForecastPanel data={forecastData} />}
         </div>
       )}
 
