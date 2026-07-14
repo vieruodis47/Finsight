@@ -187,60 +187,89 @@ def get_company_facts(cik):
     return response.json()
 
 
-def _extract_annual_field(data, field_name):
-    """Extract clean annual (10-K) values for 'flow' fields (Revenue, COGS, etc.)"""
+def _annual_entries_by_end(data, field_name):
+    """Annual (10-K) 'flow' facts for one XBRL tag, keyed by period-end date.
+
+    Returns {end_date: entry}, deduped by end date keeping the most-recently-filed
+    entry (restatements win). Entries carry 'val' and 'filed' so callers can merge
+    across tags. Empty if the tag is absent for this filer.
+    """
     if field_name not in data['facts']['us-gaap']:
         return {}
 
     usd_data = data['facts']['us-gaap'][field_name]['units']['USD']
 
-    annual = []
+    by_end = {}
     for entry in usd_data:
         if entry['form'] != '10-K':
             continue
         start = datetime.strptime(entry['start'], '%Y-%m-%d')
         end = datetime.strptime(entry['end'], '%Y-%m-%d')
         duration_days = (end - start).days
-        if 360 <= duration_days <= 372:
-            annual.append(entry)
-
-    by_end = {}
-    for entry in annual:
+        if not (360 <= duration_days <= 372):
+            continue
         key = entry['end']
         if key not in by_end or entry['filed'] > by_end[key]['filed']:
             by_end[key] = entry
 
-    return {k: v['val'] for k, v in sorted(by_end.items())}
+    return by_end
 
 
-def _extract_instant_field(data, field_name):
-    """Extract clean annual (10-K) values for 'stock' fields (Inventory, Assets, etc.)"""
+def _instant_entries_by_end(data, field_name):
+    """Annual (10-K) 'stock' facts for one XBRL tag, keyed by period-end date.
+
+    Same shape/dedup as _annual_entries_by_end, but for instant (balance-sheet)
+    values, which have no duration to filter on.
+    """
     if field_name not in data['facts']['us-gaap']:
         return {}
 
     usd_data = data['facts']['us-gaap'][field_name]['units']['USD']
 
-    annual = [entry for entry in usd_data if entry['form'] == '10-K']
-
     by_end = {}
-    for entry in annual:
+    for entry in usd_data:
+        if entry['form'] != '10-K':
+            continue
         key = entry['end']
         if key not in by_end or entry['filed'] > by_end[key]['filed']:
             by_end[key] = entry
 
-    return {k: v['val'] for k, v in sorted(by_end.items())}
+    return by_end
 
 
 def extract_metric(data, field_options, instant=False):
-    """Try multiple possible XBRL field names until one returns data."""
+    """Merge annual 10-K values for a metric across ALL its fallback XBRL tags.
+
+    The same economic line is reported under different us-gaap tags over time —
+    e.g. MSFT revenue lives under `Revenues` (FY2008-2010), then `SalesRevenueNet`,
+    then `RevenueFromContractWithCustomerExcludingAssessedTax` (FY2016+). The old
+    "return the first non-empty tag" logic truncated the series to whichever tag
+    led the list (MSFT collapsed to only 2008-2010, so forecasts projected FY2011).
+
+    Instead, union every candidate tag by fiscal period-end date to recover the
+    full history. When a single period-end is reported by more than one tag, the
+    earlier tag in `field_options` wins (the lists are ordered most-canonical
+    first), so exactly one value is taken per year — no summing, no double count.
+
+    Returns ({end_date: val} sorted by date, field_used) where field_used is the
+    tag covering the most-recent year (informational).
+    """
+    collect = _instant_entries_by_end if instant else _annual_entries_by_end
+
+    merged = {}       # end_date -> entry
+    field_by_end = {}  # end_date -> tag that supplied it
     for field_name in field_options:
-        if instant:
-            result = _extract_instant_field(data, field_name)
-        else:
-            result = _extract_annual_field(data, field_name)
-        if result:
-            return result, field_name
-    return {}, None
+        for end, entry in collect(data, field_name).items():
+            if end not in merged:  # earlier (more canonical) tag wins on overlap
+                merged[end] = entry
+                field_by_end[end] = field_name
+
+    if not merged:
+        return {}, None
+
+    ends = sorted(merged)
+    values = {end: merged[end]['val'] for end in ends}
+    return values, field_by_end[ends[-1]]
 
 
 def extract_all_metrics(data):
