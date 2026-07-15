@@ -390,41 +390,47 @@ def calculate_ratios(metrics):
     return ratios
 
 
-def extract_quarterly_field(data, field_name):
+def extract_quarterly_field(data, field_options):
     """
     Extract quarterly values using actual fiscal year-end groupings,
     derived from each quarter's 'end' date rather than SEC's self-reported fy/fp tags.
+
+    Unions all fallback XBRL tags in `field_options` by period-end date, mirroring
+    the annual tag-merge (PR #53): a filer that reports quarters under `Revenues`
+    early and `RevenueFromContractWithCustomerExcludingAssessedTax` later would
+    otherwise be truncated to whichever tag leads the list (MSFT collapsed to
+    2008-2010). On an end-date reported by more than one tag, the earlier (more
+    canonical) tag wins; within a tag, the most-recently-filed entry wins.
     """
-    if field_name not in data['facts']['us-gaap']:
-        return {}
+    if isinstance(field_options, str):  # tolerate a single tag name
+        field_options = [field_options]
 
-    usd_data = data['facts']['us-gaap'][field_name]['units']['USD']
-
-    quarterly_entries = []
-    annual_entries = []
-
-    for entry in usd_data:
-        start = datetime.strptime(entry['start'], '%Y-%m-%d')
-        end = datetime.strptime(entry['end'], '%Y-%m-%d')
-        duration_days = (end - start).days
-
-        if entry['form'] == '10-Q' and 80 <= duration_days <= 100:
-            quarterly_entries.append(entry)
-        elif entry['form'] == '10-K' and 360 <= duration_days <= 372:
-            annual_entries.append(entry)
-
-    # Dedupe by end date, keep most recently filed
     q_by_end = {}
-    for entry in quarterly_entries:
-        key = entry['end']
-        if key not in q_by_end or entry['filed'] > q_by_end[key]['filed']:
-            q_by_end[key] = entry
-
     a_by_end = {}
-    for entry in annual_entries:
-        key = entry['end']
-        if key not in a_by_end or entry['filed'] > a_by_end[key]['filed']:
-            a_by_end[key] = entry
+    for field_name in field_options:
+        facts = data['facts']['us-gaap'].get(field_name)
+        if not facts:
+            continue
+        for entry in facts['units'].get('USD', []):
+            start = datetime.strptime(entry['start'], '%Y-%m-%d')
+            end = datetime.strptime(entry['end'], '%Y-%m-%d')
+            duration_days = (end - start).days
+            key = entry['end']
+
+            if entry['form'] == '10-Q' and 80 <= duration_days <= 100:
+                target = q_by_end
+            elif entry['form'] == '10-K' and 360 <= duration_days <= 372:
+                target = a_by_end
+            else:
+                continue
+
+            existing = target.get(key)
+            # First (more canonical) tag to supply an end-date wins; within the
+            # same tag, keep the most-recently-filed restatement.
+            if existing is None or (
+                existing.get("_tag") == field_name and entry['filed'] > existing['filed']
+            ):
+                target[key] = {**entry, "_tag": field_name}
 
     # Group quarters under the fiscal year they roll up into
     annual_end_dates = sorted(a_by_end.keys())
@@ -478,12 +484,10 @@ def get_quarterly_metrics(ticker, year=None):
 
     results = {}
     for metric_name, field_options in QUARTERLY_METRIC_FIELDS.items():
-        quarterly_data = {}
-        for field_name in field_options:
-            extracted = extract_quarterly_field(data, field_name)
-            if extracted:
-                quarterly_data = extracted
-                break
+        # Merge across all fallback tags (see extract_quarterly_field) rather than
+        # stopping at the first non-empty one, so recent quarters under a newer
+        # tag are never dropped.
+        quarterly_data = extract_quarterly_field(data, field_options)
 
         if year is not None:
             quarterly_data = {year: quarterly_data[year]} if year in quarterly_data else {}

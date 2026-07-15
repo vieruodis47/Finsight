@@ -1,4 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  BarChart, Bar, XAxis, YAxis, Tooltip, Legend, CartesianGrid, ResponsiveContainer,
+} from 'recharts';
 import { ArrowLeft, ChevronLeft, ChevronRight, Search, Loader2, AlertCircle } from 'lucide-react';
 import { c, font } from '../theme';
 import { useOnClickOutside } from '../utils/hooks';
@@ -154,7 +157,47 @@ const KeyMetricsPanel: React.FC<{ data: CompareMetricsResult }> = ({ data }) => 
           );
         })}
       </div>
+
+      {/* Peer margin bars at the same fiscal year — a visual read of the three
+          margin rows above (all %, so one axis). Categorical anchor/peer colors,
+          NOT green/red: this is identity, not a directional signal. */}
+      <MarginBars data={data} year={commonYear} />
     </Card>
+  );
+};
+
+// Grouped margin bars (gross / operating / net) for both companies at `year`.
+const MarginBars: React.FC<{ data: CompareMetricsResult; year: string }> = ({ data, year }) => {
+  const { a: ta, b: tb } = data.tickers;
+  const at = (key: MetricKey) => data[key].find(p => p.year === year);
+  const bars = [
+    { metric: 'Gross', a: at('gross_margin_pct')?.a ?? null, b: at('gross_margin_pct')?.b ?? null },
+    { metric: 'Operating', a: at('operating_margin_pct')?.a ?? null, b: at('operating_margin_pct')?.b ?? null },
+    { metric: 'Net', a: at('net_margin_pct')?.a ?? null, b: at('net_margin_pct')?.b ?? null },
+  ];
+  if (bars.every(r => r.a == null && r.b == null)) return null;
+
+  return (
+    <div style={{ marginTop: 16 }}>
+      <p style={{ fontSize: 11, color: c.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', margin: '0 0 8px' }}>
+        Margin comparison · FY{year}
+      </p>
+      <ResponsiveContainer width="100%" height={190}>
+        <BarChart data={bars} margin={{ top: 6, right: 8, left: 0, bottom: 0 }}>
+          <CartesianGrid stroke={c.borderFaint} strokeDasharray="3 3" vertical={false} />
+          <XAxis dataKey="metric" tick={{ fontSize: 11, fill: c.textFaint }} tickLine={false} axisLine={{ stroke: c.border }} />
+          <YAxis tick={{ fontSize: 11, fill: c.textFaint }} tickLine={false} axisLine={false} width={40} tickFormatter={(v: number) => `${v}%`} />
+          <Tooltip
+            contentStyle={{ fontSize: 12, borderRadius: 8, border: `0.5px solid ${c.border}`, fontFamily: font.ui, background: c.bg }}
+            cursor={{ fill: c.surface }}
+            formatter={((v: number, n: string) => [`${v?.toFixed?.(1) ?? v}%`, n === 'a' ? ta : tb]) as never}
+          />
+          <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 12, fontFamily: font.ui }} formatter={(v: string) => (v === 'a' ? ta : tb)} />
+          <Bar dataKey="a" fill={c.brandDeep} radius={[3, 3, 0, 0]} maxBarSize={30} name="a" />
+          <Bar dataKey="b" fill={c.accent} radius={[3, 3, 0, 0]} maxBarSize={30} name="b" />
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
   );
 };
 

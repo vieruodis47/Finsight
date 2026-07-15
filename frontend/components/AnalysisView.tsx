@@ -3,7 +3,7 @@ import {
   BarChart, Bar, LineChart, Line, XAxis, YAxis, Tooltip, Legend,
   ResponsiveContainer, CartesianGrid, ReferenceLine,
 } from 'recharts';
-import { FileText, GitCompare, TrendingUp, Download, Loader2, AlertCircle, AlertTriangle } from 'lucide-react';
+import { FileText, GitCompare, TrendingUp, BarChart3, Download, Loader2, AlertCircle, AlertTriangle } from 'lucide-react';
 import { Document } from '../types';
 import {
   generateSummary, compareDocuments, fetchCompareMetrics, CompareMetricsResult,
@@ -12,6 +12,7 @@ import {
 import { c, font } from '../theme';
 import { fmtM, fmtPct, fmtRatio } from '../utils/format';
 import ForecastPanel from './ForecastPanel';
+import TrendsPanel from './TrendsPanel';
 
 interface AnalysisViewProps {
   documents: Document[];
@@ -317,8 +318,9 @@ const CompareCharts: React.FC<{ data: CompareMetricsResult }> = ({ data }) => {
 // ── Main component ────────────────────────────────────────────────────────
 
 const AnalysisView: React.FC<AnalysisViewProps> = ({ documents }) => {
-  const [mode, setMode]                           = useState<'summary' | 'compare' | 'forecast'>('summary');
+  const [mode, setMode]                           = useState<'summary' | 'compare' | 'forecast' | 'trends'>('summary');
   const [selectedDocForSummary, setSelectedDoc]   = useState('');
+  const [trendsDocId, setTrendsDocId]             = useState('');
   const [summaryResult, setSummaryResult]         = useState('');
   const [doc1Id, setDoc1Id]                       = useState('');
   const [doc2Id, setDoc2Id]                       = useState('');
@@ -431,6 +433,10 @@ const AnalysisView: React.FC<AnalysisViewProps> = ({ documents }) => {
           <TrendingUp size={14} />
           Forecast
         </button>
+        <button style={btn(mode === 'trends')} onClick={() => setMode('trends')}>
+          <BarChart3 size={14} />
+          Trends
+        </button>
       </div>
 
       {/* Error */}
@@ -515,6 +521,32 @@ const AnalysisView: React.FC<AnalysisViewProps> = ({ documents }) => {
           </div>
 
           {forecastData && <ForecastPanel data={forecastData} />}
+        </div>
+      )}
+
+      {/* Trends mode */}
+      {mode === 'trends' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <div style={{ background: c.bg, border: `0.5px solid ${c.border}`, borderRadius: 10, padding: '16px 18px' }}>
+            <label style={labelStyle}>Chart a company's multi-year financials</label>
+            <select
+              style={selectStyle}
+              value={trendsDocId}
+              onChange={e => setTrendsDocId(e.target.value)}
+              onFocus={e => (e.target.style.borderColor = c.brand)}
+              onBlur={e  => (e.target.style.borderColor = c.border)}
+            >
+              <option value="">— Select a filing —</option>
+              {documents.filter(d => d.ticker).map(d => (
+                <option key={d.id} value={d.id}>{d.name}{d.sector ? ` — ${d.sector}` : ''}</option>
+              ))}
+            </select>
+          </div>
+
+          {(() => {
+            const doc = documents.find(d => d.id === trendsDocId);
+            return doc?.ticker ? <TrendsPanel key={doc.ticker} ticker={doc.ticker} /> : null;
+          })()}
         </div>
       )}
 

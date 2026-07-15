@@ -80,6 +80,7 @@ from .compare_metrics import router as compare_metrics_router
 from .indexed import router as indexed_router
 from .filing_metrics import router as filing_metrics_router
 from .prediction import router as prediction_router
+from .analysis_charts import router as analysis_charts_router
 from .embeddings import DailyQuotaExceededError, PerMinuteQuotaError
 
 # Wire root logging to stdout at import time so app logger.info() lines (worker
@@ -547,6 +548,7 @@ app.include_router(compare_metrics_router)
 app.include_router(indexed_router)
 app.include_router(filing_metrics_router)
 app.include_router(prediction_router)
+app.include_router(analysis_charts_router)
 
 
 # ---------------------------------------------------------------------------

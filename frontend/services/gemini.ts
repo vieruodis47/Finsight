@@ -244,6 +244,115 @@ export async function fetchForecast(ticker: string): Promise<ForecastResult> {
   return (await res.json()) as ForecastResult;
 }
 
+// --- Analysis "Trends" charts (ported from the offline charts.py) -----------
+// All three read the tag-merged, fiscal-year-correct metrics layer, so series
+// are never truncated to a legacy XBRL tag (see /analysis/trends etc.).
+
+export interface TrendPoint {
+  year: string;
+  revenue: number | null;
+  net_income: number | null;
+  cogs: number | null;
+  gross_profit: number | null;
+  operating_income: number | null;
+  gross_margin_pct: number | null;
+  operating_margin_pct: number | null;
+  net_margin_pct: number | null;
+}
+
+export interface TrendsResult {
+  ticker: string;
+  currency: 'usd';
+  points: TrendPoint[];
+}
+
+export async function fetchTrends(ticker: string): Promise<TrendsResult> {
+  const res = await fetch(`${API_BASE}/analysis/trends/${encodeURIComponent(ticker)}`);
+  if (!res.ok) {
+    const msg = await res.text().catch(() => res.statusText);
+    throw new Error(`Trends failed (${res.status}): ${msg}`);
+  }
+  return (await res.json()) as TrendsResult;
+}
+
+export interface QuarterPoint {
+  quarter: 'Q1' | 'Q2' | 'Q3' | 'Q4';
+  revenue: number | null;
+  cogs: number | null;
+  gross_profit: number | null;
+  operating_income: number | null;
+  net_income: number | null;
+}
+
+export interface QuarterlyResult {
+  ticker: string;
+  currency: 'usd';
+  fy: string;
+  points: QuarterPoint[];
+}
+
+export async function fetchQuarterly(ticker: string): Promise<QuarterlyResult> {
+  const res = await fetch(`${API_BASE}/analysis/quarterly/${encodeURIComponent(ticker)}`);
+  if (!res.ok) {
+    const msg = await res.text().catch(() => res.statusText);
+    throw new Error(`Quarterly failed (${res.status}): ${msg}`);
+  }
+  return (await res.json()) as QuarterlyResult;
+}
+
+export interface DistributionResult {
+  ticker: string;
+  metric: string;
+  unit: 'usd' | 'pct';
+  mean: number;
+  std: number;
+  points: { year: string; value: number; is_anomaly: boolean }[];
+}
+
+export async function fetchDistribution(ticker: string, metric: string): Promise<DistributionResult> {
+  const res = await fetch(
+    `${API_BASE}/analysis/distribution/${encodeURIComponent(ticker)}?metric=${encodeURIComponent(metric)}`,
+  );
+  if (!res.ok) {
+    const msg = await res.text().catch(() => res.statusText);
+    throw new Error(`Distribution failed (${res.status}): ${msg}`);
+  }
+  return (await res.json()) as DistributionResult;
+}
+
+// Trailing price returns (1M/3M/6M/1Y), computed client-side from the existing
+// /market daily-close history so we add no new market egress path. Each return
+// anchors to the close at-or-before the target date (or the earliest close if
+// the window predates our history).
+export interface PeriodReturns {
+  m1: number | null;
+  m3: number | null;
+  m6: number | null;
+  y1: number | null;
+}
+
+export async function fetchReturns(ticker: string): Promise<PeriodReturns> {
+  const empty: PeriodReturns = { m1: null, m3: null, m6: null, y1: null };
+  const m = await fetchMarketData(ticker, '1y').catch(() => null);
+  const h = m?.history ?? [];
+  if (h.length === 0) return empty;
+
+  const last = h[h.length - 1];
+  const lastDate = new Date(last.date);
+  const retFor = (daysAgo: number): number | null => {
+    const target = new Date(lastDate);
+    target.setDate(target.getDate() - daysAgo);
+    let best = h[0]; // fall back to earliest close if the window predates history
+    for (const p of h) {
+      if (new Date(p.date) <= target) best = p; else break;
+    }
+    if (!best.close) return null;
+    return ((last.close - best.close) / best.close) * 100;
+  };
+
+  return { m1: retFor(30), m3: retFor(91), m6: retFor(182), y1: retFor(365) };
+}
+
 // Company name/ticker search over the SEC registry (~10 k entries).
 export interface SearchResult {
   name: string;

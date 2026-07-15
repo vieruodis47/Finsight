@@ -1,6 +1,6 @@
 import React from 'react';
 import {
-  ComposedChart, Line, Area, XAxis, YAxis, Tooltip,
+  ComposedChart, Line, Area, Scatter, XAxis, YAxis, Tooltip,
   ResponsiveContainer, CartesianGrid,
 } from 'recharts';
 import { TrendingUp, TrendingDown, Minus, AlertTriangle } from 'lucide-react';
@@ -48,13 +48,21 @@ const MetricForecast: React.FC<{ m: ForecastMetric }> = ({ m }) => {
 
   // History as solid actuals; a dashed segment bridges the last actual to the
   // projected point, which carries a 95% CI band (ciLow..ciHigh).
-  const data: Record<string, number | string | null>[] = m.history.map(h => ({
-    year: h.year.length > 4 ? h.year.slice(0, 4) : h.year,
-    actual: h.value,
-    projected: null,
-    ciLow: null,
-    ciHigh: null,
-  }));
+  // Years the forecaster denoised as off-trend outliers, keyed by FY label so we
+  // can dot them on the actuals line (amber = caution, NOT a directional signal).
+  const anomalySet = new Set(m.anomaly_years.map(y => y.slice(0, 4)));
+
+  const data: Record<string, number | string | null>[] = m.history.map(h => {
+    const yr = h.year.length > 4 ? h.year.slice(0, 4) : h.year;
+    return {
+      year: yr,
+      actual: h.value,
+      anomaly: anomalySet.has(yr) ? h.value : null,
+      projected: null,
+      ciLow: null,
+      ciHigh: null,
+    };
+  });
   if (data.length > 0) {
     const last = data[data.length - 1];
     last.projected = last.actual; // bridge the dashed line from the last actual
@@ -104,6 +112,8 @@ const MetricForecast: React.FC<{ m: ForecastMetric }> = ({ m }) => {
           <Line dataKey="actual" stroke={c.brand} strokeWidth={2} dot={{ r: 3, fill: c.brand }} connectNulls={false} isAnimationActive={false} />
           {/* Projection — dashed brand-light line to the projected point */}
           <Line dataKey="projected" stroke={c.brandLight} strokeWidth={2} strokeDasharray="5 4" dot={{ r: 4, fill: c.brandLight }} connectNulls isAnimationActive={false} />
+          {/* Denoised anomalies — amber dots on the actuals (caution, not directional) */}
+          <Scatter dataKey="anomaly" fill={c.warnFg} isAnimationActive={false} />
         </ComposedChart>
       </ResponsiveContainer>
 
