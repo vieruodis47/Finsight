@@ -17,6 +17,12 @@ const METRIC_LABELS: Record<string, string> = {
   net_margin_pct: 'Net margin',
 };
 
+// A finite-number type guard. Every numeric field from the forecast API is run
+// through this before it's formatted or fed to Recharts, so a null / undefined /
+// NaN / Infinity value (a partial or malformed metric) renders as "—" instead of
+// throwing a TypeError mid-render and white-screening the whole page.
+const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+
 // Revenue arrives as raw USD (not millions), so scale generically.
 const fmtUSD = (v: number): string => {
   const a = Math.abs(v);
@@ -25,8 +31,8 @@ const fmtUSD = (v: number): string => {
   if (a >= 1e6) return `$${(v / 1e6).toFixed(1)}M`;
   return `$${Math.round(v).toLocaleString()}`;
 };
-const fmtVal = (v: number, unit: 'usd' | 'pct'): string =>
-  unit === 'usd' ? fmtUSD(v) : `${v.toFixed(1)}%`;
+const fmtVal = (v: unknown, unit: 'usd' | 'pct'): string =>
+  !isNum(v) ? '—' : unit === 'usd' ? fmtUSD(v) : `${v.toFixed(1)}%`;
 
 // Trend is a DIRECTIONAL FINANCIAL SIGNAL — the one place green/red is allowed.
 const trendStyle = (trend: ForecastMetric['trend']) => {
@@ -43,22 +49,46 @@ const reliabilityStyle = (r: ForecastMetric['reliability']): React.CSSProperties
   color: r === 'high' ? c.brand : c.textMuted,
 });
 
+const cardStyle: React.CSSProperties = {
+  background: c.bg, border: `0.5px solid ${c.border}`, borderRadius: 10, padding: '14px 16px',
+};
+
 const MetricForecast: React.FC<{ m: ForecastMetric }> = ({ m }) => {
-  const label = METRIC_LABELS[m.metric] ?? m.metric.replace(/_/g, ' ');
+  // ── Defensive normalization ──────────────────────────────────────────────
+  // The forecast API is trusted to send well-formed metrics, but a partial or
+  // version-skewed response can omit fields. Coerce everything to a safe shape
+  // up front so no downstream access (.toFixed / .map / .length / .slice /
+  // .replace) can throw. A missing field degrades gracefully, it never blanks.
+  const unit: 'usd' | 'pct' = m.unit === 'pct' ? 'pct' : 'usd';
+  const metricKey = typeof m.metric === 'string' ? m.metric : '';
+  const label = METRIC_LABELS[metricKey] ?? (metricKey ? metricKey.replace(/_/g, ' ') : 'Metric');
+
+  const anomalyYears: string[] = Array.isArray(m.anomaly_years)
+    ? m.anomaly_years.filter((y): y is string => typeof y === 'string')
+    : [];
+  const history = Array.isArray(m.history) ? m.history : [];
+
+  const predicted = isNum(m.predicted_value) ? m.predicted_value : null;
+  const ciLow = isNum(m.confidence_low) ? m.confidence_low : null;
+  const ciHigh = isNum(m.confidence_high) ? m.confidence_high : null;
+  const nextLabel = typeof m.next_label === 'string' && m.next_label ? m.next_label : 'Next period (projected)';
+
   const { color: tColor, Icon: TIcon, label: tLabel } = trendStyle(m.trend);
+
+  // Years the forecaster denoised as off-trend outliers, keyed by FY label so we
+  // can dot them on the actuals line (amber = caution, NOT a directional signal).
+  const anomalySet = new Set(anomalyYears.map(y => y.slice(0, 4)));
 
   // History as solid actuals; a dashed segment bridges the last actual to the
   // projected point, which carries a 95% CI band (ciLow..ciHigh).
-  // Years the forecaster denoised as off-trend outliers, keyed by FY label so we
-  // can dot them on the actuals line (amber = caution, NOT a directional signal).
-  const anomalySet = new Set(m.anomaly_years.map(y => y.slice(0, 4)));
-
-  const data: Record<string, number | string | null>[] = m.history.map(h => {
-    const yr = h.year.length > 4 ? h.year.slice(0, 4) : h.year;
+  const data: Record<string, number | string | null>[] = history.map(h => {
+    const yrRaw = String(h?.year ?? '');
+    const yr = yrRaw.length > 4 ? yrRaw.slice(0, 4) : yrRaw;
+    const val = isNum(h?.value) ? h.value : null;
     return {
       year: yr,
-      actual: h.value,
-      anomaly: anomalySet.has(yr) ? h.value : null,
+      actual: val,
+      anomaly: anomalySet.has(yr) ? val : null,
       projected: null,
       ciLow: null,
       ciHigh: null,
@@ -68,18 +98,33 @@ const MetricForecast: React.FC<{ m: ForecastMetric }> = ({ m }) => {
     const last = data[data.length - 1];
     last.projected = last.actual; // bridge the dashed line from the last actual
   }
-  data.push({
-    year: m.next_label.replace(/\s*\(projected\)/i, ''),
-    actual: null,
-    projected: m.predicted_value,
-    ciLow: m.confidence_low,
-    ciHigh: m.confidence_high,
-  });
+  // Only add the projected point when there's a real number to plot.
+  if (predicted !== null) {
+    data.push({
+      year: nextLabel.replace(/\s*\(projected\)/i, ''),
+      actual: null,
+      projected: predicted,
+      ciLow,
+      ciHigh,
+    });
+  }
 
-  const tickFmt = (v: number) => (m.unit === 'usd' ? fmtUSD(v) : `${Math.round(v)}%`);
+  // Nothing plottable at all — show a contained note rather than an empty chart.
+  if (data.length === 0) {
+    return (
+      <div style={cardStyle}>
+        <span style={{ fontSize: 13, fontWeight: 500, color: c.text }}>{label}</span>
+        <p style={{ fontSize: 12, color: c.textMuted, margin: '8px 0 0' }}>
+          No forecastable history for this metric.
+        </p>
+      </div>
+    );
+  }
+
+  const tickFmt = (v: number) => (unit === 'usd' ? fmtUSD(v) : `${Math.round(v)}%`);
 
   return (
-    <div style={{ background: c.bg, border: `0.5px solid ${c.border}`, borderRadius: 10, padding: '14px 16px' }}>
+    <div style={cardStyle}>
       {/* Header: metric + directional trend + reliability */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
         <span style={{ fontSize: 13, fontWeight: 500, color: c.text }}>{label}</span>
@@ -87,7 +132,7 @@ const MetricForecast: React.FC<{ m: ForecastMetric }> = ({ m }) => {
           <TIcon size={14} /> {tLabel}
         </span>
         <span style={reliabilityStyle(m.reliability)}>
-          {m.reliability} confidence · R² {m.r_squared.toFixed(2)}
+          {m.reliability ?? 'unknown'} confidence · R² {isNum(m.r_squared) ? m.r_squared.toFixed(2) : '—'}
         </span>
       </div>
 
@@ -103,7 +148,7 @@ const MetricForecast: React.FC<{ m: ForecastMetric }> = ({ m }) => {
               const label = name === 'actual' ? 'Actual'
                 : name === 'projected' ? 'Projected'
                 : name === 'ciHigh' ? 'CI high' : name === 'ciLow' ? 'CI low' : name;
-              return [fmtVal(v, m.unit), label];
+              return [fmtVal(v, unit), label];
             }) as never}
             contentStyle={{ fontSize: 12, fontFamily: FF, border: `0.5px solid ${c.border}`, borderRadius: 8 }}
           />
@@ -122,32 +167,49 @@ const MetricForecast: React.FC<{ m: ForecastMetric }> = ({ m }) => {
 
       {/* Numeric summary */}
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
-        <span style={{ fontSize: 12, color: c.textMuted }}>{m.next_label}:</span>
-        <span style={{ fontSize: 15, fontWeight: 600, color: c.text }}>{fmtVal(m.predicted_value, m.unit)}</span>
-        <span style={{ fontSize: 12, color: c.textFaint }}>
-          95% CI {fmtVal(m.confidence_low, m.unit)} – {fmtVal(m.confidence_high, m.unit)}
-        </span>
+        <span style={{ fontSize: 12, color: c.textMuted }}>{nextLabel}:</span>
+        <span style={{ fontSize: 15, fontWeight: 600, color: c.text }}>{fmtVal(predicted, unit)}</span>
+        {(ciLow !== null || ciHigh !== null) && (
+          <span style={{ fontSize: 12, color: c.textFaint }}>
+            95% CI {fmtVal(ciLow, unit)} – {fmtVal(ciHigh, unit)}
+          </span>
+        )}
       </div>
-      {m.anomaly_years.length > 0 && (
+      {anomalyYears.length > 0 && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6, fontSize: 11, color: c.textMuted }}>
           <AlertTriangle size={12} color={c.textFaint} />
-          Denoised {m.anomaly_years.length} anomalous year{m.anomaly_years.length > 1 ? 's' : ''} ({m.anomaly_years.join(', ')}) before fitting the trend.
+          Denoised {anomalyYears.length} anomalous year{anomalyYears.length > 1 ? 's' : ''} ({anomalyYears.join(', ')}) before fitting the trend.
         </div>
       )}
     </div>
   );
 };
 
-const ForecastPanel: React.FC<{ data: ForecastResult }> = ({ data }) => (
-  <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-    <p style={{ fontSize: 12, color: c.textMuted, margin: 0, lineHeight: 1.6 }}>
-      Denoised weighted-linear-trend projection for <strong style={{ color: c.text }}>{data.ticker}</strong>,
-      with 95% confidence intervals. Statistical estimate from historical filings — not investment advice.
-    </p>
-    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 12 }}>
-      {data.metrics.map(m => <MetricForecast key={m.metric} m={m} />)}
+const ForecastPanel: React.FC<{ data: ForecastResult }> = ({ data }) => {
+  // Guard the top-level shape too: a malformed response (metrics missing/not an
+  // array) shows an empty state instead of throwing on `.map`.
+  const metrics = Array.isArray(data?.metrics) ? data.metrics : [];
+  const ticker = data?.ticker ?? '';
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <p style={{ fontSize: 12, color: c.textMuted, margin: 0, lineHeight: 1.6 }}>
+        Denoised weighted-linear-trend projection for <strong style={{ color: c.text }}>{ticker}</strong>,
+        with 95% confidence intervals. Statistical estimate from historical filings — not investment advice.
+      </p>
+      {metrics.length === 0 ? (
+        <div style={cardStyle}>
+          <p style={{ fontSize: 13, color: c.textMuted, margin: 0 }}>
+            No forecastable metrics were returned for {ticker || 'this company'}.
+          </p>
+        </div>
+      ) : (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 12 }}>
+          {metrics.map((m, i) => <MetricForecast key={(m && m.metric) || i} m={m} />)}
+        </div>
+      )}
     </div>
-  </div>
-);
+  );
+};
 
 export default ForecastPanel;

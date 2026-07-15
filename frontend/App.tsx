@@ -13,6 +13,7 @@ import DocumentManager from './components/DocumentManager';
 import ChatInterface from './components/ChatInterface';
 import AnalysisView from './components/AnalysisView';
 import CompareView from './components/CompareView';
+import ErrorBoundary from './components/ErrorBoundary';
 import PeerPicker from './components/PeerPicker';
 import SplashScreen from './components/SplashScreen';
 import GettingStarted from './components/GettingStarted';
@@ -106,18 +107,35 @@ const App: React.FC = () => {
           const status = doc.uploadDocId
             ? await getUploadStatus(doc.uploadDocId)
             : await getIngestStatus(doc.ticker!, doc.form!);
-          setDocuments(prev =>
-            prev.map(d =>
-              d.id === doc.id
-                ? {
-                    ...d,
-                    indexStatus: status.status as IndexStatus,
-                    indexChunks: status.chunks,
-                    indexError:  status.error ?? undefined,
-                  }
-                : d,
-            ),
-          );
+          setDocuments(prev => {
+            // Only produce a new array/object when something actually changed.
+            // Returning `prev` unchanged keeps the `documents` reference stable,
+            // so this effect (keyed on [documents]) does NOT tear down and
+            // recreate the interval — and the whole app doesn't re-render every
+            // 2.5s forever while a filing sits in "indexing". A changed status
+            // (e.g. indexing -> indexed) still updates once and lets the effect
+            // re-run, dropping the now-complete doc from the polling set.
+            const nextError = status.error ?? undefined;
+            let changed = false;
+            const next = prev.map(d => {
+              if (d.id !== doc.id) return d;
+              if (
+                d.indexStatus === (status.status as IndexStatus) &&
+                d.indexChunks === status.chunks &&
+                d.indexError === nextError
+              ) {
+                return d;
+              }
+              changed = true;
+              return {
+                ...d,
+                indexStatus: status.status as IndexStatus,
+                indexChunks: status.chunks,
+                indexError:  nextError,
+              };
+            });
+            return changed ? next : prev;
+          });
         } catch {
           // Transient network error — keep polling.
         }
@@ -574,17 +592,26 @@ const App: React.FC = () => {
           </div>
         </header>
 
-        {/* Page content */}
+        {/* Page content. Wrapped in an ErrorBoundary so a render exception in
+            one view (e.g. a chart fed a partial/malformed response) degrades to
+            a readable, retryable card instead of white-screening the whole app —
+            the sidebar and nav stay usable. resetKey is the active view/route,
+            so navigating away clears the error automatically. */}
         <div style={{ flex: 1, overflow: 'hidden' }}>
-          {route.name === 'compare'
-            ? <CompareView
-                anchor={route.anchor.toUpperCase()}
-                peer={route.peer.toUpperCase()}
-                peers={comparePeers}
-                onBack={() => navigateToCompany(route.anchor)}
-                onSelectPeer={p => navigateToCompare(route.anchor, p)}
-              />
-            : renderView()}
+          <ErrorBoundary
+            label={isCompareRoute ? 'the comparison' : (currentView === 'analysis' ? 'the analysis' : 'this view')}
+            resetKey={isCompareRoute ? `compare:${route.anchor}:${route.peer}` : `view:${currentView}`}
+          >
+            {route.name === 'compare'
+              ? <CompareView
+                  anchor={route.anchor.toUpperCase()}
+                  peer={route.peer.toUpperCase()}
+                  peers={comparePeers}
+                  onBack={() => navigateToCompany(route.anchor)}
+                  onSelectPeer={p => navigateToCompare(route.anchor, p)}
+                />
+              : renderView()}
+          </ErrorBoundary>
         </div>
       </main>
     </div>
