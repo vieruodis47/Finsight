@@ -52,6 +52,39 @@ export const c = {
   peer:      '#C3CEDA', // non-subject comparison bars / prior-period bars
 } as const;
 
+// ── Categorical series palette (multi-series charts) ───────────────────────
+// Single source of truth for distinguishing 2+ data series in one chart.
+// Series differ by HUE, not just lightness (the old #2563EB/#60A5FA pair was two
+// sapphires — indistinguishable in greyscale and for colour-vision-deficient
+// users). Green/red are deliberately absent: those stay reserved for directional
+// ▲/▼ signals, never category.
+//
+// Colour-blindness / greyscale check (report):
+//   • The load-bearing pair is series[0] sapphire (#2563EB) vs series[1] amber
+//     (#D97706) — the classic blue/orange pairing behind colour-blind-safe
+//     palettes (cf. Okabe–Ito). Red-green deficiencies (deuteranopia,
+//     protanopia) leave the blue↔yellow axis intact, so the two stay separable;
+//     violet (#7C3AED) and teal (#0D9488) extend that without introducing a
+//     red/green confusion pair.
+//   • Greyscale: relative luminances are ≈0.15 (sapphire), 0.28 (amber),
+//     0.09 (violet), 0.20 (teal) — every adjacent pair differs enough to read
+//     in print. As a WCAG 1.4.1 belt-and-braces we ALSO cue lines by
+//     strokeDasharray + distinct dot shapes (see `dash`/`shape`), so colour is
+//     never the sole differentiator; legends sit adjacent to each chart.
+//
+// `ink` is the AA-on-white (≥4.5:1) text twin of each fill, for legend labels /
+// column headers where the vivid fill would fail small-text contrast.
+export const series = {
+  fill:  ['#2563EB', '#D97706', '#7C3AED', '#0D9488'], // sapphire, amber, violet, teal
+  ink:   ['#1D4ED8', '#B45309', '#6D28D9', '#0F766E'], // AA-on-white text variants
+  dash:  ['',        '6 4',     '2 3',     '8 3 2 3'],  // stroke pattern per index
+  shape: ['circle',  'square',  'triangle', 'diamond'], // Recharts scatter/dot shape
+} as const;
+
+// Convenience aliases for the anchor(A)/peer(B) two-series comparison views.
+export const seriesA = { fill: series.fill[0], ink: series.ink[0], dash: series.dash[0] } as const;
+export const seriesB = { fill: series.fill[1], ink: series.ink[1], dash: series.dash[1] } as const;
+
 export const font = {
   ui:    "'Inter', system-ui, sans-serif",
   prose: "'Libre Baskerville', Georgia, serif",

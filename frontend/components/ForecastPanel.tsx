@@ -6,6 +6,7 @@ import {
 import { TrendingUp, TrendingDown, Minus, AlertTriangle } from 'lucide-react';
 import { c, font } from '../theme';
 import { ForecastResult, ForecastMetric } from '../services/gemini';
+import { ChartFigure } from './ChartDescription';
 
 const FF = font.ui;
 
@@ -90,6 +91,7 @@ const MetricForecast: React.FC<{ m: ForecastMetric }> = ({ m }) => {
         </span>
       </div>
 
+      <ChartFigure description={m.description}>
       <ResponsiveContainer width="100%" height={200}>
         <ComposedChart data={data} margin={{ top: 6, right: 10, left: 0, bottom: 0 }}>
           <CartesianGrid strokeDasharray="3 3" stroke={c.borderFaint} vertical={false} />
@@ -116,6 +118,7 @@ const MetricForecast: React.FC<{ m: ForecastMetric }> = ({ m }) => {
           <Scatter dataKey="anomaly" fill={c.warnFg} isAnimationActive={false} />
         </ComposedChart>
       </ResponsiveContainer>
+      </ChartFigure>
 
       {/* Numeric summary */}
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>

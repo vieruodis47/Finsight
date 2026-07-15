@@ -28,10 +28,18 @@ from fastapi import APIRouter, HTTPException
 # from ..analysis.metrics, so this relative import resolves in the app package.
 from ..analysis.metrics import get_company_metrics, calculate_ratios
 from ..analysis.stats import analyze_metric
+from ..analysis.descriptions import describe_forecast
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/analysis", tags=["analysis"])
+
+_FORECAST_LABELS = {
+    "revenue": "Revenue",
+    "gross_margin_pct": "Gross margin",
+    "operating_margin_pct": "Operating margin",
+    "net_margin_pct": "Net margin",
+}
 
 # Core metrics we forecast. "revenue" is a raw USD series; the rest are margins
 # (percent). Order is display order on the Analysis page.
@@ -97,10 +105,12 @@ def prediction(ticker: str) -> dict:
             continue
 
         lo, hi = pred["confidence_interval"]
+        unit = "usd" if metric == "revenue" else "pct"
+        anomaly_years = [str(y) for y in analysis.get("anomalies", {})]
         results.append(
             {
                 "metric": metric,
-                "unit": "usd" if metric == "revenue" else "pct",
+                "unit": unit,
                 "history": history,
                 "predicted_value": pred["predicted_value"],
                 "confidence_low": lo,
@@ -109,7 +119,14 @@ def prediction(ticker: str) -> dict:
                 "trend": pred["trend"],             # improving | declining | stable
                 "reliability": pred["reliability"], # high | moderate | low
                 "r_squared": pred["r_squared"],
-                "anomaly_years": [str(y) for y in analysis.get("anomalies", {})],
+                "anomaly_years": anomaly_years,
+                # Deterministic, templated one-liner computed from these exact
+                # figures (no LLM) — restates the projection + band + fit verbatim.
+                "description": describe_forecast(
+                    history, pred["predicted_value"], lo, hi,
+                    pred["next_label"], pred["trend"], pred["r_squared"],
+                    unit, _FORECAST_LABELS.get(metric, metric), anomaly_years,
+                ),
             }
         )
 

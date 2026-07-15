@@ -30,6 +30,26 @@ from ..analysis.metrics import (
     get_available_years,
 )
 from ..analysis.stats import analyze_metric
+from ..analysis.descriptions import (
+    describe_series,
+    describe_quarterly,
+    describe_distribution,
+)
+
+# Human labels for the surfaced metrics, shared by the trend descriptions.
+_TREND_LABELS = {
+    "revenue": "Revenue",
+    "net_income": "Net income",
+    "gross_margin_pct": "Gross margin",
+    "operating_margin_pct": "Operating margin",
+    "net_margin_pct": "Net margin",
+}
+_QUARTER_LABELS = {
+    "revenue": "Revenue",
+    "gross_profit": "Gross profit",
+    "operating_income": "Operating income",
+    "net_income": "Net income",
+}
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +119,36 @@ def trends(ticker: str) -> dict:
     if not points:
         raise HTTPException(status_code=422, detail=f"No trend data available for {ticker}.")
 
-    return {"ticker": ticker, "currency": "usd", "points": points}
+    # ── Deterministic, templated descriptions (no LLM, no quota) ──────────────
+    # Computed from the same period-end series the charts plot, so the prose can
+    # never disagree with the plotted numbers. Keyed to each chart / selector.
+    def _vals(field: str) -> dict:
+        return {pe: v for pe, v in (raw.get(field) or {}).get("values", {}).items() if v is not None}
+
+    rev = _vals("revenue")
+    cogs = _vals("cogs")
+    margin_series = {
+        m: {pe: r[m] for pe, r in ratios.items() if r.get(m) is not None}
+        for m in _MARGIN_FIELDS
+    }
+    cogs_share = {pe: cogs[pe] / rev[pe] * 100 for pe in cogs if rev.get(pe)}
+
+    descriptions = {
+        "revenue": describe_series(rev, "usd", "Revenue"),
+        "net_income": describe_series(_vals("net_income"), "usd", "Net income"),
+        **{
+            m: describe_series(margin_series[m], "pct", _TREND_LABELS[m])
+            for m in _MARGIN_FIELDS
+        },
+        # Static charts: the cost-structure stack and the revenue-vs-net-income
+        # dual axis. Both are summarised through the ratio that drives them.
+        "cost_structure": describe_series(cogs_share, "pct", "COGS as a share of revenue"),
+        "revenue_vs_income": describe_series(
+            margin_series["net_margin_pct"], "pct", "Net margin (net income ÷ revenue)"
+        ),
+    }
+
+    return {"ticker": ticker, "currency": "usd", "points": points, "descriptions": descriptions}
 
 
 @router.get("/quarterly/{ticker}")
@@ -133,7 +182,16 @@ def quarterly(ticker: str) -> dict:
             row[f] = float(v) if v is not None else None
         points.append(row)
 
-    return {"ticker": ticker, "currency": "usd", "fy": _fy(latest), "points": points}
+    fy = _fy(latest)
+    descriptions = {
+        f: describe_quarterly(points, f, _QUARTER_LABELS[f], fy)
+        for f in _QUARTER_LABELS
+    }
+
+    return {
+        "ticker": ticker, "currency": "usd", "fy": fy,
+        "points": points, "descriptions": descriptions,
+    }
 
 
 @router.get("/distribution/{ticker}")
@@ -168,11 +226,17 @@ def distribution(ticker: str, metric: str = Query("revenue")) -> dict:
         for pe in sorted(series)
     ]
 
+    mean = float(np.mean(vals))
+    std = float(np.std(vals, ddof=1)) if len(vals) > 1 else 0.0
+    label = _TREND_LABELS.get(metric, metric.replace("_", " ").title())
+    description = describe_distribution(points, mean, std, _DIST_UNITS[metric], label)
+
     return {
         "ticker": ticker,
         "metric": metric,
         "unit": _DIST_UNITS[metric],
-        "mean": float(np.mean(vals)),
-        "std": float(np.std(vals, ddof=1)) if len(vals) > 1 else 0.0,
+        "mean": mean,
+        "std": std,
         "points": points,
+        "description": description,
     }

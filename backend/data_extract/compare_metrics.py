@@ -22,6 +22,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, Query
 
+from ..analysis.descriptions import describe_comparison
 from .sec_client import get_cik, get_company_facts
 
 router = APIRouter()
@@ -78,9 +79,24 @@ _INSTANT: dict[str, list[str]] = {
 }
 
 # ── XBRL extraction helpers ─────────────────────────────────────────────────
+#
+# Both collectors return {period_end: entry} (entry carries 'val' + 'filed') so
+# _merge_tags below can UNION a metric across all of its fallback XBRL tags.
+# Returning bare values here — and stopping at the first non-empty tag, as the
+# old _first() did — is exactly what truncated MSFT to FY2008-2010 and AAPL to
+# FY2016-2018 in the compare view: the same economic line is filed under
+# different us-gaap tags across eras (MSFT revenue: `Revenues` early, then
+# `SalesRevenueNet`, then `RevenueFromContractWithCustomerExcludingAssessedTax`),
+# so "first tag wins" keeps only one era. This mirrors analysis/metrics.py
+# extract_metric (PR #53), which fixed the identical bug in the trends/forecast
+# layer; the fix now lives on both paths.
 
-def _annual(facts: dict, field: str) -> dict[str, float]:
-    """Annual 10-K flow values (360–372 day periods only)."""
+def _annual_entries(facts: dict, field: str) -> dict[str, dict]:
+    """Annual 10-K flow entries for one tag (360–372 day periods), by period-end.
+
+    Deduped per period-end keeping the most-recently-filed entry (restatements
+    win). Empty if the tag is absent for this filer.
+    """
     usgaap = facts.get("facts", {}).get("us-gaap", {})
     if field not in usgaap:
         return {}
@@ -95,11 +111,14 @@ def _annual(facts: dict, field: str) -> dict[str, float]:
         key = e["end"]
         if key not in by_end or e["filed"] > by_end[key]["filed"]:
             by_end[key] = e
-    return {k: v["val"] for k, v in sorted(by_end.items())}
+    return by_end
 
 
-def _instant(facts: dict, field: str) -> dict[str, float]:
-    """Instant (balance-sheet) 10-K values, most-recently-filed per period."""
+def _instant_entries(facts: dict, field: str) -> dict[str, dict]:
+    """Instant (balance-sheet) 10-K entries for one tag, by period-end.
+
+    Same shape/dedup as _annual_entries but with no duration filter.
+    """
     usgaap = facts.get("facts", {}).get("us-gaap", {})
     if field not in usgaap:
         return {}
@@ -110,25 +129,34 @@ def _instant(facts: dict, field: str) -> dict[str, float]:
         key = e["end"]
         if key not in by_end or e["filed"] > by_end[key]["filed"]:
             by_end[key] = e
-    return {k: v["val"] for k, v in sorted(by_end.items())}
+    return by_end
 
 
-def _first(facts: dict, fields: list[str], is_instant: bool) -> dict[str, float]:
-    """Try XBRL field names in order; return first that yields data."""
+def _merge_tags(facts: dict, fields: list[str], is_instant: bool) -> dict[str, float]:
+    """Union a metric across ALL of its fallback XBRL tags, by period-end.
+
+    Every candidate tag contributes its years; when more than one tag reports the
+    same period-end, the earlier (more canonical) tag in `fields` wins — the
+    lists are ordered most-canonical-first — so exactly one value is taken per
+    year (no summing, no double-count). This recovers the full multi-era history
+    a single tag would truncate.
+    """
+    collect = _instant_entries if is_instant else _annual_entries
+    merged: dict[str, dict] = {}
     for name in fields:
-        vals = _instant(facts, name) if is_instant else _annual(facts, name)
-        if vals:
-            return vals
-    return {}
+        for end, entry in collect(facts, name).items():
+            if end not in merged:  # earlier (more canonical) tag wins on overlap
+                merged[end] = entry
+    return {k: merged[k]["val"] for k in sorted(merged)}
 
 
 def _pull(facts: dict) -> dict[str, dict[str, float]]:
-    """Pull all raw metric time-series for one company."""
+    """Pull all raw metric time-series for one company (tag-merged)."""
     out: dict[str, dict[str, float]] = {}
     for key, names in _FLOW.items():
-        out[key] = _first(facts, names, False)
+        out[key] = _merge_tags(facts, names, False)
     for key, names in _INSTANT.items():
-        out[key] = _first(facts, names, True)
+        out[key] = _merge_tags(facts, names, True)
     return out
 
 
@@ -205,6 +233,20 @@ _SERIES_KEYS = [
     "debt_to_equity", "current_ratio",
 ]
 
+# (label, unit) for each series — drives the deterministic chart descriptions.
+# Monetary series are stored in $M by _compute(), hence 'usd_m'.
+_SERIES_META: dict[str, tuple[str, str]] = {
+    "revenue":              ("Revenue", "usd_m"),
+    "net_income":           ("Net income", "usd_m"),
+    "free_cash_flow":       ("Free cash flow", "usd_m"),
+    "gross_margin_pct":     ("Gross margin", "pct"),
+    "operating_margin_pct": ("Operating margin", "pct"),
+    "net_margin_pct":       ("Net margin", "pct"),
+    "revenue_growth_pct":   ("Revenue growth", "pct"),
+    "debt_to_equity":       ("Debt-to-equity", "ratio"),
+    "current_ratio":        ("Current ratio", "ratio"),
+}
+
 
 def _fetch_ticker(ticker: str) -> dict:
     """Resolve ticker → CIK → company facts (blocking I/O)."""
@@ -245,9 +287,21 @@ def compare_metrics(a: str = Query(...), b: str = Query(...)):
     series_a = _compute(_pull(facts_a))
     series_b = _compute(_pull(facts_b))
 
+    merged = {k: _merge(series_a, series_b, k) for k in _SERIES_KEYS}
+
+    # Deterministic, templated per-chart descriptions computed from the exact
+    # rows the frontend plots (no LLM, no quota). describe_comparison also spells
+    # out each ticker's covered range + any in-window gaps, so a non-overlapping
+    # comparison is described as such rather than presented as like-for-like.
+    descriptions = {
+        k: describe_comparison(merged[k], _SERIES_META[k][0], a, b, _SERIES_META[k][1])
+        for k in _SERIES_KEYS
+    }
+
     result = {
         "tickers": {"a": a, "b": b},
-        **{k: _merge(series_a, series_b, k) for k in _SERIES_KEYS},
+        "descriptions": descriptions,
+        **merged,
     }
 
     with _cache_lock:

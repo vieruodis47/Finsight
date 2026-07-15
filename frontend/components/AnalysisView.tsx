@@ -9,7 +9,7 @@ import {
   generateSummary, compareDocuments, fetchCompareMetrics, CompareMetricsResult,
   fetchForecast, ForecastResult,
 } from '../services/gemini';
-import { c, font } from '../theme';
+import { c, font, seriesA, seriesB } from '../theme';
 import { fmtM, fmtPct, fmtRatio } from '../utils/format';
 import ForecastPanel from './ForecastPanel';
 import TrendsPanel from './TrendsPanel';
@@ -129,8 +129,14 @@ const renderMarkdown = (text: string): React.ReactNode => {
 
 // ── Comparison charts ─────────────────────────────────────────────────────
 
-const COL_A = c.brandDeep;
-const COL_B = c.accent;
+// Categorical series colours — hue-differentiated (sapphire vs amber), from the
+// theme's single-source palette. NOT green/red (those stay directional-only).
+// Series B also carries a dash pattern so the two lines are distinguishable in
+// greyscale and for colour-vision-deficient users (WCAG 1.4.1 — never colour
+// alone).
+const COL_A = seriesA.fill;
+const COL_B = seriesB.fill;
+const DASH_B = seriesB.dash;
 
 const xAxisProps = {
   dataKey: 'year' as const,
@@ -159,12 +165,25 @@ const tooltipStyle = {
   cursor: { fill: c.surface },
 };
 
-const ChartPanel: React.FC<{ title: string; children: React.ReactNode }> = ({ title, children }) => (
-  <div style={{ background: c.bg, border: `0.5px solid ${c.border}`, borderRadius: 10, padding: '14px 16px' }}>
-    <p style={{ fontSize: 11, color: c.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', margin: '0 0 10px', fontFamily: FF }}>{title}</p>
-    {children}
-  </div>
-);
+// Each panel: uppercase title, the chart (wrapped role="img" + aria-label so a
+// screen reader announces the computed trend, not an unlabeled SVG), then the
+// same description as a visible caption (aria-hidden to avoid a double read).
+const ChartPanel: React.FC<{ title: string; description?: string; children: React.ReactNode }> = ({ title, description, children }) => {
+  const label = description?.trim() || undefined;
+  return (
+    <div style={{ background: c.bg, border: `0.5px solid ${c.border}`, borderRadius: 10, padding: '14px 16px' }}>
+      <p style={{ fontSize: 11, color: c.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', margin: '0 0 10px', fontFamily: FF }}>{title}</p>
+      <div role={label ? 'img' : undefined} aria-label={label}>
+        {children}
+      </div>
+      {label && (
+        <p aria-hidden="true" style={{ margin: '8px 0 0', fontSize: 12, lineHeight: 1.55, color: c.textMuted, fontFamily: FF }}>
+          {label}
+        </p>
+      )}
+    </div>
+  );
+};
 
 const CompareCharts: React.FC<{ data: CompareMetricsResult }> = ({ data }) => {
   const { a: ta, b: tb } = data.tickers;
@@ -185,12 +204,21 @@ const CompareCharts: React.FC<{ data: CompareMetricsResult }> = ({ data }) => {
     labelFormatter: (yr: any) => `FY ${yr}`,
   });
 
+  // Deterministic, server-computed descriptions keyed by series metric.
+  const D = data.descriptions ?? {};
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
 
+      <p style={{ fontSize: 12, color: c.textMuted, margin: 0, lineHeight: 1.6 }}>
+        Multi-year XBRL comparison for <strong style={{ color: seriesA.ink }}>{ta}</strong> vs{' '}
+        <strong style={{ color: seriesB.ink }}>{tb}</strong>, aligned to a common fiscal-year axis.
+        Captions are statistical descriptions of historical filings, not investment advice.
+      </p>
+
       {/* Row 1: Revenue | Net Income */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 12 }}>
-        <ChartPanel title="Revenue">
+        <ChartPanel title="Revenue" description={D.revenue}>
           <ResponsiveContainer width="100%" height={210}>
             <BarChart data={data.revenue} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
               <CartesianGrid {...gridProps} />
@@ -204,7 +232,7 @@ const CompareCharts: React.FC<{ data: CompareMetricsResult }> = ({ data }) => {
           </ResponsiveContainer>
         </ChartPanel>
 
-        <ChartPanel title="Net Income">
+        <ChartPanel title="Net Income" description={D.net_income}>
           <ResponsiveContainer width="100%" height={210}>
             <BarChart data={data.net_income} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
               <CartesianGrid {...gridProps} />
@@ -229,7 +257,7 @@ const CompareCharts: React.FC<{ data: CompareMetricsResult }> = ({ data }) => {
             ['net_margin_pct',       'Net Margin %'],
           ] as const
         ).map(([key, label]) => (
-          <ChartPanel key={key} title={label}>
+          <ChartPanel key={key} title={label} description={D[key]}>
             <ResponsiveContainer width="100%" height={165}>
               <LineChart data={data[key]} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
                 <CartesianGrid {...gridProps} />
@@ -239,7 +267,7 @@ const CompareCharts: React.FC<{ data: CompareMetricsResult }> = ({ data }) => {
                 <Legend {...legendProps} />
                 <ReferenceLine y={0} stroke={c.border} />
                 <Line type="monotone" dataKey="a" stroke={COL_A} strokeWidth={2} dot={false} connectNulls name="a" />
-                <Line type="monotone" dataKey="b" stroke={COL_B} strokeWidth={2} dot={false} connectNulls name="b" />
+                <Line type="monotone" dataKey="b" stroke={COL_B} strokeWidth={2} strokeDasharray={DASH_B} dot={false} connectNulls name="b" />
               </LineChart>
             </ResponsiveContainer>
           </ChartPanel>
@@ -248,7 +276,7 @@ const CompareCharts: React.FC<{ data: CompareMetricsResult }> = ({ data }) => {
 
       {/* Row 3: Revenue Growth | Free Cash Flow */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 12 }}>
-        <ChartPanel title="Revenue Growth %">
+        <ChartPanel title="Revenue Growth %" description={D.revenue_growth_pct}>
           <ResponsiveContainer width="100%" height={200}>
             <BarChart data={data.revenue_growth_pct} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
               <CartesianGrid {...gridProps} />
@@ -263,7 +291,7 @@ const CompareCharts: React.FC<{ data: CompareMetricsResult }> = ({ data }) => {
           </ResponsiveContainer>
         </ChartPanel>
 
-        <ChartPanel title="Free Cash Flow">
+        <ChartPanel title="Free Cash Flow" description={D.free_cash_flow}>
           <ResponsiveContainer width="100%" height={200}>
             <BarChart data={data.free_cash_flow} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
               <CartesianGrid {...gridProps} />
@@ -281,7 +309,7 @@ const CompareCharts: React.FC<{ data: CompareMetricsResult }> = ({ data }) => {
 
       {/* Row 4: Debt-to-Equity | Current Ratio */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 12 }}>
-        <ChartPanel title="Debt-to-Equity">
+        <ChartPanel title="Debt-to-Equity" description={D.debt_to_equity}>
           <ResponsiveContainer width="100%" height={180}>
             <LineChart data={data.debt_to_equity} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
               <CartesianGrid {...gridProps} />
@@ -290,12 +318,12 @@ const CompareCharts: React.FC<{ data: CompareMetricsResult }> = ({ data }) => {
               <Tooltip {...mkTooltip(fmtRatio)} />
               <Legend {...legendProps} />
               <Line type="monotone" dataKey="a" stroke={COL_A} strokeWidth={2} dot={false} connectNulls name="a" />
-              <Line type="monotone" dataKey="b" stroke={COL_B} strokeWidth={2} dot={false} connectNulls name="b" />
+              <Line type="monotone" dataKey="b" stroke={COL_B} strokeWidth={2} strokeDasharray={DASH_B} dot={false} connectNulls name="b" />
             </LineChart>
           </ResponsiveContainer>
         </ChartPanel>
 
-        <ChartPanel title="Current Ratio">
+        <ChartPanel title="Current Ratio" description={D.current_ratio}>
           <ResponsiveContainer width="100%" height={180}>
             <LineChart data={data.current_ratio} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
               <CartesianGrid {...gridProps} />
@@ -305,7 +333,7 @@ const CompareCharts: React.FC<{ data: CompareMetricsResult }> = ({ data }) => {
               <Legend {...legendProps} />
               <ReferenceLine y={1} stroke={c.border} strokeDasharray="4 4" />
               <Line type="monotone" dataKey="a" stroke={COL_A} strokeWidth={2} dot={false} connectNulls name="a" />
-              <Line type="monotone" dataKey="b" stroke={COL_B} strokeWidth={2} dot={false} connectNulls name="b" />
+              <Line type="monotone" dataKey="b" stroke={COL_B} strokeWidth={2} strokeDasharray={DASH_B} dot={false} connectNulls name="b" />
             </LineChart>
           </ResponsiveContainer>
         </ChartPanel>

@@ -3,7 +3,7 @@ import {
   BarChart, Bar, XAxis, YAxis, Tooltip, Legend, CartesianGrid, ResponsiveContainer,
 } from 'recharts';
 import { ArrowLeft, ChevronLeft, ChevronRight, Search, Loader2, AlertCircle } from 'lucide-react';
-import { c, font } from '../theme';
+import { c, font, seriesA, seriesB } from '../theme';
 import { useOnClickOutside } from '../utils/hooks';
 import { fmtM, fmtPct, fmtRatio } from '../utils/format';
 import { fetchCompareMetrics, CompareMetricsResult, ComparePoint } from '../services/gemini';
@@ -139,8 +139,8 @@ const KeyMetricsPanel: React.FC<{ data: CompareMetricsResult }> = ({ data }) => 
       </p>
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(130px, 1fr) 1fr 1fr', alignItems: 'baseline' }}>
         <span />
-        <span style={{ ...colHead, color: c.brandDeep }}>{ta}</span>
-        <span style={{ ...colHead, color: c.accentFg }}>{tb}</span>
+        <span style={{ ...colHead, color: seriesA.ink }}>{ta}</span>
+        <span style={{ ...colHead, color: seriesB.ink }}>{tb}</span>
 
         {METRIC_ROWS.map(def => {
           const row = rowAt(def.key);
@@ -177,11 +177,17 @@ const MarginBars: React.FC<{ data: CompareMetricsResult; year: string }> = ({ da
   ];
   if (bars.every(r => r.a == null && r.b == null)) return null;
 
+  // Accessible summary restating the exact plotted values (not a trend claim).
+  const pctOrDash = (v: number | null) => (v == null ? 'n/a' : `${v.toFixed(1)}%`);
+  const ariaLabel = `Margin comparison for fiscal year ${year}. ` +
+    bars.map(r => `${r.metric} margin: ${ta} ${pctOrDash(r.a)}, ${tb} ${pctOrDash(r.b)}.`).join(' ');
+
   return (
     <div style={{ marginTop: 16 }}>
       <p style={{ fontSize: 11, color: c.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', margin: '0 0 8px' }}>
         Margin comparison · FY{year}
       </p>
+      <div role="img" aria-label={ariaLabel}>
       <ResponsiveContainer width="100%" height={190}>
         <BarChart data={bars} margin={{ top: 6, right: 8, left: 0, bottom: 0 }}>
           <CartesianGrid stroke={c.borderFaint} strokeDasharray="3 3" vertical={false} />
@@ -193,10 +199,13 @@ const MarginBars: React.FC<{ data: CompareMetricsResult; year: string }> = ({ da
             formatter={((v: number, n: string) => [`${v?.toFixed?.(1) ?? v}%`, n === 'a' ? ta : tb]) as never}
           />
           <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 12, fontFamily: font.ui }} formatter={(v: string) => (v === 'a' ? ta : tb)} />
-          <Bar dataKey="a" fill={c.brandDeep} radius={[3, 3, 0, 0]} maxBarSize={30} name="a" />
-          <Bar dataKey="b" fill={c.accent} radius={[3, 3, 0, 0]} maxBarSize={30} name="b" />
+          {/* Hue-differentiated categorical fills (sapphire / amber), NOT green/red:
+              this is company identity, not a directional signal. */}
+          <Bar dataKey="a" fill={seriesA.fill} radius={[3, 3, 0, 0]} maxBarSize={30} name="a" />
+          <Bar dataKey="b" fill={seriesB.fill} radius={[3, 3, 0, 0]} maxBarSize={30} name="b" />
         </BarChart>
       </ResponsiveContainer>
+      </div>
     </div>
   );
 };
@@ -280,7 +289,7 @@ const CompareView: React.FC<CompareViewProps> = ({ anchor, peer, peers, onBack, 
             >
               <ChevronLeft size={16} />
             </button>
-            <span style={{ fontSize: 14, fontWeight: 600, color: c.accentFg, minWidth: 44, textAlign: 'center' }}>
+            <span style={{ fontSize: 14, fontWeight: 600, color: seriesB.ink, minWidth: 44, textAlign: 'center' }}>
               {peer}
             </span>
             <button
@@ -294,7 +303,7 @@ const CompareView: React.FC<CompareViewProps> = ({ anchor, peer, peers, onBack, 
             </button>
           </div>
         ) : (
-          <span style={{ fontSize: 14, fontWeight: 600, color: c.accentFg }}>{peer}</span>
+          <span style={{ fontSize: 14, fontWeight: 600, color: seriesB.ink }}>{peer}</span>
         )}
 
         {/* 3. Peer picker — always available */}

@@ -5,11 +5,12 @@ import {
   ResponsiveContainer,
 } from 'recharts';
 import { Loader2, AlertCircle, TrendingUp, TrendingDown } from 'lucide-react';
-import { c, font } from '../theme';
+import { c, font, seriesB } from '../theme';
 import {
   fetchTrends, fetchQuarterly, fetchDistribution, fetchReturns,
   TrendsResult, QuarterlyResult, DistributionResult, PeriodReturns,
 } from '../services/gemini';
+import { ChartFigure } from './ChartDescription';
 
 // Ported from Michelle's offline Plotly charts.py to Recharts. Six single-company
 // views. Green/red is used ONLY on the returns bars (a directional market signal,
@@ -68,6 +69,7 @@ const TrendChart: React.FC<{ data: TrendsResult }> = ({ data }) => {
   const [metric, setMetric] = useState<typeof TREND_METRICS[number]['key']>('revenue');
   const def = TREND_METRICS.find(m => m.key === metric)!;
   const fmt = def.unit === 'usd' ? fmtUSD : fmtPct;
+  const desc = data.descriptions?.[metric];
   return (
     <Panel title="Metric over time">
       <div style={{ marginBottom: 8 }}>
@@ -75,15 +77,17 @@ const TrendChart: React.FC<{ data: TrendsResult }> = ({ data }) => {
           {TREND_METRICS.map(m => <option key={m.key} value={m.key}>{m.label}</option>)}
         </select>
       </div>
-      <ResponsiveContainer width="100%" height={220}>
-        <LineChart data={data.points} margin={{ top: 6, right: 12, left: 4, bottom: 0 }}>
-          <CartesianGrid {...gridProps} />
-          <XAxis {...xAxisProps} dataKey="year" />
-          <YAxis {...yAxisBase} width={58} tickFormatter={(v: number) => (def.unit === 'usd' ? fmtUSD(v) : `${Math.round(v)}%`)} />
-          <Tooltip {...tooltipStyle} formatter={((v: number) => [fmt(v), def.label]) as never} labelFormatter={(l) => `FY ${l}`} />
-          <Line type="monotone" dataKey={metric} stroke={c.brand} strokeWidth={2} dot={{ r: 3, fill: c.brand }} connectNulls name={def.label} isAnimationActive={false} />
-        </LineChart>
-      </ResponsiveContainer>
+      <ChartFigure description={desc}>
+        <ResponsiveContainer width="100%" height={220}>
+          <LineChart data={data.points} margin={{ top: 6, right: 12, left: 4, bottom: 0 }}>
+            <CartesianGrid {...gridProps} />
+            <XAxis {...xAxisProps} dataKey="year" />
+            <YAxis {...yAxisBase} width={58} tickFormatter={(v: number) => (def.unit === 'usd' ? fmtUSD(v) : `${Math.round(v)}%`)} />
+            <Tooltip {...tooltipStyle} formatter={((v: number) => [fmt(v), def.label]) as never} labelFormatter={(l) => `FY ${l}`} />
+            <Line type="monotone" dataKey={metric} stroke={c.brand} strokeWidth={2} dot={{ r: 3, fill: c.brand }} connectNulls name={def.label} isAnimationActive={false} />
+          </LineChart>
+        </ResponsiveContainer>
+      </ChartFigure>
     </Panel>
   );
 };
@@ -91,37 +95,44 @@ const TrendChart: React.FC<{ data: TrendsResult }> = ({ data }) => {
 // ── #5 Margin breakdown: COGS vs Gross Profit (stacked) ─────────────────────
 const MarginStackChart: React.FC<{ data: TrendsResult }> = ({ data }) => (
   <Panel title="Cost structure" subtitle="COGS + Gross profit = Revenue">
-    <ResponsiveContainer width="100%" height={220}>
-      <BarChart data={data.points} margin={{ top: 6, right: 12, left: 4, bottom: 0 }}>
-        <CartesianGrid {...gridProps} />
-        <XAxis {...xAxisProps} dataKey="year" />
-        <YAxis {...yAxisBase} width={58} tickFormatter={(v: number) => fmtUSD(v)} />
-        <Tooltip {...tooltipStyle} formatter={((v: number, n: string) => [fmtUSD(v), n === 'cogs' ? 'COGS' : 'Gross profit']) as never} labelFormatter={(l) => `FY ${l}`} />
-        <Legend {...legendProps} formatter={(v: string) => (v === 'cogs' ? 'COGS' : 'Gross profit')} />
-        {/* Neutral categorical fills — cost vs profit is not a directional signal */}
-        <Bar dataKey="cogs" stackId="s" fill={c.peer} maxBarSize={26} name="cogs" />
-        <Bar dataKey="gross_profit" stackId="s" fill={c.brand} maxBarSize={26} name="gross_profit" radius={[3, 3, 0, 0]} />
-      </BarChart>
-    </ResponsiveContainer>
+    <ChartFigure description={data.descriptions?.cost_structure}>
+      <ResponsiveContainer width="100%" height={220}>
+        <BarChart data={data.points} margin={{ top: 6, right: 12, left: 4, bottom: 0 }}>
+          <CartesianGrid {...gridProps} />
+          <XAxis {...xAxisProps} dataKey="year" />
+          <YAxis {...yAxisBase} width={58} tickFormatter={(v: number) => fmtUSD(v)} />
+          <Tooltip {...tooltipStyle} formatter={((v: number, n: string) => [fmtUSD(v), n === 'cogs' ? 'COGS' : 'Gross profit']) as never} labelFormatter={(l) => `FY ${l}`} />
+          <Legend {...legendProps} formatter={(v: string) => (v === 'cogs' ? 'COGS' : 'Gross profit')} />
+          {/* Neutral categorical fills — cost vs profit is not a directional signal */}
+          <Bar dataKey="cogs" stackId="s" fill={c.peer} maxBarSize={26} name="cogs" />
+          <Bar dataKey="gross_profit" stackId="s" fill={c.brand} maxBarSize={26} name="gross_profit" radius={[3, 3, 0, 0]} />
+        </BarChart>
+      </ResponsiveContainer>
+    </ChartFigure>
   </Panel>
 );
 
 // ── #6 Revenue vs Net Income (dual axis) ────────────────────────────────────
 const RevenueProfitChart: React.FC<{ data: TrendsResult }> = ({ data }) => (
   <Panel title="Revenue vs Net income" subtitle="dual axis">
-    <ResponsiveContainer width="100%" height={220}>
-      <ComposedChart data={data.points} margin={{ top: 6, right: 8, left: 4, bottom: 0 }}>
-        <CartesianGrid {...gridProps} />
-        <XAxis {...xAxisProps} dataKey="year" />
-        <YAxis {...yAxisBase} yAxisId="rev" width={54} tickFormatter={(v: number) => fmtUSD(v)} />
-        <YAxis {...yAxisBase} yAxisId="ni" orientation="right" width={54} tickFormatter={(v: number) => fmtUSD(v)} />
-        <Tooltip {...tooltipStyle} formatter={((v: number, n: string) => [fmtUSD(v), n === 'revenue' ? 'Revenue' : 'Net income']) as never} labelFormatter={(l) => `FY ${l}`} />
-        <Legend {...legendProps} formatter={(v: string) => (v === 'revenue' ? 'Revenue' : 'Net income')} />
-        <ReferenceLine yAxisId="ni" y={0} stroke={c.border} />
-        <Line yAxisId="rev" type="monotone" dataKey="revenue" stroke={c.brand} strokeWidth={2} dot={false} connectNulls name="revenue" isAnimationActive={false} />
-        <Line yAxisId="ni" type="monotone" dataKey="net_income" stroke={c.accent} strokeWidth={2} dot={false} connectNulls name="net_income" isAnimationActive={false} />
-      </ComposedChart>
-    </ResponsiveContainer>
+    <ChartFigure description={data.descriptions?.revenue_vs_income}>
+      <ResponsiveContainer width="100%" height={220}>
+        <ComposedChart data={data.points} margin={{ top: 6, right: 8, left: 4, bottom: 0 }}>
+          <CartesianGrid {...gridProps} />
+          <XAxis {...xAxisProps} dataKey="year" />
+          <YAxis {...yAxisBase} yAxisId="rev" width={54} tickFormatter={(v: number) => fmtUSD(v)} />
+          <YAxis {...yAxisBase} yAxisId="ni" orientation="right" width={54} tickFormatter={(v: number) => fmtUSD(v)} />
+          <Tooltip {...tooltipStyle} formatter={((v: number, n: string) => [fmtUSD(v), n === 'revenue' ? 'Revenue' : 'Net income']) as never} labelFormatter={(l) => `FY ${l}`} />
+          <Legend {...legendProps} formatter={(v: string) => (v === 'revenue' ? 'Revenue' : 'Net income')} />
+          <ReferenceLine yAxisId="ni" y={0} stroke={c.border} />
+          {/* Two hue-differentiated series (sapphire revenue / amber net income) —
+              the old pair was two sapphires, indistinguishable in greyscale. Net
+              income is also dashed so colour is never the only cue (WCAG 1.4.1). */}
+          <Line yAxisId="rev" type="monotone" dataKey="revenue" stroke={c.brand} strokeWidth={2} dot={false} connectNulls name="revenue" isAnimationActive={false} />
+          <Line yAxisId="ni" type="monotone" dataKey="net_income" stroke={seriesB.fill} strokeWidth={2} strokeDasharray={seriesB.dash} dot={false} connectNulls name="net_income" isAnimationActive={false} />
+        </ComposedChart>
+      </ResponsiveContainer>
+    </ChartFigure>
   </Panel>
 );
 
@@ -136,6 +147,7 @@ const QUARTER_METRICS = [
 const QuarterlyChart: React.FC<{ data: QuarterlyResult }> = ({ data }) => {
   const [metric, setMetric] = useState<typeof QUARTER_METRICS[number]['key']>('revenue');
   const def = QUARTER_METRICS.find(m => m.key === metric)!;
+  const desc = data.descriptions?.[metric];
   return (
     <Panel title="Quarterly breakdown" subtitle={`FY${data.fy}`}>
       <div style={{ marginBottom: 8 }}>
@@ -143,16 +155,18 @@ const QuarterlyChart: React.FC<{ data: QuarterlyResult }> = ({ data }) => {
           {QUARTER_METRICS.map(m => <option key={m.key} value={m.key}>{m.label}</option>)}
         </select>
       </div>
-      <ResponsiveContainer width="100%" height={200}>
-        <BarChart data={data.points} margin={{ top: 6, right: 12, left: 4, bottom: 0 }}>
-          <CartesianGrid {...gridProps} />
-          <XAxis {...xAxisProps} dataKey="quarter" />
-          <YAxis {...yAxisBase} width={58} tickFormatter={(v: number) => fmtUSD(v)} />
-          <Tooltip {...tooltipStyle} formatter={((v: number) => [fmtUSD(v), def.label]) as never} />
-          <ReferenceLine y={0} stroke={c.border} />
-          <Bar dataKey={metric} fill={c.brand} maxBarSize={40} radius={[3, 3, 0, 0]} name={def.label} />
-        </BarChart>
-      </ResponsiveContainer>
+      <ChartFigure description={desc}>
+        <ResponsiveContainer width="100%" height={200}>
+          <BarChart data={data.points} margin={{ top: 6, right: 12, left: 4, bottom: 0 }}>
+            <CartesianGrid {...gridProps} />
+            <XAxis {...xAxisProps} dataKey="quarter" />
+            <YAxis {...yAxisBase} width={58} tickFormatter={(v: number) => fmtUSD(v)} />
+            <Tooltip {...tooltipStyle} formatter={((v: number) => [fmtUSD(v), def.label]) as never} />
+            <ReferenceLine y={0} stroke={c.border} />
+            <Bar dataKey={metric} fill={c.brand} maxBarSize={40} radius={[3, 3, 0, 0]} name={def.label} />
+          </BarChart>
+        </ResponsiveContainer>
+      </ChartFigure>
     </Panel>
   );
 };
@@ -214,21 +228,23 @@ const DistributionChart: React.FC<{ ticker: string }> = ({ ticker }) => {
       {loading && <div style={{ height: 200, display: 'flex', alignItems: 'center', justifyContent: 'center', color: c.textMuted, fontSize: 13 }}><Loader2 size={15} style={{ animation: 'spin 1s linear infinite', marginRight: 6 }} /> Loading…</div>}
       {!loading && err && <div style={{ height: 200, display: 'flex', alignItems: 'center', justifyContent: 'center', color: c.textMuted, fontSize: 12, textAlign: 'center' }}>No {def.label.toLowerCase()} distribution for {ticker}.</div>}
       {!loading && !err && data && (
-        <ResponsiveContainer width="100%" height={220}>
-          <ComposedChart data={curve} margin={{ top: 6, right: 12, left: 4, bottom: 0 }}>
-            <CartesianGrid {...gridProps} />
-            <XAxis {...xAxisProps} type="number" dataKey="x" domain={domain} tickFormatter={(v: number) => (data.unit === 'usd' ? fmtUSD(v) : `${Math.round(v)}%`)} />
-            <YAxis {...yAxisBase} width={30} tick={false} label={{ value: 'density', angle: -90, position: 'insideLeft', fontSize: 10, fill: c.textFaint }} />
-            <Tooltip {...tooltipStyle}
-              formatter={((v: number, _n: string, p: { payload?: { year?: string; x?: number } }) => (p?.payload?.year ? [fmt(p.payload.x ?? v), `FY${p.payload.year}`] : null)) as never}
-            />
-            <Area dataKey="pdf" stroke={c.brandLight} fill={c.brandTint} fillOpacity={0.6} isAnimationActive={false} />
-            <Scatter data={normalPts} dataKey="pdf" fill={c.brand} isAnimationActive={false} />
-            <Scatter data={anomalyPts} dataKey="pdf" isAnimationActive={false}>
-              {anomalyPts.map((_, i) => <Cell key={i} fill={c.warnFg} />)}
-            </Scatter>
-          </ComposedChart>
-        </ResponsiveContainer>
+        <ChartFigure description={data.description}>
+          <ResponsiveContainer width="100%" height={220}>
+            <ComposedChart data={curve} margin={{ top: 6, right: 12, left: 4, bottom: 0 }}>
+              <CartesianGrid {...gridProps} />
+              <XAxis {...xAxisProps} type="number" dataKey="x" domain={domain} tickFormatter={(v: number) => (data.unit === 'usd' ? fmtUSD(v) : `${Math.round(v)}%`)} />
+              <YAxis {...yAxisBase} width={30} tick={false} label={{ value: 'density', angle: -90, position: 'insideLeft', fontSize: 10, fill: c.textFaint }} />
+              <Tooltip {...tooltipStyle}
+                formatter={((v: number, _n: string, p: { payload?: { year?: string; x?: number } }) => (p?.payload?.year ? [fmt(p.payload.x ?? v), `FY${p.payload.year}`] : null)) as never}
+              />
+              <Area dataKey="pdf" stroke={c.brandLight} fill={c.brandTint} fillOpacity={0.6} isAnimationActive={false} />
+              <Scatter data={normalPts} dataKey="pdf" fill={c.brand} isAnimationActive={false} />
+              <Scatter data={anomalyPts} dataKey="pdf" isAnimationActive={false}>
+                {anomalyPts.map((_, i) => <Cell key={i} fill={c.warnFg} />)}
+              </Scatter>
+            </ComposedChart>
+          </ResponsiveContainer>
+        </ChartFigure>
       )}
     </Panel>
   );
@@ -242,8 +258,18 @@ const ReturnsChart: React.FC<{ returns: PeriodReturns }> = ({ returns }) => {
     { label: '6M', value: returns.m6 },
     { label: '1Y', value: returns.y1 },
   ];
+  // Accessible summary restating the plotted returns (market-price data, not
+  // filings). The values are also shown in the legend row below, so this lives
+  // only in an aria-label to avoid a visible duplicate.
+  const fmtRet = (v: number | null) => (v == null ? 'not available' : `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`);
+  const ariaLabel =
+    `Trailing price return versus the close 1, 3, 6 and 12 months ago: ` +
+    `${fmtRet(returns.m1)} over 1 month, ${fmtRet(returns.m3)} over 3 months, ` +
+    `${fmtRet(returns.m6)} over 6 months, ${fmtRet(returns.y1)} over 1 year. ` +
+    `Market-price movement, not from filings; not investment advice.`;
   return (
     <Panel title="Trailing price return" subtitle="vs close 1M / 3M / 6M / 1Y ago">
+      <div role="img" aria-label={ariaLabel}>
       <ResponsiveContainer width="100%" height={200}>
         <BarChart data={rows} margin={{ top: 14, right: 12, left: 4, bottom: 0 }}>
           <CartesianGrid {...gridProps} />
@@ -257,6 +283,7 @@ const ReturnsChart: React.FC<{ returns: PeriodReturns }> = ({ returns }) => {
           </Bar>
         </BarChart>
       </ResponsiveContainer>
+      </div>
       <div style={{ display: 'flex', gap: 14, marginTop: 8, flexWrap: 'wrap' }}>
         {rows.map(r => (
           <span key={r.label} style={{ fontSize: 12, color: c.textMuted, display: 'inline-flex', alignItems: 'center', gap: 4 }}>

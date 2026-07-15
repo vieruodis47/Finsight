@@ -228,6 +228,10 @@ export interface ForecastMetric {
   reliability: 'high' | 'moderate' | 'low';
   r_squared: number;
   anomaly_years: string[];
+  // Deterministic, server-computed one-sentence description (templated from the
+  // figures above — never LLM-generated numbers). Used as visible caption +
+  // chart accessible text.
+  description?: string;
 }
 
 export interface ForecastResult {
@@ -264,6 +268,10 @@ export interface TrendsResult {
   ticker: string;
   currency: 'usd';
   points: TrendPoint[];
+  // Per-chart descriptions, keyed by metric/chart id (revenue, net_income,
+  // gross_margin_pct, operating_margin_pct, net_margin_pct, cost_structure,
+  // revenue_vs_income). Deterministically templated server-side.
+  descriptions?: Record<string, string>;
 }
 
 export async function fetchTrends(ticker: string): Promise<TrendsResult> {
@@ -289,6 +297,8 @@ export interface QuarterlyResult {
   currency: 'usd';
   fy: string;
   points: QuarterPoint[];
+  // Keyed by quarterly metric (revenue, gross_profit, operating_income, net_income).
+  descriptions?: Record<string, string>;
 }
 
 export async function fetchQuarterly(ticker: string): Promise<QuarterlyResult> {
@@ -307,6 +317,7 @@ export interface DistributionResult {
   mean: number;
   std: number;
   points: { year: string; value: number; is_anomaly: boolean }[];
+  description?: string;
 }
 
 export async function fetchDistribution(ticker: string, metric: string): Promise<DistributionResult> {
@@ -379,6 +390,10 @@ export interface ComparePoint {
 
 export interface CompareMetricsResult {
   tickers: { a: string; b: string };
+  // Per-metric descriptions keyed by series key (revenue, net_income, …). Each
+  // states the latest common year, the gap, and every ticker's covered range +
+  // in-window gaps — so a non-overlapping comparison reads as such.
+  descriptions?: Record<string, string>;
   revenue: ComparePoint[];
   net_income: ComparePoint[];
   gross_margin_pct: ComparePoint[];
