@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { MessageSquare, Send, Loader2, Info } from 'lucide-react';
 import { c, font } from '../theme';
 import { askFinSight, fetchIndexedStatus, ChatResult } from '../services/gemini';
+import { useIsMobile } from '../utils/hooks';
 import { renderChatMarkdown, AnswerMeta } from '../utils/chatRender';
 
 interface FinChatStripProps {
@@ -23,6 +24,7 @@ const cardStyle: React.CSSProperties = {
 // shareable URL, and an ingest button on it would let a shared link burn the
 // daily embedding budget. Ingest stays on Documents, where a company was chosen.
 const FinChatStrip: React.FC<FinChatStripProps> = ({ anchor, peer }) => {
+  const isMobile = useIsMobile();
   const [indexed, setIndexed]   = useState<Record<string, boolean> | null>(null);
   const [input, setInput]       = useState('');
   const [asking, setAsking]     = useState(false);
@@ -111,7 +113,7 @@ const FinChatStrip: React.FC<FinChatStripProps> = ({ anchor, peer }) => {
               placeholder={`Ask about ${anchor} vs ${peer} — margins, risks, strategy…`}
               rows={1}
               aria-label={`Ask FinChat about ${anchor} versus ${peer}`}
-              style={{ flex: 1, padding: '10px 12px', fontSize: 13, border: 'none', outline: 'none', resize: 'none', fontFamily: FF, color: c.text, background: 'transparent', lineHeight: 1.5, height: 40 }}
+              style={{ flex: 1, padding: '10px 12px', fontSize: 13, border: 'none', outline: 'none', resize: 'none', fontFamily: FF, color: c.text, background: 'transparent', lineHeight: 1.5, height: isMobile ? 44 : 40 }}
             />
             <div style={{ padding: '5px 6px 5px 0' }}>
               <button
@@ -119,7 +121,7 @@ const FinChatStrip: React.FC<FinChatStripProps> = ({ anchor, peer }) => {
                 disabled={!input.trim() || asking}
                 aria-label="Send"
                 style={{
-                  width: 34, height: 34, borderRadius: 7, border: 'none',
+                  width: isMobile ? 44 : 34, height: isMobile ? 44 : 34, borderRadius: 7, border: 'none',
                   cursor: input.trim() && !asking ? 'pointer' : 'not-allowed',
                   background: input.trim() && !asking ? c.brandDeep : c.surfaceAlt,
                   display: 'flex', alignItems: 'center', justifyContent: 'center',

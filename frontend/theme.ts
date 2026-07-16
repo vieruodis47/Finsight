@@ -90,6 +90,15 @@ export const font = {
   prose: "'Libre Baskerville', Georgia, serif",
 } as const;
 
+// Responsive breakpoints — single source of truth (px, max-width semantics).
+// Mirror these values in the media queries in index.html when a purely-CSS
+// layout switch is cheaper than a JS one. Consumed via the useMediaQuery /
+// useIsMobile / useIsPhone hooks (utils/hooks.ts).
+//   phone  — small handset: single-column everything, largest touch targets
+//   mobile — phone + tablet-portrait: off-canvas sidebar drawer, stacked grids
+//   tablet — sidebar auto-collapses to an icon rail
 export const breakpoint = {
+  phone:  480,
+  mobile: 768,
   tablet: 1024,
 } as const;

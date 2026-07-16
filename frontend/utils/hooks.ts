@@ -14,18 +14,34 @@ export function useDebounce<T>(value: T, delay: number): T {
   return debounced;
 }
 
-export function useIsTablet(): boolean {
-  const [isTablet, setIsTablet] = useState(
-    () => window.matchMedia(`(max-width: ${breakpoint.tablet}px)`).matches,
+/**
+ * Subscribes to a `(max-width: Npx)` media query and re-renders on change.
+ * The single primitive behind every responsive layout decision that needs to
+ * live in JS (drawer vs fixed sidebar, grid column count, chart tick density),
+ * so breakpoints stay defined once in theme.ts rather than scattered as string
+ * literals per component.
+ */
+export function useMediaQuery(maxWidthPx: number): boolean {
+  const query = `(max-width: ${maxWidthPx}px)`;
+  const [matches, setMatches] = useState(
+    () => (typeof window !== 'undefined' ? window.matchMedia(query).matches : false),
   );
   useEffect(() => {
-    const mq = window.matchMedia(`(max-width: ${breakpoint.tablet}px)`);
-    const handler = (e: MediaQueryListEvent) => setIsTablet(e.matches);
+    const mq = window.matchMedia(query);
+    const handler = (e: MediaQueryListEvent) => setMatches(e.matches);
+    setMatches(mq.matches); // sync in case the breakpoint changed between renders
     mq.addEventListener('change', handler);
     return () => mq.removeEventListener('change', handler);
-  }, []);
-  return isTablet;
+  }, [query]);
+  return matches;
 }
+
+// Sidebar collapses to an icon rail at/below tablet.
+export const useIsTablet = (): boolean => useMediaQuery(breakpoint.tablet);
+// Off-canvas drawer + stacked grids at/below this width.
+export const useIsMobile = (): boolean => useMediaQuery(breakpoint.mobile);
+// Small handset: single column, largest touch targets, most aggressive tick thinning.
+export const useIsPhone = (): boolean => useMediaQuery(breakpoint.phone);
 
 /**
  * Calls `handler` on a mousedown outside `ref`. Used to dismiss popovers

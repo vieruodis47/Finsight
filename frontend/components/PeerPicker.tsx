@@ -88,7 +88,9 @@ const PeerPicker: React.FC<PeerPickerProps> = ({
     <div
       style={{
         position: 'absolute', top: 'calc(100% + 6px)',
-        [align]: 0, width: 300, zIndex: 30,
+        // Cap to the viewport (minus a small gutter) so the 300px dropdown can't
+        // overflow the page on a 320px phone when anchored near the screen edge.
+        [align]: 0, width: 'min(300px, calc(100vw - 32px))', zIndex: 30,
       } as React.CSSProperties}
     >
       <div style={{ position: 'relative' }}>

@@ -4,6 +4,7 @@ import {
 } from 'recharts';
 import { Loader2, AlertCircle } from 'lucide-react';
 import { c, font } from '../theme';
+import { useIsMobile } from '../utils/hooks';
 import { fetchMarketData, MarketHistoryPoint } from '../services/gemini';
 
 interface PriceCompareChartProps {
@@ -102,6 +103,7 @@ const cardStyle: React.CSSProperties = {
 // good/bad meaning. The only green/red on the panel is the final % figure per
 // ticker in the legend, where up/down IS the signal.
 const PriceCompareChart: React.FC<PriceCompareChartProps> = ({ anchor, peer }) => {
+  const isMobile = useIsMobile();
   const [period, setPeriod] = useState('1y');
   const [model, setModel]   = useState<ChartModel | null>(null);
   const [loading, setLoading] = useState(true);
@@ -219,7 +221,7 @@ const PriceCompareChart: React.FC<PriceCompareChartProps> = ({ anchor, peer }) =
               tick={{ fontSize: 11, fill: c.textFaint }}
               tickLine={false}
               axisLine={{ stroke: c.border }}
-              minTickGap={48}
+              minTickGap={isMobile ? 72 : 48}
               tickFormatter={fmtDateTick}
             />
             <YAxis

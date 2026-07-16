@@ -4,6 +4,7 @@ import { Document, ChatMessage } from '../types';
 import { askFinSight } from '../services/gemini';
 import { c, font } from '../theme';
 import { companyLabel } from '../utils/company';
+import { useIsMobile } from '../utils/hooks';
 import { renderChatMarkdown, AnswerMeta } from '../utils/chatRender';
 
 interface ChatInterfaceProps {
@@ -151,6 +152,7 @@ const FlyingBird: React.FC = () => (
 // ── component ────────────────────────────────────────────────────────────────
 
 const ChatInterface: React.FC<ChatInterfaceProps> = ({ documents }) => {
+  const isMobile = useIsMobile();
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       id: 'welcome',
@@ -406,7 +408,8 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ documents }) => {
                     onMouseLeave={() => setHoveredChip(null)}
                     onClick={() => { setHoveredChip(null); sendMessage(chip); }}
                     style={{
-                      padding: '8px 14px',
+                      padding: isMobile ? '11px 14px' : '8px 14px',
+                      minHeight: isMobile ? 44 : undefined,
                       borderRadius: 8,
                       border: `1px solid ${hoveredChip === i ? c.brand : c.border}`,
                       background: hoveredChip === i ? c.brandTint : c.bg,
@@ -441,9 +444,11 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ documents }) => {
           </div>
         </div>
 
-        {/* ── Input bar — inner content constrained to the same ~700px column ── */}
+        {/* ── Input bar — inner content constrained to the same ~700px column.
+            The bottom padding adds env(safe-area-inset-bottom) so on iOS the
+            composer clears the home-indicator bar (0 on non-notched devices). ── */}
         <div style={{
-          padding: '12px 16px 13px',
+          padding: '12px 16px calc(13px + env(safe-area-inset-bottom))',
           borderTop: `1px solid ${c.border}`,
           background: c.surface,
           flexShrink: 0,
@@ -479,7 +484,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ documents }) => {
                 color: c.text,
                 background: 'transparent',
                 lineHeight: 1.5,
-                height: 40,
+                height: isMobile ? 44 : 40,
                 overflowY: 'hidden',
               }}
             />
@@ -487,8 +492,9 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ documents }) => {
               <button
                 onClick={handleSend}
                 disabled={!input.trim() || isLoading}
+                aria-label="Send message"
                 style={{
-                  width: 34, height: 34, flexShrink: 0,
+                  width: isMobile ? 44 : 34, height: isMobile ? 44 : 34, flexShrink: 0,
                   borderRadius: 7, border: 'none',
                   cursor: input.trim() && !isLoading ? 'pointer' : 'not-allowed',
                   background: input.trim() && !isLoading ? c.brandDeep : c.surfaceAlt,

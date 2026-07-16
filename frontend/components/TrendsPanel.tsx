@@ -7,7 +7,8 @@ import {
 import { Loader2, AlertCircle, TrendingUp, TrendingDown } from 'lucide-react';
 import { c, font, seriesB } from '../theme';
 import { fmtUSD, fmtPct } from '../utils/format';
-import { gridFaint, xAxisBase, yAxisBase, tooltipStyle, legendProps } from '../utils/chart';
+import { gridFaint, gridCols, tickInterval, xAxisBase, yAxisBase, tooltipStyle, legendProps } from '../utils/chart';
+import { useIsMobile } from '../utils/hooks';
 import {
   fetchTrends, fetchQuarterly, fetchDistribution, fetchReturns,
   TrendsResult, QuarterlyResult, DistributionResult, PeriodReturns,
@@ -52,7 +53,7 @@ const TREND_METRICS = [
   { key: 'net_margin_pct', label: 'Net Margin %', unit: 'pct' },
 ] as const;
 
-const TrendChart: React.FC<{ data: TrendsResult }> = ({ data }) => {
+const TrendChart: React.FC<{ data: TrendsResult; mobile: boolean }> = ({ data, mobile }) => {
   const [metric, setMetric] = useState<typeof TREND_METRICS[number]['key']>('revenue');
   const def = TREND_METRICS.find(m => m.key === metric)!;
   const fmt = def.unit === 'usd' ? fmtUSD : fmtPct;
@@ -68,7 +69,7 @@ const TrendChart: React.FC<{ data: TrendsResult }> = ({ data }) => {
         <ResponsiveContainer width="100%" height={220}>
           <LineChart data={data.points} margin={{ top: 6, right: 12, left: 4, bottom: 0 }}>
             <CartesianGrid {...gridProps} />
-            <XAxis {...xAxisProps} dataKey="year" />
+            <XAxis {...xAxisProps} dataKey="year" interval={tickInterval(data.points.length, mobile)} />
             <YAxis {...yAxisBase} width={58} tickFormatter={(v: number) => (def.unit === 'usd' ? fmtUSD(v) : `${Math.round(v)}%`)} />
             <Tooltip {...tooltipStyle} formatter={((v: number) => [fmt(v), def.label]) as never} labelFormatter={(l) => `FY ${l}`} />
             <Line type="monotone" dataKey={metric} stroke={c.brand} strokeWidth={2} dot={{ r: 3, fill: c.brand }} connectNulls name={def.label} isAnimationActive={false} />
@@ -80,13 +81,13 @@ const TrendChart: React.FC<{ data: TrendsResult }> = ({ data }) => {
 };
 
 // ── #5 Margin breakdown: COGS vs Gross Profit (stacked) ─────────────────────
-const MarginStackChart: React.FC<{ data: TrendsResult }> = ({ data }) => (
+const MarginStackChart: React.FC<{ data: TrendsResult; mobile: boolean }> = ({ data, mobile }) => (
   <Panel title="Cost structure" subtitle="COGS + Gross profit = Revenue">
     <ChartFigure description={data.descriptions?.cost_structure}>
       <ResponsiveContainer width="100%" height={220}>
         <BarChart data={data.points} margin={{ top: 6, right: 12, left: 4, bottom: 0 }}>
           <CartesianGrid {...gridProps} />
-          <XAxis {...xAxisProps} dataKey="year" />
+          <XAxis {...xAxisProps} dataKey="year" interval={tickInterval(data.points.length, mobile)} />
           <YAxis {...yAxisBase} width={58} tickFormatter={(v: number) => fmtUSD(v)} />
           <Tooltip {...tooltipStyle} formatter={((v: number, n: string) => [fmtUSD(v), n === 'cogs' ? 'COGS' : 'Gross profit']) as never} labelFormatter={(l) => `FY ${l}`} />
           <Legend {...legendProps} formatter={(v: string) => (v === 'cogs' ? 'COGS' : 'Gross profit')} />
@@ -100,13 +101,13 @@ const MarginStackChart: React.FC<{ data: TrendsResult }> = ({ data }) => (
 );
 
 // ── #6 Revenue vs Net Income (dual axis) ────────────────────────────────────
-const RevenueProfitChart: React.FC<{ data: TrendsResult }> = ({ data }) => (
+const RevenueProfitChart: React.FC<{ data: TrendsResult; mobile: boolean }> = ({ data, mobile }) => (
   <Panel title="Revenue vs Net income" subtitle="dual axis">
     <ChartFigure description={data.descriptions?.revenue_vs_income}>
       <ResponsiveContainer width="100%" height={220}>
         <ComposedChart data={data.points} margin={{ top: 6, right: 8, left: 4, bottom: 0 }}>
           <CartesianGrid {...gridProps} />
-          <XAxis {...xAxisProps} dataKey="year" />
+          <XAxis {...xAxisProps} dataKey="year" interval={tickInterval(data.points.length, mobile)} />
           <YAxis {...yAxisBase} yAxisId="rev" width={54} tickFormatter={(v: number) => fmtUSD(v)} />
           <YAxis {...yAxisBase} yAxisId="ni" orientation="right" width={54} tickFormatter={(v: number) => fmtUSD(v)} />
           <Tooltip {...tooltipStyle} formatter={((v: number, n: string) => [fmtUSD(v), n === 'revenue' ? 'Revenue' : 'Net income']) as never} labelFormatter={(l) => `FY ${l}`} />
@@ -290,6 +291,7 @@ const ReturnsChart: React.FC<{ returns: PeriodReturns }> = ({ returns }) => {
 
 // ── Container: fetch once, lay the six charts out in a responsive grid ───────
 const TrendsPanel: React.FC<{ ticker: string }> = ({ ticker }) => {
+  const isMobile = useIsMobile();
   const [trends, setTrends] = useState<TrendsResult | null>(null);
   const [quarterly, setQuarterly] = useState<QuarterlyResult | null>(null);
   const [returns, setReturns] = useState<PeriodReturns | null>(null);
@@ -341,10 +343,10 @@ const TrendsPanel: React.FC<{ ticker: string }> = ({ ticker }) => {
         Multi-year charts for <strong style={{ color: c.text }}>{trends.ticker}</strong>, from the full tag-merged
         filing history. Fiscal-year labels use each filing's period-end date.
       </p>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))', gap: 12 }}>
-        <TrendChart data={trends} />
-        <RevenueProfitChart data={trends} />
-        <MarginStackChart data={trends} />
+      <div style={{ display: 'grid', gridTemplateColumns: gridCols(isMobile, 360), gap: 12 }}>
+        <TrendChart data={trends} mobile={isMobile} />
+        <RevenueProfitChart data={trends} mobile={isMobile} />
+        <MarginStackChart data={trends} mobile={isMobile} />
         {quarterly
           ? <QuarterlyChart data={quarterly} />
           : <Panel title="Quarterly breakdown"><div style={{ height: 200, display: 'flex', alignItems: 'center', justifyContent: 'center', color: c.textMuted, fontSize: 12, textAlign: 'center' }}>No quarterly data available for {ticker}.{quarterlyErr ? '' : ''}</div></Panel>}

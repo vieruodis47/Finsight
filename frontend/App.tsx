@@ -3,7 +3,7 @@ import {
   LayoutDashboard, Files, MessageSquare, BarChart3,
   TrendingUp, Building2, Plus, Settings,
   PanelLeftClose, PanelLeftOpen,
-  HelpCircle, X, ArrowLeftRight,
+  HelpCircle, X, ArrowLeftRight, Menu,
 } from 'lucide-react';
 import { ViewState, Document, IndexStatus } from './types';
 import { c, font } from './theme';
@@ -24,7 +24,7 @@ import {
   fetchMetrics,
 } from './services/gemini';
 import { companyKey } from './utils/company';
-import { useIsTablet, useRoute, useOnClickOutside } from './utils/hooks';
+import { useIsTablet, useIsMobile, useRoute, useOnClickOutside } from './utils/hooks';
 
 const NAV_ITEMS: { view: ViewState; label: string; icon: React.ReactNode }[] = [
   { view: 'dashboard', label: 'Dashboard', icon: <LayoutDashboard size={17} /> },
@@ -46,6 +46,7 @@ const FF = font.ui;
 
 const App: React.FC = () => {
   const isTablet = useIsTablet();
+  const isMobile = useIsMobile();          // <= 768px: sidebar becomes an off-canvas drawer
   const { route, navigate }                 = useRoute();
   const [showSplash, setShowSplash]         = useState(true);
   const [currentView, setCurrentView]       = useState<ViewState>('dashboard');
@@ -53,10 +54,62 @@ const App: React.FC = () => {
   const [collapsed, setCollapsed]           = useState(false);
   const [selectedTicker, setSelectedTicker] = useState<string | null>(null);
   const [comparePickerOpen, setComparePickerOpen] = useState(false);
+  const [drawerOpen, setDrawerOpen]         = useState(false);
   const comparePickerWrapRef = React.useRef<HTMLDivElement>(null);
+  const sidebarRef  = React.useRef<HTMLElement>(null);
+  const hamburgerRef = React.useRef<HTMLButtonElement>(null);
   useOnClickOutside(comparePickerWrapRef, () => setComparePickerOpen(false), comparePickerOpen);
 
-  React.useEffect(() => { setCollapsed(isTablet); }, [isTablet]);
+  // Collapse to an icon rail on tablet, but NOT on mobile — there the sidebar is
+  // a full-width overlay drawer, so it must show labels, not icons.
+  React.useEffect(() => { setCollapsed(isTablet && !isMobile); }, [isTablet, isMobile]);
+
+  // Close the drawer whenever we leave the mobile range (so it can't be stuck
+  // open behind a now-fixed sidebar) or navigate to a different view/route.
+  React.useEffect(() => { if (!isMobile) setDrawerOpen(false); }, [isMobile]);
+  React.useEffect(() => { setDrawerOpen(false); }, [currentView, route]);
+
+  const closeDrawer = React.useCallback(() => {
+    setDrawerOpen(false);
+    hamburgerRef.current?.focus(); // return focus to the trigger
+  }, []);
+
+  // While the drawer is a modal overlay: trap focus inside it, close on Escape,
+  // and move focus to the first control on open. When closed on mobile it is
+  // marked `inert` (below) so it's unreachable by tab / screen readers.
+  React.useEffect(() => {
+    if (!(isMobile && drawerOpen)) return;
+    const node = sidebarRef.current;
+    if (!node) return;
+    const focusable = () =>
+      Array.from(
+        node.querySelectorAll<HTMLElement>(
+          'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ),
+      ).filter(el => el.offsetParent !== null);
+    focusable()[0]?.focus();
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { e.preventDefault(); closeDrawer(); return; }
+      if (e.key !== 'Tab') return;
+      const f = focusable();
+      if (f.length === 0) return;
+      const first = f[0], last = f[f.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    };
+    node.addEventListener('keydown', onKeyDown);
+    return () => node.removeEventListener('keydown', onKeyDown);
+  }, [isMobile, drawerOpen, closeDrawer]);
+
+  // `inert` on the closed mobile drawer: removes it from the tab order AND the
+  // accessibility tree, so an off-screen sidebar is never focusable. Set via a
+  // ref effect for broad attribute support.
+  React.useEffect(() => {
+    const node = sidebarRef.current;
+    if (!node) return;
+    if (isMobile && !drawerOpen) node.setAttribute('inert', '');
+    else node.removeAttribute('inert');
+  }, [isMobile, drawerOpen]);
 
   // Single place that changes "which company is selected" — always updates
   // the URL, which then flows back into state via the effect below.
@@ -362,22 +415,46 @@ const App: React.FC = () => {
     : TOPBAR_SUBTITLES[currentView];
   const showCompareCta = !isCompareRoute && currentView === 'dashboard' && !!selectedTicker;
 
-  return (
-    <div style={{ display: 'flex', height: '100vh', overflow: 'hidden', fontFamily: FF }}>
+  // The sidebar is an in-flow rail on tablet/desktop and a fixed off-canvas
+  // drawer on mobile. Same markup, different framing.
+  const asideStyle: React.CSSProperties = isMobile
+    ? {
+        position: 'fixed', top: 0, left: 0, bottom: 0,
+        width: 'min(84vw, 280px)',
+        background: c.surface, borderRight: `0.5px solid ${c.border}`,
+        display: 'flex', flexDirection: 'column', overflow: 'hidden',
+        zIndex: 60,
+        transform: drawerOpen ? 'translateX(0)' : 'translateX(-100%)',
+        transition: 'transform 0.25s ease',
+        boxShadow: drawerOpen ? '2px 0 16px rgba(15,23,42,0.18)' : 'none',
+      }
+    : {
+        width: collapsed ? 52 : 216, minWidth: collapsed ? 52 : 216,
+        background: c.surface, borderRight: `0.5px solid ${c.border}`,
+        display: 'flex', flexDirection: 'column', flexShrink: 0, overflow: 'hidden',
+        transition: 'width 0.2s ease, min-width 0.2s ease',
+      };
 
-      {/* ── Sidebar ── */}
+  return (
+    <div className="app-root" style={{ display: 'flex', overflow: 'hidden', fontFamily: FF }}>
+
+      {/* Backdrop behind the mobile drawer (click to dismiss). */}
+      {isMobile && drawerOpen && (
+        <div
+          aria-hidden="true"
+          onClick={closeDrawer}
+          style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.40)', zIndex: 55 }}
+        />
+      )}
+
+      {/* ── Sidebar (in-flow rail on desktop/tablet, off-canvas drawer on mobile) ── */}
       <aside
-        style={{
-          width:         collapsed ? 52 : 216,
-          minWidth:      collapsed ? 52 : 216,
-          background:    c.surface,
-          borderRight:   `0.5px solid ${c.border}`,
-          display:       'flex',
-          flexDirection: 'column',
-          flexShrink:    0,
-          overflow:      'hidden',
-          transition:    'width 0.2s ease, min-width 0.2s ease',
-        }}
+        ref={sidebarRef}
+        id="app-sidebar"
+        role={isMobile ? 'dialog' : undefined}
+        aria-modal={isMobile && drawerOpen ? true : undefined}
+        aria-label={isMobile ? 'Main navigation' : undefined}
+        style={asideStyle}
       >
         {/* Logo row */}
         <div style={{ height: 52, display: 'flex', alignItems: 'center', padding: '0 14px', gap: 9, borderBottom: `0.5px solid ${c.border}`, flexShrink: 0 }}>
@@ -393,7 +470,10 @@ const App: React.FC = () => {
             style={{
               display: 'flex', alignItems: 'center', gap: 9,
               background: 'transparent', border: 'none', cursor: 'pointer',
-              padding: '3px 4px', margin: '-3px -4px', borderRadius: 8,
+              padding: isMobile ? '3px 8px' : '3px 4px', margin: '-3px -4px', borderRadius: 8,
+              // ≥44px tall tap target on mobile (WCAG 2.5.5); the icon+wordmark
+              // alone are only ~32px high.
+              minHeight: isMobile ? 44 : undefined,
               fontFamily: FF, textAlign: 'left',
             }}
             onMouseEnter={e => (e.currentTarget.style.background = c.hover)}
@@ -409,13 +489,14 @@ const App: React.FC = () => {
             )}
           </button>
           <button
-            onClick={() => setCollapsed(c => !c)}
-            title={collapsed ? 'Expand' : 'Collapse'}
-            style={{ marginLeft: 'auto', width: 24, height: 24, minWidth: 24, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 6, border: 'none', background: 'transparent', cursor: 'pointer', color: c.textFaint, flexShrink: 0 }}
+            onClick={isMobile ? closeDrawer : () => setCollapsed(c => !c)}
+            title={isMobile ? 'Close menu' : collapsed ? 'Expand' : 'Collapse'}
+            aria-label={isMobile ? 'Close menu' : collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            style={{ marginLeft: 'auto', width: isMobile ? 44 : 24, height: isMobile ? 44 : 24, minWidth: isMobile ? 44 : 24, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 6, border: 'none', background: 'transparent', cursor: 'pointer', color: c.textFaint, flexShrink: 0 }}
             onMouseEnter={e => (e.currentTarget.style.background = c.hover)}
             onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
           >
-            {collapsed ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={15} />}
+            {isMobile ? <X size={20} /> : collapsed ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={15} />}
           </button>
         </div>
 
@@ -436,8 +517,9 @@ const App: React.FC = () => {
                 title={collapsed ? label : undefined}
                 style={{
                   display: 'flex', alignItems: 'center', gap: 9,
-                  padding: '7px 10px', borderRadius: 6,
-                  fontSize: 13, fontWeight: active ? 500 : 400,
+                  padding: isMobile ? '10px 12px' : '7px 10px', minHeight: isMobile ? 44 : undefined,
+                  borderRadius: 6,
+                  fontSize: isMobile ? 14 : 13, fontWeight: active ? 500 : 400,
                   color: active ? c.brand : c.navInactive,
                   background: active ? c.brandTint : 'transparent',
                   // Active-state left indicator (inset shadow = no layout shift).
@@ -481,8 +563,8 @@ const App: React.FC = () => {
                   onClick={() => navigateToCompany(key)}
                   title={collapsed ? label : undefined}
                   style={{
-                    display: 'flex', alignItems: 'center', gap: 9, padding: '7px 10px', borderRadius: 6,
-                    fontSize: 12, fontWeight: active ? 500 : 400,
+                    display: 'flex', alignItems: 'center', gap: 9, padding: isMobile ? '10px 12px' : '7px 10px', minHeight: isMobile ? 44 : undefined, borderRadius: 6,
+                    fontSize: isMobile ? 14 : 12, fontWeight: active ? 500 : 400,
                     color: active ? c.brand : hovered ? c.text : c.textMuted,
                     background: active ? c.brandTint : hovered ? c.hover : 'transparent',
                     border: 'none', cursor: 'pointer', width: '100%', textAlign: 'left', whiteSpace: 'nowrap', fontFamily: FF,
@@ -515,7 +597,7 @@ const App: React.FC = () => {
           <button
             onClick={() => selectView('documents')}
             title={collapsed ? 'Add company' : undefined}
-            style={{ display: 'flex', alignItems: 'center', gap: 9, padding: '7px 10px', borderRadius: 6, fontSize: 12, color: c.textFaint, background: 'transparent', border: 'none', cursor: 'pointer', width: '100%', textAlign: 'left', whiteSpace: 'nowrap', fontFamily: FF }}
+            style={{ display: 'flex', alignItems: 'center', gap: 9, padding: isMobile ? '10px 12px' : '7px 10px', minHeight: isMobile ? 44 : undefined, borderRadius: 6, fontSize: isMobile ? 14 : 12, color: c.textFaint, background: 'transparent', border: 'none', cursor: 'pointer', width: '100%', textAlign: 'left', whiteSpace: 'nowrap', fontFamily: FF }}
             onMouseEnter={e => { e.currentTarget.style.background = c.hover; e.currentTarget.style.color = c.textMuted; }}
             onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = c.textFaint; }}
           >
@@ -528,7 +610,7 @@ const App: React.FC = () => {
         <div style={{ padding: 8, borderTop: `0.5px solid ${c.border}`, flexShrink: 0 }}>
           <button
             title="Settings"
-            style={{ display: 'flex', alignItems: 'center', gap: 9, padding: '7px 10px', borderRadius: 6, fontSize: 13, color: c.textMuted, background: 'transparent', border: 'none', cursor: 'pointer', width: '100%', textAlign: 'left', whiteSpace: 'nowrap', fontFamily: FF }}
+            style={{ display: 'flex', alignItems: 'center', gap: 9, padding: isMobile ? '10px 12px' : '7px 10px', minHeight: isMobile ? 44 : undefined, borderRadius: 6, fontSize: isMobile ? 14 : 13, color: c.textMuted, background: 'transparent', border: 'none', cursor: 'pointer', width: '100%', textAlign: 'left', whiteSpace: 'nowrap', fontFamily: FF }}
             onMouseEnter={e => { e.currentTarget.style.background = c.hover; e.currentTarget.style.color = c.text; }}
             onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = c.textMuted; }}
           >
@@ -543,17 +625,36 @@ const App: React.FC = () => {
 
         {/* Topbar — explicit white bg so text contrast is computed against a
             known background (the header is otherwise transparent). */}
-        <header style={{ height: 52, background: c.bg, borderBottom: `0.5px solid ${c.border}`, display: 'flex', alignItems: 'center', padding: '0 20px', gap: 8, flexShrink: 0 }}>
-          <span style={{ fontSize: 15, fontWeight: 500, color: c.text }}>
+        <header style={{ height: 52, background: c.bg, borderBottom: `0.5px solid ${c.border}`, display: 'flex', alignItems: 'center', padding: isMobile ? '0 10px' : '0 20px', gap: 8, flexShrink: 0 }}>
+          {/* Hamburger — opens the drawer. Only rendered on mobile. */}
+          {isMobile && (
+            <button
+              ref={hamburgerRef}
+              onClick={() => setDrawerOpen(true)}
+              aria-label="Open menu"
+              aria-expanded={drawerOpen}
+              aria-controls="app-sidebar"
+              style={{ width: 44, height: 44, minWidth: 44, display: 'flex', alignItems: 'center', justifyContent: 'center', marginLeft: -6, borderRadius: 8, border: 'none', background: 'transparent', cursor: 'pointer', color: c.text, flexShrink: 0 }}
+              onMouseEnter={e => (e.currentTarget.style.background = c.hover)}
+              onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+            >
+              <Menu size={20} />
+            </button>
+          )}
+          <span style={{ fontSize: 15, fontWeight: 500, color: c.text, whiteSpace: 'nowrap' }}>
             {topbarTitle}
           </span>
-          {/* Decorative separator — a dot, not a text node, so it carries no
-              contrast obligation (and is hidden from assistive tech). */}
-          <span aria-hidden="true" style={{ width: 3, height: 3, borderRadius: '50%', background: c.border, flexShrink: 0 }} />
-          <span style={{ fontSize: 13, color: c.textMuted }}>
-            {topbarSubtitle}
-          </span>
-          <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 10 }}>
+          {/* Subtitle (+ decorative dot) — dropped on mobile to prevent the
+              header from overflowing at narrow widths. */}
+          {!isMobile && (
+            <>
+              <span aria-hidden="true" style={{ width: 3, height: 3, borderRadius: '50%', background: c.border, flexShrink: 0 }} />
+              <span style={{ fontSize: 13, color: c.textMuted }}>
+                {topbarSubtitle}
+              </span>
+            </>
+          )}
+          <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
             {showCompareCta && (
               <div ref={comparePickerWrapRef} style={{ position: 'relative' }}>
                 <button
@@ -564,12 +665,14 @@ const App: React.FC = () => {
                   }}
                   aria-haspopup={otherCompanies.length === 0 ? 'listbox' : undefined}
                   aria-expanded={otherCompanies.length === 0 ? comparePickerOpen : undefined}
-                  style={{ display: 'flex', alignItems: 'center', gap: 6, height: 30, padding: '0 12px', borderRadius: 7, border: 'none', background: c.brandDeep, color: c.onBrand, fontSize: 13, fontWeight: 500, cursor: 'pointer', fontFamily: FF }}
+                  aria-label="Compare with peers"
+                  style={{ display: 'flex', alignItems: 'center', gap: 6, height: isMobile ? 44 : 30, width: isMobile ? 44 : undefined, justifyContent: 'center', padding: isMobile ? 0 : '0 12px', borderRadius: 7, border: 'none', background: c.brandDeep, color: c.onBrand, fontSize: 13, fontWeight: 500, cursor: 'pointer', fontFamily: FF }}
                   onMouseEnter={e => (e.currentTarget.style.background = c.brandDeepHover)}
                   onMouseLeave={e => (e.currentTarget.style.background = c.brandDeep)}
                 >
-                  <ArrowLeftRight size={14} />
-                  Compare with peers
+                  <ArrowLeftRight size={isMobile ? 18 : 14} />
+                  {/* Icon-only on mobile to keep the header from overflowing. */}
+                  {!isMobile && 'Compare with peers'}
                 </button>
                 {/* When peers exist the button routes straight to the first; the
                     picker only opens on the empty-peer-set fallback. */}
@@ -584,11 +687,14 @@ const App: React.FC = () => {
             )}
             {/* System status — NOT a directional financial signal, so the text
                 uses steel-blue (brand) rather than green. The live dot stays
-                green purely as an indicator. */}
-            <span style={{ fontSize: 11, fontWeight: 500, padding: '3px 10px', borderRadius: 10, background: c.posSurface, color: c.brand, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-              <span style={{ width: 6, height: 6, borderRadius: '50%', background: c.pos, display: 'inline-block' }} />
-              API connected
-            </span>
+                green purely as an indicator. Hidden on mobile to save header
+                width (the drawer is the primary chrome there). */}
+            {!isMobile && (
+              <span style={{ fontSize: 11, fontWeight: 500, padding: '3px 10px', borderRadius: 10, background: c.posSurface, color: c.brand, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                <span style={{ width: 6, height: 6, borderRadius: '50%', background: c.pos, display: 'inline-block' }} />
+                API connected
+              </span>
+            )}
           </div>
         </header>
 

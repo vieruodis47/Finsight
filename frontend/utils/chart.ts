@@ -11,6 +11,20 @@
 
 import { c, font } from '../theme';
 
+// Responsive grid columns for the card/chart grids. Below the mobile breakpoint
+// everything stacks to a single column (auto-fit's minmax(NNNpx) would otherwise
+// force a track wider than a 320–375px viewport and cause horizontal overflow).
+// `minPx` is the desktop/tablet minimum track width.
+export const gridCols = (isMobile: boolean, minPx: number): string =>
+  isMobile ? '1fr' : `repeat(auto-fit, minmax(${minPx}px, 1fr))`;
+
+// Recharts XAxis `interval` for a dense multi-year axis. A 12–18-year axis is
+// unreadable at 375px, so on mobile we thin to ~`max` evenly-spaced ticks
+// (chosen over horizontal chart scroll, which hides data and fights the page's
+// vertical scroll). Returns 0 (= show every tick) on desktop or short series.
+export const tickInterval = (count: number, isMobile: boolean, max = 6): number =>
+  isMobile && count > max ? Math.ceil(count / max) - 1 : 0;
+
 const tick = { fontSize: 11, fill: c.textFaint } as const;
 
 // X axis without a dataKey — callers spread this and add their own

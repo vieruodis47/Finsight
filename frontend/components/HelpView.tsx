@@ -5,6 +5,8 @@ import {
   Lightbulb, AlertTriangle,
 } from 'lucide-react';
 import { c, font } from '../theme';
+import { useIsMobile } from '../utils/hooks';
+import { gridCols } from '../utils/chart';
 
 const FF = font.ui;
 
@@ -82,6 +84,7 @@ const FaqItem: React.FC<{ q: string; a: string }> = ({ q, a }) => {
 };
 
 const HelpView: React.FC = () => {
+  const isMobile = useIsMobile();
   const [triedQ, setTriedQ]     = useState('');
   const [feedback, setFeedback] = useState<string | null>(null);
 
@@ -177,7 +180,7 @@ const HelpView: React.FC = () => {
       </div>
 
       {/* Good vs bad questions */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 14, marginBottom: 20 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: gridCols(isMobile, 280), gap: 14, marginBottom: 20 }}>
 
         <div style={{ border: `0.5px solid ${c.border}`, borderRadius: 10, overflow: 'hidden' }}>
           <div style={{ padding: '11px 14px', borderBottom: `0.5px solid ${c.border}`, background: c.posSurface, display: 'flex', alignItems: 'center', gap: 7 }}>
@@ -215,7 +218,7 @@ const HelpView: React.FC = () => {
         <div style={{ padding: '11px 14px', borderBottom: `0.5px solid ${c.border}`, background: c.surface }}>
           <p style={{ fontSize: 12, fontWeight: 500, color: c.text2, margin: 0 }}>4 tips for better answers</p>
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: gridCols(isMobile, 240) }}>
           {TIPS.map(({ icon, title, body }, i) => (
             <div
               key={i}

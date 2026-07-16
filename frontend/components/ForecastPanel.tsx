@@ -6,6 +6,8 @@ import {
 import { TrendingUp, TrendingDown, Minus, AlertTriangle } from 'lucide-react';
 import { c, font } from '../theme';
 import { fmtUSD } from '../utils/format';
+import { gridCols, tickInterval } from '../utils/chart';
+import { useIsMobile } from '../utils/hooks';
 import { ForecastResult, ForecastMetric } from '../services/gemini';
 import { ChartFigure } from './ChartDescription';
 
@@ -47,7 +49,7 @@ const cardStyle: React.CSSProperties = {
   background: c.bg, border: `0.5px solid ${c.border}`, borderRadius: 10, padding: '14px 16px',
 };
 
-const MetricForecast: React.FC<{ m: ForecastMetric }> = ({ m }) => {
+const MetricForecast: React.FC<{ m: ForecastMetric; mobile: boolean }> = ({ m, mobile }) => {
   // ── Defensive normalization ──────────────────────────────────────────────
   // The forecast API is trusted to send well-formed metrics, but a partial or
   // version-skewed response can omit fields. Coerce everything to a safe shape
@@ -134,7 +136,7 @@ const MetricForecast: React.FC<{ m: ForecastMetric }> = ({ m }) => {
       <ResponsiveContainer width="100%" height={200}>
         <ComposedChart data={data} margin={{ top: 6, right: 10, left: 0, bottom: 0 }}>
           <CartesianGrid strokeDasharray="3 3" stroke={c.borderFaint} vertical={false} />
-          <XAxis dataKey="year" tick={{ fontSize: 11, fill: c.textFaint }} tickLine={false} axisLine={{ stroke: c.border }} />
+          <XAxis dataKey="year" interval={tickInterval(data.length, mobile)} tick={{ fontSize: 11, fill: c.textFaint }} tickLine={false} axisLine={{ stroke: c.border }} />
           <YAxis tick={{ fontSize: 11, fill: c.textFaint }} tickLine={false} axisLine={false} width={54} tickFormatter={tickFmt} />
           <Tooltip
             formatter={((v: number | null, name: string) => {
@@ -180,6 +182,7 @@ const MetricForecast: React.FC<{ m: ForecastMetric }> = ({ m }) => {
 };
 
 const ForecastPanel: React.FC<{ data: ForecastResult }> = ({ data }) => {
+  const isMobile = useIsMobile();
   // Guard the top-level shape too: a malformed response (metrics missing/not an
   // array) shows an empty state instead of throwing on `.map`.
   const metrics = Array.isArray(data?.metrics) ? data.metrics : [];
@@ -198,8 +201,8 @@ const ForecastPanel: React.FC<{ data: ForecastResult }> = ({ data }) => {
           </p>
         </div>
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 12 }}>
-          {metrics.map((m, i) => <MetricForecast key={(m && m.metric) || i} m={m} />)}
+        <div style={{ display: 'grid', gridTemplateColumns: gridCols(isMobile, 320), gap: 12 }}>
+          {metrics.map((m, i) => <MetricForecast key={(m && m.metric) || i} m={m} mobile={isMobile} />)}
         </div>
       )}
     </div>

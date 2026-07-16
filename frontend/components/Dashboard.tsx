@@ -8,6 +8,8 @@ import { c, font } from '../theme';
 import CompanyLogo from './CompanyLogo';
 import { fetchMarketData, MarketResponse } from '../services/gemini';
 import { companyKey } from '../utils/company';
+import { useIsMobile } from '../utils/hooks';
+import { gridCols } from '../utils/chart';
 
 interface DashboardProps {
   documents: Document[];
@@ -93,6 +95,7 @@ const Stat: React.FC<{ label: string; value: string }> = ({ label, value }) => (
 // --- Component ---------------------------------------------------------------
 
 const Dashboard: React.FC<DashboardProps> = ({ documents, selectedTicker }) => {
+  const isMobile = useIsMobile();
   const forTicker = selectedTicker
     ? documents.filter(d => companyKey(d) === selectedTicker.toUpperCase())
     : documents;
@@ -182,7 +185,7 @@ const Dashboard: React.FC<DashboardProps> = ({ documents, selectedTicker }) => {
       </div>
 
       {/* Margin breakdown (filled) + Market snapshot (live) */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 12, marginBottom: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: gridCols(isMobile, 340), gap: 12, marginBottom: 12 }}>
 
         <div style={panel}>
           <p style={panelTitle}>Margin breakdown</p>
@@ -251,7 +254,7 @@ const Dashboard: React.FC<DashboardProps> = ({ documents, selectedTicker }) => {
                 tick={{ fontSize: 11, fill: c.textFaint }}
                 tickLine={false}
                 axisLine={{ stroke: c.border }}
-                minTickGap={48}
+                minTickGap={isMobile ? 72 : 48}
                 tickFormatter={(d) => String(d).slice(0, 7)}
               />
               <YAxis

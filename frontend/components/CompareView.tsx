@@ -4,7 +4,7 @@ import {
 } from 'recharts';
 import { ArrowLeft, ChevronLeft, ChevronRight, Search, Loader2, AlertCircle } from 'lucide-react';
 import { c, font, seriesA, seriesB } from '../theme';
-import { useOnClickOutside } from '../utils/hooks';
+import { useOnClickOutside, useIsMobile } from '../utils/hooks';
 import { fmtM, fmtPct, fmtRatio } from '../utils/format';
 import { fetchCompareMetrics, CompareMetricsResult, ComparePoint } from '../services/gemini';
 import PeerPicker from './PeerPicker';
@@ -105,6 +105,7 @@ const ValueCell: React.FC<{ cell: CellStyle }> = ({ cell }) => (
 
 const KeyMetricsPanel: React.FC<{ data: CompareMetricsResult }> = ({ data }) => {
   const { a: ta, b: tb } = data.tickers;
+  const isMobile = useIsMobile();
 
   // Latest common fiscal year: the most recent revenue row with BOTH companies
   // reporting. Revenue is the base series every metric year derives from, so it
@@ -137,7 +138,11 @@ const KeyMetricsPanel: React.FC<{ data: CompareMetricsResult }> = ({ data }) => 
       <p style={{ fontSize: 11, color: c.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', margin: '0 0 12px' }}>
         Key metrics · FY{commonYear}
       </p>
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(130px, 1fr) 1fr 1fr', alignItems: 'baseline' }}>
+      {/* Metric | anchor | peer. Kept side-by-side on mobile (that IS the
+          comparison); the anchor/peer identity rides on the coloured ticker
+          column headers below, not on column position, so it survives any
+          reflow. The label column just gets a tighter min-width on phones. */}
+      <div style={{ display: 'grid', gridTemplateColumns: `minmax(${isMobile ? 92 : 130}px, 1fr) 1fr 1fr`, alignItems: 'baseline' }}>
         <span />
         <span style={{ ...colHead, color: seriesA.ink }}>{ta}</span>
         <span style={{ ...colHead, color: seriesB.ink }}>{tb}</span>

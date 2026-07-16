@@ -11,7 +11,8 @@ import {
 } from '../services/gemini';
 import { c, font, seriesA, seriesB } from '../theme';
 import { fmtM, fmtPct, fmtRatio } from '../utils/format';
-import { gridSolid, xAxisBase, yAxisBase, tooltipStyle, legendProps as legendBase } from '../utils/chart';
+import { gridSolid, gridCols, tickInterval, xAxisBase, yAxisBase, tooltipStyle, legendProps as legendBase } from '../utils/chart';
+import { useIsMobile } from '../utils/hooks';
 import ForecastPanel from './ForecastPanel';
 import TrendsPanel from './TrendsPanel';
 
@@ -21,9 +22,11 @@ interface AnalysisViewProps {
 
 const FF = font.ui;
 
-const btn = (active: boolean): React.CSSProperties => ({
-  display: 'inline-flex', alignItems: 'center', gap: 6,
+const modeBtn = (active: boolean, isMobile: boolean): React.CSSProperties => ({
+  display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6,
   padding: '7px 16px', borderRadius: 7, fontSize: 13,
+  // On mobile each cell is a 44px-tall touch target inside the 2×2 grid.
+  minHeight: isMobile ? 44 : undefined,
   fontWeight: active ? 500 : 400,
   background: active ? c.bg : 'transparent',
   color:      active ? c.brand : c.textMuted,
@@ -166,6 +169,7 @@ const ChartPanel: React.FC<{ title: string; description?: string; children: Reac
 
 const CompareCharts: React.FC<{ data: CompareMetricsResult }> = ({ data }) => {
   const { a: ta, b: tb } = data.tickers;
+  const isMobile = useIsMobile();
 
   // Shared legend look + a per-pair formatter mapping the a/b series keys to
   // the two tickers.
@@ -182,6 +186,10 @@ const CompareCharts: React.FC<{ data: CompareMetricsResult }> = ({ data }) => {
   // Deterministic, server-computed descriptions keyed by series metric.
   const D = data.descriptions ?? {};
 
+  // All series share one common fiscal-year axis; thin its ticks on mobile so a
+  // 12+ year axis stays legible at 375px. Revenue is the representative length.
+  const ivl = tickInterval(data.revenue.length, isMobile);
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
 
@@ -192,12 +200,12 @@ const CompareCharts: React.FC<{ data: CompareMetricsResult }> = ({ data }) => {
       </p>
 
       {/* Row 1: Revenue | Net Income */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: gridCols(isMobile, 340), gap: 12 }}>
         <ChartPanel title="Revenue" description={D.revenue}>
           <ResponsiveContainer width="100%" height={210}>
             <BarChart data={data.revenue} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
               <CartesianGrid {...gridProps} />
-              <XAxis {...xAxisProps} />
+              <XAxis {...xAxisProps} interval={ivl} />
               <YAxis {...yAxisBase} width={56} tickFormatter={v => fmtM(v).replace('$', '')} />
               <Tooltip {...mkTooltip(fmtM)} />
               <Legend {...legendProps} />
@@ -211,7 +219,7 @@ const CompareCharts: React.FC<{ data: CompareMetricsResult }> = ({ data }) => {
           <ResponsiveContainer width="100%" height={210}>
             <BarChart data={data.net_income} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
               <CartesianGrid {...gridProps} />
-              <XAxis {...xAxisProps} />
+              <XAxis {...xAxisProps} interval={ivl} />
               <YAxis {...yAxisBase} width={56} tickFormatter={v => fmtM(v).replace('$', '')} />
               <Tooltip {...mkTooltip(fmtM)} />
               <Legend {...legendProps} />
@@ -224,7 +232,7 @@ const CompareCharts: React.FC<{ data: CompareMetricsResult }> = ({ data }) => {
       </div>
 
       {/* Row 2: Gross Margin | Operating Margin | Net Margin */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: gridCols(isMobile, 300), gap: 12 }}>
         {(
           [
             ['gross_margin_pct',     'Gross Margin %'],
@@ -236,7 +244,7 @@ const CompareCharts: React.FC<{ data: CompareMetricsResult }> = ({ data }) => {
             <ResponsiveContainer width="100%" height={165}>
               <LineChart data={data[key]} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
                 <CartesianGrid {...gridProps} />
-                <XAxis {...xAxisProps} />
+                <XAxis {...xAxisProps} interval={ivl} />
                 <YAxis {...yAxisBase} width={40} tickFormatter={v => `${v}%`} />
                 <Tooltip {...mkTooltip(fmtPct)} />
                 <Legend {...legendProps} />
@@ -250,12 +258,12 @@ const CompareCharts: React.FC<{ data: CompareMetricsResult }> = ({ data }) => {
       </div>
 
       {/* Row 3: Revenue Growth | Free Cash Flow */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: gridCols(isMobile, 340), gap: 12 }}>
         <ChartPanel title="Revenue Growth %" description={D.revenue_growth_pct}>
           <ResponsiveContainer width="100%" height={200}>
             <BarChart data={data.revenue_growth_pct} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
               <CartesianGrid {...gridProps} />
-              <XAxis {...xAxisProps} />
+              <XAxis {...xAxisProps} interval={ivl} />
               <YAxis {...yAxisBase} width={44} tickFormatter={v => `${v}%`} />
               <Tooltip {...mkTooltip(fmtPct)} />
               <Legend {...legendProps} />
@@ -270,7 +278,7 @@ const CompareCharts: React.FC<{ data: CompareMetricsResult }> = ({ data }) => {
           <ResponsiveContainer width="100%" height={200}>
             <BarChart data={data.free_cash_flow} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
               <CartesianGrid {...gridProps} />
-              <XAxis {...xAxisProps} />
+              <XAxis {...xAxisProps} interval={ivl} />
               <YAxis {...yAxisBase} width={56} tickFormatter={v => fmtM(v).replace('$', '')} />
               <Tooltip {...mkTooltip(fmtM)} />
               <Legend {...legendProps} />
@@ -283,12 +291,12 @@ const CompareCharts: React.FC<{ data: CompareMetricsResult }> = ({ data }) => {
       </div>
 
       {/* Row 4: Debt-to-Equity | Current Ratio */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: gridCols(isMobile, 340), gap: 12 }}>
         <ChartPanel title="Debt-to-Equity" description={D.debt_to_equity}>
           <ResponsiveContainer width="100%" height={180}>
             <LineChart data={data.debt_to_equity} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
               <CartesianGrid {...gridProps} />
-              <XAxis {...xAxisProps} />
+              <XAxis {...xAxisProps} interval={ivl} />
               <YAxis {...yAxisBase} width={40} tickFormatter={fmtRatio} />
               <Tooltip {...mkTooltip(fmtRatio)} />
               <Legend {...legendProps} />
@@ -302,7 +310,7 @@ const CompareCharts: React.FC<{ data: CompareMetricsResult }> = ({ data }) => {
           <ResponsiveContainer width="100%" height={180}>
             <LineChart data={data.current_ratio} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
               <CartesianGrid {...gridProps} />
-              <XAxis {...xAxisProps} />
+              <XAxis {...xAxisProps} interval={ivl} />
               <YAxis {...yAxisBase} width={40} tickFormatter={fmtRatio} />
               <Tooltip {...mkTooltip(fmtRatio)} />
               <Legend {...legendProps} />
@@ -321,6 +329,7 @@ const CompareCharts: React.FC<{ data: CompareMetricsResult }> = ({ data }) => {
 // ── Main component ────────────────────────────────────────────────────────
 
 const AnalysisView: React.FC<AnalysisViewProps> = ({ documents }) => {
+  const isMobile = useIsMobile();
   const [mode, setMode]                           = useState<'summary' | 'compare' | 'forecast' | 'trends'>('summary');
   const [selectedDocForSummary, setSelectedDoc]   = useState('');
   const [trendsDocId, setTrendsDocId]             = useState('');
@@ -422,21 +431,29 @@ const AnalysisView: React.FC<AnalysisViewProps> = ({ documents }) => {
         <p style={{ fontSize: 13, color: c.textMuted, margin: 0 }}>Generate structured summaries or compare multiple filings.</p>
       </div>
 
-      {/* Mode toggle */}
-      <div style={{ display: 'inline-flex', background: c.surfaceAlt, borderRadius: 8, padding: 3, gap: 2, marginBottom: 20 }}>
-        <button style={btn(mode === 'summary')} onClick={() => setMode('summary')}>
+      {/* Mode toggle. On desktop it's a single inline pill row; below the mobile
+          breakpoint the four labels can't fit 375px in one row (they overflow to
+          ~450px), so it becomes a full-width 2×2 grid with 44px touch targets. */}
+      <div
+        style={
+          isMobile
+            ? { display: 'grid', gridTemplateColumns: '1fr 1fr', background: c.surfaceAlt, borderRadius: 8, padding: 3, gap: 2, marginBottom: 20 }
+            : { display: 'inline-flex', background: c.surfaceAlt, borderRadius: 8, padding: 3, gap: 2, marginBottom: 20 }
+        }
+      >
+        <button style={modeBtn(mode === 'summary', isMobile)} onClick={() => setMode('summary')}>
           <FileText size={14} />
           Structured summary
         </button>
-        <button style={btn(mode === 'compare')} onClick={() => setMode('compare')}>
+        <button style={modeBtn(mode === 'compare', isMobile)} onClick={() => setMode('compare')}>
           <GitCompare size={14} />
           Compare documents
         </button>
-        <button style={btn(mode === 'forecast')} onClick={() => setMode('forecast')}>
+        <button style={modeBtn(mode === 'forecast', isMobile)} onClick={() => setMode('forecast')}>
           <TrendingUp size={14} />
           Forecast
         </button>
-        <button style={btn(mode === 'trends')} onClick={() => setMode('trends')}>
+        <button style={modeBtn(mode === 'trends', isMobile)} onClick={() => setMode('trends')}>
           <BarChart3 size={14} />
           Trends
         </button>
@@ -557,7 +574,7 @@ const AnalysisView: React.FC<AnalysisViewProps> = ({ documents }) => {
       {mode === 'compare' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
           <div style={{ background: c.bg, border: `0.5px solid ${c.border}`, borderRadius: 10, padding: '16px 18px' }}>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 14, marginBottom: 14 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: gridCols(isMobile, 340), gap: 14, marginBottom: 14 }}>
 
               {/* Document A */}
               <div>
