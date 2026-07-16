@@ -1,15 +1,17 @@
 import React from 'react';
 import {
   ComposedChart, Line, Area, Scatter, XAxis, YAxis, Tooltip,
-  ResponsiveContainer, CartesianGrid,
+  CartesianGrid,
 } from 'recharts';
 import { TrendingUp, TrendingDown, Minus, AlertTriangle } from 'lucide-react';
 import { c, font } from '../theme';
 import { fmtUSD } from '../utils/format';
-import { gridCols, tickInterval } from '../utils/chart';
+import { gridCols, abbrevYear } from '../utils/chart';
 import { useIsMobile } from '../utils/hooks';
 import { ForecastResult, ForecastMetric } from '../services/gemini';
 import { ChartFigure } from './ChartDescription';
+import { ResponsiveChart } from './ResponsiveChart';
+import { ChartCarousel, CarouselSlide } from './ChartCarousel';
 
 const FF = font.ui;
 
@@ -49,7 +51,7 @@ const cardStyle: React.CSSProperties = {
   background: c.bg, border: `0.5px solid ${c.border}`, borderRadius: 10, padding: '14px 16px',
 };
 
-const MetricForecast: React.FC<{ m: ForecastMetric; mobile: boolean }> = ({ m, mobile }) => {
+const MetricForecast: React.FC<{ m: ForecastMetric }> = ({ m }) => {
   // ── Defensive normalization ──────────────────────────────────────────────
   // The forecast API is trusted to send well-formed metrics, but a partial or
   // version-skewed response can omit fields. Coerce everything to a safe shape
@@ -133,10 +135,11 @@ const MetricForecast: React.FC<{ m: ForecastMetric; mobile: boolean }> = ({ m, m
       </div>
 
       <ChartFigure description={m.description}>
-      <ResponsiveContainer width="100%" height={200}>
+      <ResponsiveChart height={200}>
+        {(w) => (
         <ComposedChart data={data} margin={{ top: 6, right: 10, left: 0, bottom: 0 }}>
           <CartesianGrid strokeDasharray="3 3" stroke={c.borderFaint} vertical={false} />
-          <XAxis dataKey="year" interval={tickInterval(data.length, mobile)} tick={{ fontSize: 11, fill: c.textFaint }} tickLine={false} axisLine={{ stroke: c.border }} />
+          <XAxis dataKey="year" tickFormatter={abbrevYear(w)} interval="preserveStartEnd" tick={{ fontSize: 11, fill: c.textFaint }} tickLine={false} axisLine={{ stroke: c.border }} />
           <YAxis tick={{ fontSize: 11, fill: c.textFaint }} tickLine={false} axisLine={false} width={54} tickFormatter={tickFmt} />
           <Tooltip
             formatter={((v: number | null, name: string) => {
@@ -158,7 +161,8 @@ const MetricForecast: React.FC<{ m: ForecastMetric; mobile: boolean }> = ({ m, m
           {/* Denoised anomalies — amber dots on the actuals (caution, not directional) */}
           <Scatter dataKey="anomaly" fill={c.warnFg} isAnimationActive={false} />
         </ComposedChart>
-      </ResponsiveContainer>
+        )}
+      </ResponsiveChart>
       </ChartFigure>
 
       {/* Numeric summary */}
@@ -188,6 +192,14 @@ const ForecastPanel: React.FC<{ data: ForecastResult }> = ({ data }) => {
   const metrics = Array.isArray(data?.metrics) ? data.metrics : [];
   const ticker = data?.ticker ?? '';
 
+  // One forecast card per metric. On mobile they become a swipeable carousel
+  // (one per view); desktop keeps the responsive grid.
+  const slides: CarouselSlide[] = metrics.map((m, i) => {
+    const key = (m && typeof m.metric === 'string' && m.metric) || String(i);
+    const label = METRIC_LABELS[key] ?? (typeof m?.metric === 'string' && m.metric ? m.metric.replace(/_/g, ' ') : 'Metric');
+    return { key, label, node: <MetricForecast m={m} /> };
+  });
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       <p style={{ fontSize: 12, color: c.textMuted, margin: 0, lineHeight: 1.6 }}>
@@ -200,9 +212,11 @@ const ForecastPanel: React.FC<{ data: ForecastResult }> = ({ data }) => {
             No forecastable metrics were returned for {ticker || 'this company'}.
           </p>
         </div>
+      ) : isMobile ? (
+        <ChartCarousel slides={slides} label={`${ticker} forecast charts`} />
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: gridCols(isMobile, 320), gap: 12 }}>
-          {metrics.map((m, i) => <MetricForecast key={(m && m.metric) || i} m={m} mobile={isMobile} />)}
+          {slides.map(s => <React.Fragment key={s.key}>{s.node}</React.Fragment>)}
         </div>
       )}
     </div>

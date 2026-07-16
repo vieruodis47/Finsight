@@ -18,12 +18,24 @@ import { c, font } from '../theme';
 export const gridCols = (isMobile: boolean, minPx: number): string =>
   isMobile ? '1fr' : `repeat(auto-fit, minmax(${minPx}px, 1fr))`;
 
-// Recharts XAxis `interval` for a dense multi-year axis. A 12–18-year axis is
-// unreadable at 375px, so on mobile we thin to ~`max` evenly-spaced ticks
-// (chosen over horizontal chart scroll, which hides data and fights the page's
-// vertical scroll). Returns 0 (= show every tick) on desktop or short series.
-export const tickInterval = (count: number, isMobile: boolean, max = 6): number =>
-  isMobile && count > max ? Math.ceil(count / max) - 1 : 0;
+// The dense fiscal-year axis (~19 years, FY2007–FY2025) collides when every
+// label renders. The fix is Recharts' own interval="preserveStartEnd" on the
+// XAxis: it drops labels that don't fit — measured against the chart's REAL
+// rendered width, not the viewport, so a ~280px chart in a desktop grid thins
+// just like a phone — while always keeping the first and last (FY2025) labels.
+// (Recharts 3's explicit `ticks` prop suppresses the label text on a category
+// axis, so preserveStartEnd is the correct native mechanism.) `abbrevYear`
+// complements it by shortening labels on narrow charts so more of them survive.
+//
+// Abbreviate fiscal-year labels ("2007" → "'07") once the chart is narrow, so
+// even the retained ticks stay short and legible. Full year at >=768px. A label
+// without a 4-digit year (e.g. a projected-period label) is returned unchanged.
+export const abbrevYear = (width: number) => (v: string | number): string => {
+  const s = String(v);
+  if (width >= 768) return s;
+  const m = s.match(/(\d{4})/);
+  return m ? `'${m[1].slice(2)}` : s;
+};
 
 const tick = { fontSize: 11, fill: c.textFaint } as const;
 

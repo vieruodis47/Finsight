@@ -1,7 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import {
   BarChart, Bar, LineChart, Line, XAxis, YAxis, Tooltip, Legend,
-  ResponsiveContainer, CartesianGrid, ReferenceLine,
+  CartesianGrid, ReferenceLine,
 } from 'recharts';
 import { FileText, GitCompare, TrendingUp, BarChart3, Download, Loader2, AlertCircle, AlertTriangle } from 'lucide-react';
 import { Document } from '../types';
@@ -11,8 +11,10 @@ import {
 } from '../services/gemini';
 import { c, font, seriesA, seriesB } from '../theme';
 import { fmtM, fmtPct, fmtRatio } from '../utils/format';
-import { gridSolid, gridCols, tickInterval, xAxisBase, yAxisBase, tooltipStyle, legendProps as legendBase } from '../utils/chart';
+import { gridSolid, gridCols, abbrevYear, xAxisBase, yAxisBase, tooltipStyle, legendProps as legendBase } from '../utils/chart';
 import { useIsMobile } from '../utils/hooks';
+import { ResponsiveChart } from './ResponsiveChart';
+import { ChartCarousel, CarouselSlide } from './ChartCarousel';
 import ForecastPanel from './ForecastPanel';
 import TrendsPanel from './TrendsPanel';
 
@@ -186,40 +188,45 @@ const CompareCharts: React.FC<{ data: CompareMetricsResult }> = ({ data }) => {
   // Deterministic, server-computed descriptions keyed by series metric.
   const D = data.descriptions ?? {};
 
-  // All series share one common fiscal-year axis; thin its ticks on mobile so a
-  // 12+ year axis stays legible at 375px. Revenue is the representative length.
-  const ivl = tickInterval(data.revenue.length, isMobile);
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-
-      <p style={{ fontSize: 12, color: c.textMuted, margin: 0, lineHeight: 1.6 }}>
-        Multi-year XBRL comparison for <strong style={{ color: seriesA.ink }}>{ta}</strong> vs{' '}
-        <strong style={{ color: seriesB.ink }}>{tb}</strong>, aligned to a common fiscal-year axis.
-        Captions are statistical descriptions of historical filings, not investment advice.
-      </p>
-
-      {/* Row 1: Revenue | Net Income */}
-      <div style={{ display: 'grid', gridTemplateColumns: gridCols(isMobile, 340), gap: 12 }}>
+  // All series share one common ~19-year fiscal axis. The label-collision bug is
+  // density vs. the chart's REAL rendered width (a chart in a 3-column desktop
+  // grid is only ~280px wide and collides just like a phone), so each XAxis gets
+  // interval="preserveStartEnd" — Recharts drops labels that don't fit by its own
+  // measured axis width while always keeping the first and last (FY2025) — plus a
+  // width-based abbreviation ('07) that shortens labels so more survive.
+  //
+  // Each chart is defined once, then arranged either as the desktop row grid or,
+  // on mobile, as one-chart-per-slide in a swipeable carousel.
+  const slides: CarouselSlide[] = [
+    {
+      key: 'revenue', label: 'Revenue',
+      node: (
         <ChartPanel title="Revenue" description={D.revenue}>
-          <ResponsiveContainer width="100%" height={210}>
+          <ResponsiveChart height={210}>
+            {(w) => (
             <BarChart data={data.revenue} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
               <CartesianGrid {...gridProps} />
-              <XAxis {...xAxisProps} interval={ivl} />
+              <XAxis {...xAxisProps} tickFormatter={abbrevYear(w)} interval="preserveStartEnd" />
               <YAxis {...yAxisBase} width={56} tickFormatter={v => fmtM(v).replace('$', '')} />
               <Tooltip {...mkTooltip(fmtM)} />
               <Legend {...legendProps} />
               <Bar dataKey="a" fill={COL_A} radius={[3, 3, 0, 0]} maxBarSize={22} name="a" />
               <Bar dataKey="b" fill={COL_B} radius={[3, 3, 0, 0]} maxBarSize={22} name="b" />
             </BarChart>
-          </ResponsiveContainer>
+            )}
+          </ResponsiveChart>
         </ChartPanel>
-
+      ),
+    },
+    {
+      key: 'net_income', label: 'Net Income',
+      node: (
         <ChartPanel title="Net Income" description={D.net_income}>
-          <ResponsiveContainer width="100%" height={210}>
+          <ResponsiveChart height={210}>
+            {(w) => (
             <BarChart data={data.net_income} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
               <CartesianGrid {...gridProps} />
-              <XAxis {...xAxisProps} interval={ivl} />
+              <XAxis {...xAxisProps} tickFormatter={abbrevYear(w)} interval="preserveStartEnd" />
               <YAxis {...yAxisBase} width={56} tickFormatter={v => fmtM(v).replace('$', '')} />
               <Tooltip {...mkTooltip(fmtM)} />
               <Legend {...legendProps} />
@@ -227,43 +234,47 @@ const CompareCharts: React.FC<{ data: CompareMetricsResult }> = ({ data }) => {
               <Bar dataKey="a" fill={COL_A} radius={[3, 3, 0, 0]} maxBarSize={22} name="a" />
               <Bar dataKey="b" fill={COL_B} radius={[3, 3, 0, 0]} maxBarSize={22} name="b" />
             </BarChart>
-          </ResponsiveContainer>
+            )}
+          </ResponsiveChart>
         </ChartPanel>
-      </div>
-
-      {/* Row 2: Gross Margin | Operating Margin | Net Margin */}
-      <div style={{ display: 'grid', gridTemplateColumns: gridCols(isMobile, 300), gap: 12 }}>
-        {(
-          [
-            ['gross_margin_pct',     'Gross Margin %'],
-            ['operating_margin_pct', 'Operating Margin %'],
-            ['net_margin_pct',       'Net Margin %'],
-          ] as const
-        ).map(([key, label]) => (
-          <ChartPanel key={key} title={label} description={D[key]}>
-            <ResponsiveContainer width="100%" height={165}>
-              <LineChart data={data[key]} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
-                <CartesianGrid {...gridProps} />
-                <XAxis {...xAxisProps} interval={ivl} />
-                <YAxis {...yAxisBase} width={40} tickFormatter={v => `${v}%`} />
-                <Tooltip {...mkTooltip(fmtPct)} />
-                <Legend {...legendProps} />
-                <ReferenceLine y={0} stroke={c.border} />
-                <Line type="monotone" dataKey="a" stroke={COL_A} strokeWidth={2} dot={false} connectNulls name="a" />
-                <Line type="monotone" dataKey="b" stroke={COL_B} strokeWidth={2} strokeDasharray={DASH_B} dot={false} connectNulls name="b" />
-              </LineChart>
-            </ResponsiveContainer>
-          </ChartPanel>
-        ))}
-      </div>
-
-      {/* Row 3: Revenue Growth | Free Cash Flow */}
-      <div style={{ display: 'grid', gridTemplateColumns: gridCols(isMobile, 340), gap: 12 }}>
+      ),
+    },
+    ...(
+      [
+        ['gross_margin_pct',     'Gross Margin %'],
+        ['operating_margin_pct', 'Operating Margin %'],
+        ['net_margin_pct',       'Net Margin %'],
+      ] as const
+    ).map(([key, label]): CarouselSlide => ({
+      key, label,
+      node: (
+        <ChartPanel title={label} description={D[key]}>
+          <ResponsiveChart height={165}>
+            {(w) => (
+            <LineChart data={data[key]} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+              <CartesianGrid {...gridProps} />
+              <XAxis {...xAxisProps} tickFormatter={abbrevYear(w)} interval="preserveStartEnd" />
+              <YAxis {...yAxisBase} width={40} tickFormatter={v => `${v}%`} />
+              <Tooltip {...mkTooltip(fmtPct)} />
+              <Legend {...legendProps} />
+              <ReferenceLine y={0} stroke={c.border} />
+              <Line type="monotone" dataKey="a" stroke={COL_A} strokeWidth={2} dot={false} connectNulls name="a" />
+              <Line type="monotone" dataKey="b" stroke={COL_B} strokeWidth={2} strokeDasharray={DASH_B} dot={false} connectNulls name="b" />
+            </LineChart>
+            )}
+          </ResponsiveChart>
+        </ChartPanel>
+      ),
+    })),
+    {
+      key: 'revenue_growth_pct', label: 'Revenue Growth %',
+      node: (
         <ChartPanel title="Revenue Growth %" description={D.revenue_growth_pct}>
-          <ResponsiveContainer width="100%" height={200}>
+          <ResponsiveChart height={200}>
+            {(w) => (
             <BarChart data={data.revenue_growth_pct} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
               <CartesianGrid {...gridProps} />
-              <XAxis {...xAxisProps} interval={ivl} />
+              <XAxis {...xAxisProps} tickFormatter={abbrevYear(w)} interval="preserveStartEnd" />
               <YAxis {...yAxisBase} width={44} tickFormatter={v => `${v}%`} />
               <Tooltip {...mkTooltip(fmtPct)} />
               <Legend {...legendProps} />
@@ -271,14 +282,20 @@ const CompareCharts: React.FC<{ data: CompareMetricsResult }> = ({ data }) => {
               <Bar dataKey="a" fill={COL_A} radius={[3, 3, 0, 0]} maxBarSize={22} name="a" />
               <Bar dataKey="b" fill={COL_B} radius={[3, 3, 0, 0]} maxBarSize={22} name="b" />
             </BarChart>
-          </ResponsiveContainer>
+            )}
+          </ResponsiveChart>
         </ChartPanel>
-
+      ),
+    },
+    {
+      key: 'free_cash_flow', label: 'Free Cash Flow',
+      node: (
         <ChartPanel title="Free Cash Flow" description={D.free_cash_flow}>
-          <ResponsiveContainer width="100%" height={200}>
+          <ResponsiveChart height={200}>
+            {(w) => (
             <BarChart data={data.free_cash_flow} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
               <CartesianGrid {...gridProps} />
-              <XAxis {...xAxisProps} interval={ivl} />
+              <XAxis {...xAxisProps} tickFormatter={abbrevYear(w)} interval="preserveStartEnd" />
               <YAxis {...yAxisBase} width={56} tickFormatter={v => fmtM(v).replace('$', '')} />
               <Tooltip {...mkTooltip(fmtM)} />
               <Legend {...legendProps} />
@@ -286,31 +303,40 @@ const CompareCharts: React.FC<{ data: CompareMetricsResult }> = ({ data }) => {
               <Bar dataKey="a" fill={COL_A} radius={[3, 3, 0, 0]} maxBarSize={22} name="a" />
               <Bar dataKey="b" fill={COL_B} radius={[3, 3, 0, 0]} maxBarSize={22} name="b" />
             </BarChart>
-          </ResponsiveContainer>
+            )}
+          </ResponsiveChart>
         </ChartPanel>
-      </div>
-
-      {/* Row 4: Debt-to-Equity | Current Ratio */}
-      <div style={{ display: 'grid', gridTemplateColumns: gridCols(isMobile, 340), gap: 12 }}>
+      ),
+    },
+    {
+      key: 'debt_to_equity', label: 'Debt-to-Equity',
+      node: (
         <ChartPanel title="Debt-to-Equity" description={D.debt_to_equity}>
-          <ResponsiveContainer width="100%" height={180}>
+          <ResponsiveChart height={180}>
+            {(w) => (
             <LineChart data={data.debt_to_equity} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
               <CartesianGrid {...gridProps} />
-              <XAxis {...xAxisProps} interval={ivl} />
+              <XAxis {...xAxisProps} tickFormatter={abbrevYear(w)} interval="preserveStartEnd" />
               <YAxis {...yAxisBase} width={40} tickFormatter={fmtRatio} />
               <Tooltip {...mkTooltip(fmtRatio)} />
               <Legend {...legendProps} />
               <Line type="monotone" dataKey="a" stroke={COL_A} strokeWidth={2} dot={false} connectNulls name="a" />
               <Line type="monotone" dataKey="b" stroke={COL_B} strokeWidth={2} strokeDasharray={DASH_B} dot={false} connectNulls name="b" />
             </LineChart>
-          </ResponsiveContainer>
+            )}
+          </ResponsiveChart>
         </ChartPanel>
-
+      ),
+    },
+    {
+      key: 'current_ratio', label: 'Current Ratio',
+      node: (
         <ChartPanel title="Current Ratio" description={D.current_ratio}>
-          <ResponsiveContainer width="100%" height={180}>
+          <ResponsiveChart height={180}>
+            {(w) => (
             <LineChart data={data.current_ratio} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
               <CartesianGrid {...gridProps} />
-              <XAxis {...xAxisProps} interval={ivl} />
+              <XAxis {...xAxisProps} tickFormatter={abbrevYear(w)} interval="preserveStartEnd" />
               <YAxis {...yAxisBase} width={40} tickFormatter={fmtRatio} />
               <Tooltip {...mkTooltip(fmtRatio)} />
               <Legend {...legendProps} />
@@ -318,10 +344,45 @@ const CompareCharts: React.FC<{ data: CompareMetricsResult }> = ({ data }) => {
               <Line type="monotone" dataKey="a" stroke={COL_A} strokeWidth={2} dot={false} connectNulls name="a" />
               <Line type="monotone" dataKey="b" stroke={COL_B} strokeWidth={2} strokeDasharray={DASH_B} dot={false} connectNulls name="b" />
             </LineChart>
-          </ResponsiveContainer>
+            )}
+          </ResponsiveChart>
         </ChartPanel>
-      </div>
+      ),
+    },
+  ];
 
+  const intro = (
+    <p style={{ fontSize: 12, color: c.textMuted, margin: 0, lineHeight: 1.6 }}>
+      Multi-year XBRL comparison for <strong style={{ color: seriesA.ink }}>{ta}</strong> vs{' '}
+      <strong style={{ color: seriesB.ink }}>{tb}</strong>, aligned to a common fiscal-year axis.
+      Captions are statistical descriptions of historical filings, not investment advice.
+    </p>
+  );
+
+  if (isMobile) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        {intro}
+        <ChartCarousel slides={slides} label={`${ta} vs ${tb} comparison charts`} />
+      </div>
+    );
+  }
+
+  // Desktop: the original row layout (2 | 3 | 2 | 2), pulling nodes from `slides`.
+  const rows: { cols: number; idx: number[] }[] = [
+    { cols: 340, idx: [0, 1] },
+    { cols: 300, idx: [2, 3, 4] },
+    { cols: 340, idx: [5, 6] },
+    { cols: 340, idx: [7, 8] },
+  ];
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      {intro}
+      {rows.map((r, ri) => (
+        <div key={ri} style={{ display: 'grid', gridTemplateColumns: gridCols(isMobile, r.cols), gap: 12 }}>
+          {r.idx.map(i => <React.Fragment key={slides[i].key}>{slides[i].node}</React.Fragment>)}
+        </div>
+      ))}
     </div>
   );
 };

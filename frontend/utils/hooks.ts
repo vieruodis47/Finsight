@@ -1,4 +1,4 @@
-import { useState, useEffect, RefObject } from 'react';
+import { useState, useEffect, useRef, RefObject } from 'react';
 import { breakpoint } from '../theme';
 
 /**
@@ -42,6 +42,51 @@ export const useIsTablet = (): boolean => useMediaQuery(breakpoint.tablet);
 export const useIsMobile = (): boolean => useMediaQuery(breakpoint.mobile);
 // Small handset: single column, largest touch targets, most aggressive tick thinning.
 export const useIsPhone = (): boolean => useMediaQuery(breakpoint.phone);
+
+/**
+ * Observes an element's content-box width via ResizeObserver, returned as a
+ * `[ref, width]` pair. Charts read their OWN rendered width from this (never the
+ * window), because tick density has to adapt to the real container: a chart in a
+ * 3-column desktop grid is only ~400px wide and needs the same tick thinning as
+ * a phone. Works for off-screen carousel slides too — a translated slide still
+ * has its laid-out width, so the observer reports a real (non-zero) number.
+ */
+export function useElementWidth<T extends HTMLElement>(): [RefObject<T | null>, number] {
+  const ref = useRef<T>(null);
+  const [width, setWidth] = useState(0);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => {
+      const w = entries[0]?.contentRect.width;
+      if (typeof w === 'number') setWidth(w);
+    });
+    ro.observe(el);
+    setWidth(el.getBoundingClientRect().width); // sync initial measure
+    return () => ro.disconnect();
+  }, []);
+  return [ref, width];
+}
+
+/**
+ * True when the user has asked for reduced motion. The chart carousel reads this
+ * to drop its slide transition (WCAG 2.3.3) — navigation still works, it just
+ * jumps rather than slides.
+ */
+export function usePrefersReducedMotion(): boolean {
+  const query = '(prefers-reduced-motion: reduce)';
+  const [reduced, setReduced] = useState(
+    () => (typeof window !== 'undefined' ? window.matchMedia(query).matches : false),
+  );
+  useEffect(() => {
+    const mq = window.matchMedia(query);
+    const handler = (e: MediaQueryListEvent) => setReduced(e.matches);
+    setReduced(mq.matches);
+    mq.addEventListener('change', handler);
+    return () => mq.removeEventListener('change', handler);
+  }, []);
+  return reduced;
+}
 
 /**
  * Calls `handler` on a mousedown outside `ref`. Used to dismiss popovers

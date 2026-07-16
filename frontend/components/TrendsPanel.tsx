@@ -2,18 +2,19 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   LineChart, Line, BarChart, Bar, ComposedChart, Area, Scatter,
   XAxis, YAxis, Tooltip, Legend, CartesianGrid, ReferenceLine, Cell,
-  ResponsiveContainer,
 } from 'recharts';
 import { Loader2, AlertCircle, TrendingUp, TrendingDown } from 'lucide-react';
 import { c, font, seriesB } from '../theme';
 import { fmtUSD, fmtPct } from '../utils/format';
-import { gridFaint, gridCols, tickInterval, xAxisBase, yAxisBase, tooltipStyle, legendProps } from '../utils/chart';
+import { gridFaint, gridCols, abbrevYear, xAxisBase, yAxisBase, tooltipStyle, legendProps } from '../utils/chart';
 import { useIsMobile } from '../utils/hooks';
 import {
   fetchTrends, fetchQuarterly, fetchDistribution, fetchReturns,
   TrendsResult, QuarterlyResult, DistributionResult, PeriodReturns,
 } from '../services/gemini';
 import { ChartFigure } from './ChartDescription';
+import { ResponsiveChart } from './ResponsiveChart';
+import { ChartCarousel, CarouselSlide } from './ChartCarousel';
 
 // Ported from Michelle's offline Plotly charts.py to Recharts. Six single-company
 // views. Green/red is used ONLY on the returns bars (a directional market signal,
@@ -53,7 +54,7 @@ const TREND_METRICS = [
   { key: 'net_margin_pct', label: 'Net Margin %', unit: 'pct' },
 ] as const;
 
-const TrendChart: React.FC<{ data: TrendsResult; mobile: boolean }> = ({ data, mobile }) => {
+const TrendChart: React.FC<{ data: TrendsResult }> = ({ data }) => {
   const [metric, setMetric] = useState<typeof TREND_METRICS[number]['key']>('revenue');
   const def = TREND_METRICS.find(m => m.key === metric)!;
   const fmt = def.unit === 'usd' ? fmtUSD : fmtPct;
@@ -66,28 +67,32 @@ const TrendChart: React.FC<{ data: TrendsResult; mobile: boolean }> = ({ data, m
         </select>
       </div>
       <ChartFigure description={desc}>
-        <ResponsiveContainer width="100%" height={220}>
+        <ResponsiveChart height={220}>
+          {(w) => (
           <LineChart data={data.points} margin={{ top: 6, right: 12, left: 4, bottom: 0 }}>
             <CartesianGrid {...gridProps} />
-            <XAxis {...xAxisProps} dataKey="year" interval={tickInterval(data.points.length, mobile)} />
+            <XAxis {...xAxisProps} dataKey="year" tickFormatter={abbrevYear(w)} interval="preserveStartEnd" />
             <YAxis {...yAxisBase} width={58} tickFormatter={(v: number) => (def.unit === 'usd' ? fmtUSD(v) : `${Math.round(v)}%`)} />
             <Tooltip {...tooltipStyle} formatter={((v: number) => [fmt(v), def.label]) as never} labelFormatter={(l) => `FY ${l}`} />
             <Line type="monotone" dataKey={metric} stroke={c.brand} strokeWidth={2} dot={{ r: 3, fill: c.brand }} connectNulls name={def.label} isAnimationActive={false} />
           </LineChart>
-        </ResponsiveContainer>
+          )}
+        </ResponsiveChart>
       </ChartFigure>
     </Panel>
   );
 };
 
 // ── #5 Margin breakdown: COGS vs Gross Profit (stacked) ─────────────────────
-const MarginStackChart: React.FC<{ data: TrendsResult; mobile: boolean }> = ({ data, mobile }) => (
+const MarginStackChart: React.FC<{ data: TrendsResult }> = ({ data }) => {
+  return (
   <Panel title="Cost structure" subtitle="COGS + Gross profit = Revenue">
     <ChartFigure description={data.descriptions?.cost_structure}>
-      <ResponsiveContainer width="100%" height={220}>
+      <ResponsiveChart height={220}>
+        {(w) => (
         <BarChart data={data.points} margin={{ top: 6, right: 12, left: 4, bottom: 0 }}>
           <CartesianGrid {...gridProps} />
-          <XAxis {...xAxisProps} dataKey="year" interval={tickInterval(data.points.length, mobile)} />
+          <XAxis {...xAxisProps} dataKey="year" tickFormatter={abbrevYear(w)} interval="preserveStartEnd" />
           <YAxis {...yAxisBase} width={58} tickFormatter={(v: number) => fmtUSD(v)} />
           <Tooltip {...tooltipStyle} formatter={((v: number, n: string) => [fmtUSD(v), n === 'cogs' ? 'COGS' : 'Gross profit']) as never} labelFormatter={(l) => `FY ${l}`} />
           <Legend {...legendProps} formatter={(v: string) => (v === 'cogs' ? 'COGS' : 'Gross profit')} />
@@ -95,19 +100,23 @@ const MarginStackChart: React.FC<{ data: TrendsResult; mobile: boolean }> = ({ d
           <Bar dataKey="cogs" stackId="s" fill={c.peer} maxBarSize={26} name="cogs" />
           <Bar dataKey="gross_profit" stackId="s" fill={c.brand} maxBarSize={26} name="gross_profit" radius={[3, 3, 0, 0]} />
         </BarChart>
-      </ResponsiveContainer>
+        )}
+      </ResponsiveChart>
     </ChartFigure>
   </Panel>
-);
+  );
+};
 
 // ── #6 Revenue vs Net Income (dual axis) ────────────────────────────────────
-const RevenueProfitChart: React.FC<{ data: TrendsResult; mobile: boolean }> = ({ data, mobile }) => (
+const RevenueProfitChart: React.FC<{ data: TrendsResult }> = ({ data }) => {
+  return (
   <Panel title="Revenue vs Net income" subtitle="dual axis">
     <ChartFigure description={data.descriptions?.revenue_vs_income}>
-      <ResponsiveContainer width="100%" height={220}>
+      <ResponsiveChart height={220}>
+        {(w) => (
         <ComposedChart data={data.points} margin={{ top: 6, right: 8, left: 4, bottom: 0 }}>
           <CartesianGrid {...gridProps} />
-          <XAxis {...xAxisProps} dataKey="year" interval={tickInterval(data.points.length, mobile)} />
+          <XAxis {...xAxisProps} dataKey="year" tickFormatter={abbrevYear(w)} interval="preserveStartEnd" />
           <YAxis {...yAxisBase} yAxisId="rev" width={54} tickFormatter={(v: number) => fmtUSD(v)} />
           <YAxis {...yAxisBase} yAxisId="ni" orientation="right" width={54} tickFormatter={(v: number) => fmtUSD(v)} />
           <Tooltip {...tooltipStyle} formatter={((v: number, n: string) => [fmtUSD(v), n === 'revenue' ? 'Revenue' : 'Net income']) as never} labelFormatter={(l) => `FY ${l}`} />
@@ -119,10 +128,12 @@ const RevenueProfitChart: React.FC<{ data: TrendsResult; mobile: boolean }> = ({
           <Line yAxisId="rev" type="monotone" dataKey="revenue" stroke={c.brand} strokeWidth={2} dot={false} connectNulls name="revenue" isAnimationActive={false} />
           <Line yAxisId="ni" type="monotone" dataKey="net_income" stroke={seriesB.fill} strokeWidth={2} strokeDasharray={seriesB.dash} dot={false} connectNulls name="net_income" isAnimationActive={false} />
         </ComposedChart>
-      </ResponsiveContainer>
+        )}
+      </ResponsiveChart>
     </ChartFigure>
   </Panel>
-);
+  );
+};
 
 // ── #2 Quarterly breakdown (latest FY) ──────────────────────────────────────
 const QUARTER_METRICS = [
@@ -144,7 +155,8 @@ const QuarterlyChart: React.FC<{ data: QuarterlyResult }> = ({ data }) => {
         </select>
       </div>
       <ChartFigure description={desc}>
-        <ResponsiveContainer width="100%" height={200}>
+        <ResponsiveChart height={200}>
+          {() => (
           <BarChart data={data.points} margin={{ top: 6, right: 12, left: 4, bottom: 0 }}>
             <CartesianGrid {...gridProps} />
             <XAxis {...xAxisProps} dataKey="quarter" />
@@ -153,7 +165,8 @@ const QuarterlyChart: React.FC<{ data: QuarterlyResult }> = ({ data }) => {
             <ReferenceLine y={0} stroke={c.border} />
             <Bar dataKey={metric} fill={c.brand} maxBarSize={40} radius={[3, 3, 0, 0]} name={def.label} />
           </BarChart>
-        </ResponsiveContainer>
+          )}
+        </ResponsiveChart>
       </ChartFigure>
     </Panel>
   );
@@ -217,7 +230,8 @@ const DistributionChart: React.FC<{ ticker: string }> = ({ ticker }) => {
       {!loading && err && <div style={{ height: 200, display: 'flex', alignItems: 'center', justifyContent: 'center', color: c.textMuted, fontSize: 12, textAlign: 'center' }}>No {def.label.toLowerCase()} distribution for {ticker}.</div>}
       {!loading && !err && data && (
         <ChartFigure description={data.description}>
-          <ResponsiveContainer width="100%" height={220}>
+          <ResponsiveChart height={220}>
+            {() => (
             <ComposedChart data={curve} margin={{ top: 6, right: 12, left: 4, bottom: 0 }}>
               <CartesianGrid {...gridProps} />
               <XAxis {...xAxisProps} type="number" dataKey="x" domain={domain} tickFormatter={(v: number) => (data.unit === 'usd' ? fmtUSD(v) : `${Math.round(v)}%`)} />
@@ -231,7 +245,8 @@ const DistributionChart: React.FC<{ ticker: string }> = ({ ticker }) => {
                 {anomalyPts.map((_, i) => <Cell key={i} fill={c.warnFg} />)}
               </Scatter>
             </ComposedChart>
-          </ResponsiveContainer>
+            )}
+          </ResponsiveChart>
         </ChartFigure>
       )}
     </Panel>
@@ -258,7 +273,8 @@ const ReturnsChart: React.FC<{ returns: PeriodReturns }> = ({ returns }) => {
   return (
     <Panel title="Trailing price return" subtitle="vs close 1M / 3M / 6M / 1Y ago">
       <div role="img" aria-label={ariaLabel}>
-      <ResponsiveContainer width="100%" height={200}>
+      <ResponsiveChart height={200}>
+        {() => (
         <BarChart data={rows} margin={{ top: 14, right: 12, left: 4, bottom: 0 }}>
           <CartesianGrid {...gridProps} />
           <XAxis {...xAxisProps} dataKey="label" />
@@ -270,7 +286,8 @@ const ReturnsChart: React.FC<{ returns: PeriodReturns }> = ({ returns }) => {
             {rows.map((r, i) => <Cell key={i} fill={r.value == null ? c.peer : r.value >= 0 ? c.pos : c.neg} />)}
           </Bar>
         </BarChart>
-      </ResponsiveContainer>
+        )}
+      </ResponsiveChart>
       </div>
       <div style={{ display: 'flex', gap: 14, marginTop: 8, flexWrap: 'wrap' }}>
         {rows.map(r => (
@@ -337,24 +354,42 @@ const TrendsPanel: React.FC<{ ticker: string }> = ({ ticker }) => {
     );
   }
 
+  // The six single-company views. On mobile these become a swipeable carousel
+  // (one chart per view) instead of a tall vertical stack; desktop keeps the
+  // responsive grid. Each entry carries a label used by the carousel's live
+  // region + position readout.
+  const slides: CarouselSlide[] = [
+    { key: 'metric', label: 'Metric over time', node: <TrendChart data={trends} /> },
+    { key: 'revprofit', label: 'Revenue vs Net income', node: <RevenueProfitChart data={trends} /> },
+    { key: 'cost', label: 'Cost structure', node: <MarginStackChart data={trends} /> },
+    {
+      key: 'quarterly', label: 'Quarterly breakdown',
+      node: quarterly
+        ? <QuarterlyChart data={quarterly} />
+        : <Panel title="Quarterly breakdown"><div style={{ height: 200, display: 'flex', alignItems: 'center', justifyContent: 'center', color: c.textMuted, fontSize: 12, textAlign: 'center' }}>No quarterly data available for {ticker}.{quarterlyErr ? '' : ''}</div></Panel>,
+    },
+    { key: 'distribution', label: 'Distribution', node: <DistributionChart ticker={ticker} /> },
+    {
+      key: 'returns', label: 'Trailing price return',
+      node: returns
+        ? <ReturnsChart returns={returns} />
+        : <Panel title="Trailing price return"><div style={{ height: 200, display: 'flex', alignItems: 'center', justifyContent: 'center', color: c.textMuted, fontSize: 12 }}>No market data for {ticker}.</div></Panel>,
+    },
+  ];
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12, fontFamily: FF }}>
       <p style={{ fontSize: 12, color: c.textMuted, margin: 0, lineHeight: 1.6 }}>
         Multi-year charts for <strong style={{ color: c.text }}>{trends.ticker}</strong>, from the full tag-merged
         filing history. Fiscal-year labels use each filing's period-end date.
       </p>
-      <div style={{ display: 'grid', gridTemplateColumns: gridCols(isMobile, 360), gap: 12 }}>
-        <TrendChart data={trends} mobile={isMobile} />
-        <RevenueProfitChart data={trends} mobile={isMobile} />
-        <MarginStackChart data={trends} mobile={isMobile} />
-        {quarterly
-          ? <QuarterlyChart data={quarterly} />
-          : <Panel title="Quarterly breakdown"><div style={{ height: 200, display: 'flex', alignItems: 'center', justifyContent: 'center', color: c.textMuted, fontSize: 12, textAlign: 'center' }}>No quarterly data available for {ticker}.{quarterlyErr ? '' : ''}</div></Panel>}
-        <DistributionChart ticker={ticker} />
-        {returns
-          ? <ReturnsChart returns={returns} />
-          : <Panel title="Trailing price return"><div style={{ height: 200, display: 'flex', alignItems: 'center', justifyContent: 'center', color: c.textMuted, fontSize: 12 }}>No market data for {ticker}.</div></Panel>}
-      </div>
+      {isMobile ? (
+        <ChartCarousel slides={slides} label={`${trends.ticker} trend charts`} />
+      ) : (
+        <div style={{ display: 'grid', gridTemplateColumns: gridCols(isMobile, 360), gap: 12 }}>
+          {slides.map(s => <React.Fragment key={s.key}>{s.node}</React.Fragment>)}
+        </div>
+      )}
     </div>
   );
 };
