@@ -5,6 +5,7 @@ import {
 } from 'recharts';
 import { TrendingUp, TrendingDown, Minus, AlertTriangle } from 'lucide-react';
 import { c, font } from '../theme';
+import { fmtUSD } from '../utils/format';
 import { ForecastResult, ForecastMetric } from '../services/gemini';
 import { ChartFigure } from './ChartDescription';
 
@@ -23,14 +24,7 @@ const METRIC_LABELS: Record<string, string> = {
 // throwing a TypeError mid-render and white-screening the whole page.
 const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
 
-// Revenue arrives as raw USD (not millions), so scale generically.
-const fmtUSD = (v: number): string => {
-  const a = Math.abs(v);
-  if (a >= 1e12) return `$${(v / 1e12).toFixed(2)}T`;
-  if (a >= 1e9) return `$${(v / 1e9).toFixed(2)}B`;
-  if (a >= 1e6) return `$${(v / 1e6).toFixed(1)}M`;
-  return `$${Math.round(v).toLocaleString()}`;
-};
+// Revenue arrives as raw USD (not millions); fmtUSD (shared) scales it to $T/B/M.
 const fmtVal = (v: unknown, unit: 'usd' | 'pct'): string =>
   !isNum(v) ? '—' : unit === 'usd' ? fmtUSD(v) : `${v.toFixed(1)}%`;
 

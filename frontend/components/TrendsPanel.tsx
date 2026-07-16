@@ -6,6 +6,8 @@ import {
 } from 'recharts';
 import { Loader2, AlertCircle, TrendingUp, TrendingDown } from 'lucide-react';
 import { c, font, seriesB } from '../theme';
+import { fmtUSD, fmtPct } from '../utils/format';
+import { gridFaint, xAxisBase, yAxisBase, tooltipStyle, legendProps } from '../utils/chart';
 import {
   fetchTrends, fetchQuarterly, fetchDistribution, fetchReturns,
   TrendsResult, QuarterlyResult, DistributionResult, PeriodReturns,
@@ -20,26 +22,11 @@ import { ChartFigure } from './ChartDescription';
 
 const FF = font.ui;
 
-// --- formatting (raw USD, not millions) -------------------------------------
-const fmtUSD = (v: number | null | undefined): string => {
-  if (v == null) return '—';
-  const a = Math.abs(v);
-  if (a >= 1e12) return `$${(v / 1e12).toFixed(2)}T`;
-  if (a >= 1e9) return `$${(v / 1e9).toFixed(2)}B`;
-  if (a >= 1e6) return `$${(v / 1e6).toFixed(1)}M`;
-  return `$${Math.round(v).toLocaleString()}`;
-};
-const fmtPct = (v: number | null | undefined): string => (v == null ? '—' : `${v.toFixed(1)}%`);
-
-// --- shared chart props ------------------------------------------------------
-const gridProps = { stroke: c.borderFaint, strokeDasharray: '3 3' as const, vertical: false };
-const xAxisProps = { tick: { fontSize: 11, fill: c.textFaint }, tickLine: false, axisLine: { stroke: c.border } };
-const yAxisBase = { tick: { fontSize: 11, fill: c.textFaint }, tickLine: false, axisLine: false as const };
-const tooltipStyle = {
-  contentStyle: { fontSize: 12, borderRadius: 8, border: `0.5px solid ${c.border}`, fontFamily: FF, background: c.bg },
-  cursor: { fill: c.surface },
-};
-const legendProps = { iconType: 'circle' as const, iconSize: 8, wrapperStyle: { fontSize: 12, fontFamily: FF } };
+// Formatting (fmtUSD raw-dollars, fmtPct) and the tooltip / legend / axis look
+// all come from the shared modules. Trends uses the faint gridline; alias the
+// shared primitives to the local names the charts below already reference.
+const gridProps = gridFaint;
+const xAxisProps = xAxisBase;
 
 const Panel: React.FC<{ title: string; subtitle?: string; children: React.ReactNode }> = ({ title, subtitle, children }) => (
   <div style={{ background: c.bg, border: `0.5px solid ${c.border}`, borderRadius: 10, padding: '14px 16px' }}>

@@ -11,6 +11,7 @@ import {
 } from '../services/gemini';
 import { c, font, seriesA, seriesB } from '../theme';
 import { fmtM, fmtPct, fmtRatio } from '../utils/format';
+import { gridSolid, xAxisBase, yAxisBase, tooltipStyle, legendProps as legendBase } from '../utils/chart';
 import ForecastPanel from './ForecastPanel';
 import TrendsPanel from './TrendsPanel';
 
@@ -138,32 +139,10 @@ const COL_A = seriesA.fill;
 const COL_B = seriesB.fill;
 const DASH_B = seriesB.dash;
 
-const xAxisProps = {
-  dataKey: 'year' as const,
-  tick: { fontSize: 11, fill: c.textFaint },
-  tickLine: false,
-  axisLine: { stroke: c.border },
-};
-
-const yAxisBase = {
-  tick: { fontSize: 11, fill: c.textFaint },
-  tickLine: false,
-  axisLine: false as const,
-};
-
-const gridProps = {
-  stroke: c.border,
-  strokeDasharray: '3 3' as const,
-  vertical: false,
-};
-
-const tooltipStyle = {
-  contentStyle: {
-    fontSize: 12, borderRadius: 8, border: `0.5px solid ${c.border}`,
-    fontFamily: FF, background: c.bg,
-  },
-  cursor: { fill: c.surface },
-};
+// Axis / grid / tooltip look come from the shared primitives (utils/chart). The
+// comparison charts key their X axis on the fiscal year and use the solid grid.
+const xAxisProps = { ...xAxisBase, dataKey: 'year' as const };
+const gridProps = gridSolid;
 
 // Each panel: uppercase title, the chart (wrapped role="img" + aria-label so a
 // screen reader announces the computed trend, not an unlabeled SVG), then the
@@ -188,13 +167,9 @@ const ChartPanel: React.FC<{ title: string; description?: string; children: Reac
 const CompareCharts: React.FC<{ data: CompareMetricsResult }> = ({ data }) => {
   const { a: ta, b: tb } = data.tickers;
 
-  const legendFmt = (val: string) => val === 'a' ? ta : tb;
-  const legendProps = {
-    formatter: legendFmt,
-    iconType: 'circle' as const,
-    iconSize: 8,
-    wrapperStyle: { fontSize: 12, fontFamily: FF },
-  };
+  // Shared legend look + a per-pair formatter mapping the a/b series keys to
+  // the two tickers.
+  const legendProps = { ...legendBase, formatter: (val: string) => (val === 'a' ? ta : tb) };
 
   const mkTooltip = (fmt: (v: number | null) => string) => ({
     ...tooltipStyle,
