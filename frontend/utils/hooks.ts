@@ -113,21 +113,30 @@ export function useOnClickOutside(
 }
 
 // ---------------------------------------------------------------------------
-// Minimal client-side router — two URL shapes only, everything else falls
-// through to the existing useState-driven view switching in App.tsx.
+// Minimal client-side router. Ticker-bearing URLs (/company/:t, /compare/:a/:p)
+// are real, shareable, deep-linkable routes; the top-level screens
+// (dashboard/documents/chat/analysis/help/settings) are still useState-driven
+// views in App.tsx (they are NOT URL-addressable — see the nav audit).
+//
 // No history library: pushState + a popstate listener cover back/forward and
-// shareable URLs for exactly the two routes this app needs. Both server.js
-// (production, behind Cloud Run) and Vite's dev server already fall back to
-// index.html for unknown paths, so a hard refresh on /compare/AAPL/DELL loads
-// the SPA shell and this hook parses the URL client-side from there.
+// shareable URLs. Both server.js (production, behind Cloud Run) and Vite's dev
+// server fall back to index.html for unknown paths, so a hard refresh on
+// /compare/AAPL/DELL loads the SPA shell and this hook parses the URL from there.
+//
+// `home` is exactly "/" (the app root); anything else that isn't a company /
+// compare URL is `notfound`, so a mistyped or stale deep link renders a real
+// 404 page instead of silently showing the dashboard.
 // ---------------------------------------------------------------------------
 
 export type Route =
+  | { name: 'home' }
   | { name: 'company'; ticker: string }
   | { name: 'compare'; anchor: string; peer: string }
-  | { name: 'other' };
+  | { name: 'notfound'; path: string };
 
 function parseRoute(pathname: string): Route {
+  if (pathname === '/' || pathname === '') return { name: 'home' };
+
   const company = pathname.match(/^\/company\/([^/]+)\/?$/);
   if (company) return { name: 'company', ticker: decodeURIComponent(company[1]) };
 
@@ -140,7 +149,7 @@ function parseRoute(pathname: string): Route {
     };
   }
 
-  return { name: 'other' };
+  return { name: 'notfound', path: pathname };
 }
 
 export function useRoute(): { route: Route; navigate: (path: string) => void } {

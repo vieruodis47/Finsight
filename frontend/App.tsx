@@ -13,6 +13,8 @@ import DocumentManager from './components/DocumentManager';
 import ChatInterface from './components/ChatInterface';
 import AnalysisView from './components/AnalysisView';
 import CompareView from './components/CompareView';
+import SettingsView from './components/SettingsView';
+import NotFound from './components/NotFound';
 import ErrorBoundary from './components/ErrorBoundary';
 import PeerPicker from './components/PeerPicker';
 import SplashScreen from './components/SplashScreen';
@@ -40,6 +42,7 @@ const TOPBAR_SUBTITLES: Record<ViewState, string> = {
   chat:      'Ask questions across your loaded filings',
   analysis:  'Metrics, charts, and peer comparisons',
   help: 'Tips for getting the best answers from FinSight',
+  settings: 'Workspace preferences',
 };
 
 const FF = font.ui;
@@ -123,15 +126,15 @@ const App: React.FC = () => {
     navigate(`/compare/${encodeURIComponent(anchor)}/${encodeURIComponent(peer)}`);
   };
 
-  // Switch to a top-level nav view. On a /compare route this MUST also leave the
-  // route: the page-content switch below renders CompareView whenever
-  // route.name === 'compare', taking precedence over currentView — so setting
-  // currentView alone would change state that never renders (the sidebar would
-  // look dead). navigate('/') clears the compare route so renderView() runs.
-  // Not needed on /company routes: those don't override currentView.
+  // Switch to a top-level nav view. Top-level views render only at the app root
+  // ("/"). If we're on any other URL — /compare and /notfound take precedence
+  // over renderView(), and /company puts a ticker in the URL — navigate back to
+  // "/" so the selected view actually renders AND the URL reflects it. Without
+  // this, clicking a sidebar item from the compare view or a 404 would silently
+  // do nothing (the route still wins).
   const selectView = (view: ViewState) => {
     setCurrentView(view);
-    if (route.name === 'compare') navigate('/');
+    if (route.name !== 'home') navigate('/');
   };
 
   const [hoveredCompany, setHoveredCompany] = useState<string | null>(null);
@@ -386,8 +389,9 @@ const App: React.FC = () => {
   // a fresh session. /company populates the dashboard via the fetchMetrics
   // effect above (free XBRL read, no embed); /compare fetches directly by
   // ticker (compare-metrics/market work for any SEC ticker). Neither should be
-  // swallowed by the empty-documents gate.
-  if (documents.length === 0 && route.name === 'other') {
+  // swallowed by the empty-documents gate. `notfound` falls through to the app
+  // shell below, which renders the 404 page (with nav still available).
+  if (documents.length === 0 && route.name === 'home') {
     return <GettingStarted onAddCompany={handleAddCompany} />;
   }
 
@@ -398,6 +402,7 @@ const App: React.FC = () => {
       case 'chat':      return <ChatInterface documents={documents} />;
       case 'analysis':  return <AnalysisView documents={documents} />;
       case 'help':      return <HelpView />;
+      case 'settings':  return <SettingsView />;
       default:          return <Dashboard documents={documents} selectedTicker={selectedTicker} />;
     }
   };
@@ -407,13 +412,31 @@ const App: React.FC = () => {
   // shows only on a company dashboard with a selection — never on the compare
   // view itself.
   const isCompareRoute = route.name === 'compare';
+  const isNotFound = route.name === 'notfound';
+  const settingsLabel = 'Settings';
   const topbarTitle = isCompareRoute
     ? 'Compare'
+    : isNotFound
+    ? 'Not found'
+    : currentView === 'settings'
+    ? settingsLabel
     : (NAV_ITEMS.find(n => n.view === currentView)?.label ?? 'Dashboard');
   const topbarSubtitle = isCompareRoute
     ? `${route.anchor.toUpperCase()} vs ${route.peer.toUpperCase()}`
+    : isNotFound
+    ? 'This page could not be found'
     : TOPBAR_SUBTITLES[currentView];
-  const showCompareCta = !isCompareRoute && currentView === 'dashboard' && !!selectedTicker;
+  // The compare CTA belongs only on a company dashboard with a selection — never
+  // on the compare view itself or a 404.
+  const showCompareCta = !isCompareRoute && !isNotFound && currentView === 'dashboard' && !!selectedTicker;
+
+  // Which sidebar item is visually highlighted, derived from the ACTUAL route so
+  // it stays correct on direct URL entry and browser back/forward — not just on
+  // click. /compare highlights its parent section (Dashboard); a 404 highlights
+  // nothing. `aria-current="page"` is set only on a genuine current page (a
+  // top-level view), never on the parent-highlight for compare or on a 404.
+  const activeView: ViewState | null = isNotFound ? null : isCompareRoute ? 'dashboard' : currentView;
+  const currentPageView: ViewState | null = isCompareRoute || isNotFound ? null : currentView;
 
   // The sidebar is an in-flow rail on tablet/desktop and a fixed off-canvas
   // drawer on mobile. Same markup, different framing.
@@ -509,12 +532,13 @@ const App: React.FC = () => {
           )}
 
           {NAV_ITEMS.map(({ view, label, icon }) => {
-            const active = currentView === view;
+            const active = activeView === view;
             return (
               <button
                 key={view}
                 onClick={() => selectView(view)}
                 title={collapsed ? label : undefined}
+                aria-current={currentPageView === view ? 'page' : undefined}
                 style={{
                   display: 'flex', alignItems: 'center', gap: 9,
                   padding: isMobile ? '10px 12px' : '7px 10px', minHeight: isMobile ? 44 : undefined,
@@ -550,7 +574,11 @@ const App: React.FC = () => {
             </p>
           )}
           {companies.map(({ key, label }) => {
-            const active = key === selectedTicker && currentView === 'dashboard';
+            // A company is "current" only on its own /company dashboard, never on
+            // a 404. On /compare the anchor stays visually selected (you compare
+            // from it) but is not the current page for aria purposes.
+            const active = key === selectedTicker && activeView === 'dashboard';
+            const isCurrentPage = active && route.name === 'company';
             const hovered = hoveredCompany === key;
             return (
               <div
@@ -562,6 +590,7 @@ const App: React.FC = () => {
                 <button
                   onClick={() => navigateToCompany(key)}
                   title={collapsed ? label : undefined}
+                  aria-current={isCurrentPage ? 'page' : undefined}
                   style={{
                     display: 'flex', alignItems: 'center', gap: 9, padding: isMobile ? '10px 12px' : '7px 10px', minHeight: isMobile ? 44 : undefined, borderRadius: 6,
                     fontSize: isMobile ? 14 : 12, fontWeight: active ? 500 : 400,
@@ -608,15 +637,22 @@ const App: React.FC = () => {
 
         {/* Settings */}
         <div style={{ padding: 8, borderTop: `0.5px solid ${c.border}`, flexShrink: 0 }}>
-          <button
-            title="Settings"
-            style={{ display: 'flex', alignItems: 'center', gap: 9, padding: isMobile ? '10px 12px' : '7px 10px', minHeight: isMobile ? 44 : undefined, borderRadius: 6, fontSize: isMobile ? 14 : 13, color: c.textMuted, background: 'transparent', border: 'none', cursor: 'pointer', width: '100%', textAlign: 'left', whiteSpace: 'nowrap', fontFamily: FF }}
-            onMouseEnter={e => { e.currentTarget.style.background = c.hover; e.currentTarget.style.color = c.text; }}
-            onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = c.textMuted; }}
-          >
-            <span style={{ flexShrink: 0, minWidth: 17, display: 'flex' }}><Settings size={17} /></span>
-            {!collapsed && <span>Settings</span>}
-          </button>
+          {(() => {
+            const active = activeView === 'settings';
+            return (
+              <button
+                onClick={() => selectView('settings')}
+                title={collapsed ? 'Settings' : undefined}
+                aria-current={currentPageView === 'settings' ? 'page' : undefined}
+                style={{ display: 'flex', alignItems: 'center', gap: 9, padding: isMobile ? '10px 12px' : '7px 10px', minHeight: isMobile ? 44 : undefined, borderRadius: 6, fontSize: isMobile ? 14 : 13, fontWeight: active ? 500 : 400, color: active ? c.brand : c.textMuted, background: active ? c.brandTint : 'transparent', boxShadow: active ? `inset 2px 0 0 ${c.brand}` : 'none', border: 'none', cursor: 'pointer', width: '100%', textAlign: 'left', whiteSpace: 'nowrap', fontFamily: FF }}
+                onMouseEnter={e => { if (!active) { e.currentTarget.style.background = c.hover; e.currentTarget.style.color = c.text; } }}
+                onMouseLeave={e => { if (!active) { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = c.textMuted; } }}
+              >
+                <span style={{ flexShrink: 0, minWidth: 17, display: 'flex' }}><Settings size={17} /></span>
+                {!collapsed && <span>Settings</span>}
+              </button>
+            );
+          })()}
         </div>
       </aside>
 
@@ -685,16 +721,6 @@ const App: React.FC = () => {
                 />
               </div>
             )}
-            {/* System status — NOT a directional financial signal, so the text
-                uses steel-blue (brand) rather than green. The live dot stays
-                green purely as an indicator. Hidden on mobile to save header
-                width (the drawer is the primary chrome there). */}
-            {!isMobile && (
-              <span style={{ fontSize: 11, fontWeight: 500, padding: '3px 10px', borderRadius: 10, background: c.posSurface, color: c.brand, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-                <span style={{ width: 6, height: 6, borderRadius: '50%', background: c.pos, display: 'inline-block' }} />
-                API connected
-              </span>
-            )}
           </div>
         </header>
 
@@ -706,7 +732,7 @@ const App: React.FC = () => {
         <div style={{ flex: 1, overflow: 'hidden' }}>
           <ErrorBoundary
             label={isCompareRoute ? 'the comparison' : (currentView === 'analysis' ? 'the analysis' : 'this view')}
-            resetKey={isCompareRoute ? `compare:${route.anchor}:${route.peer}` : `view:${currentView}`}
+            resetKey={isCompareRoute ? `compare:${route.anchor}:${route.peer}` : isNotFound ? `notfound:${route.path}` : `view:${currentView}`}
           >
             {route.name === 'compare'
               ? <CompareView
@@ -716,6 +742,8 @@ const App: React.FC = () => {
                   onBack={() => navigateToCompany(route.anchor)}
                   onSelectPeer={p => navigateToCompare(route.anchor, p)}
                 />
+              : route.name === 'notfound'
+              ? <NotFound path={route.path} onHome={() => navigate('/')} />
               : renderView()}
           </ErrorBoundary>
         </div>

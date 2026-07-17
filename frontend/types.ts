@@ -108,4 +108,4 @@ export interface CompanyMetrics {
 }
 
 
-export type ViewState = 'dashboard' | 'documents' | 'chat' | 'analysis' | 'help';
+export type ViewState = 'dashboard' | 'documents' | 'chat' | 'analysis' | 'help' | 'settings';
