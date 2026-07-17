@@ -171,7 +171,6 @@ const ChartPanel: React.FC<{ title: string; description?: string; children: Reac
 
 const CompareCharts: React.FC<{ data: CompareMetricsResult }> = ({ data }) => {
   const { a: ta, b: tb } = data.tickers;
-  const isMobile = useIsMobile();
 
   // Shared legend look + a per-pair formatter mapping the a/b series keys to
   // the two tickers.
@@ -359,30 +358,11 @@ const CompareCharts: React.FC<{ data: CompareMetricsResult }> = ({ data }) => {
     </p>
   );
 
-  if (isMobile) {
-    return (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-        {intro}
-        <ChartCarousel slides={slides} label={`${ta} vs ${tb} comparison charts`} />
-      </div>
-    );
-  }
-
-  // Desktop: the original row layout (2 | 3 | 2 | 2), pulling nodes from `slides`.
-  const rows: { cols: number; idx: number[] }[] = [
-    { cols: 340, idx: [0, 1] },
-    { cols: 300, idx: [2, 3, 4] },
-    { cols: 340, idx: [5, 6] },
-    { cols: 340, idx: [7, 8] },
-  ];
+  // Responsive carousel at every width: 3-up ≥1200px, 2-up ≥768px, 1-up below.
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       {intro}
-      {rows.map((r, ri) => (
-        <div key={ri} style={{ display: 'grid', gridTemplateColumns: gridCols(isMobile, r.cols), gap: 12 }}>
-          {r.idx.map(i => <React.Fragment key={slides[i].key}>{slides[i].node}</React.Fragment>)}
-        </div>
-      ))}
+      <ChartCarousel slides={slides} label={`${ta} vs ${tb} comparison charts`} />
     </div>
   );
 };

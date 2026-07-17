@@ -6,8 +6,7 @@ import {
 import { Loader2, AlertCircle, TrendingUp, TrendingDown } from 'lucide-react';
 import { c, font, seriesB } from '../theme';
 import { fmtUSD, fmtPct } from '../utils/format';
-import { gridFaint, gridCols, abbrevYear, xAxisBase, yAxisBase, tooltipStyle, legendProps } from '../utils/chart';
-import { useIsMobile } from '../utils/hooks';
+import { gridFaint, abbrevYear, xAxisBase, yAxisBase, tooltipStyle, legendProps } from '../utils/chart';
 import {
   fetchTrends, fetchQuarterly, fetchDistribution, fetchReturns,
   TrendsResult, QuarterlyResult, DistributionResult, PeriodReturns,
@@ -308,7 +307,6 @@ const ReturnsChart: React.FC<{ returns: PeriodReturns }> = ({ returns }) => {
 
 // ── Container: fetch once, lay the six charts out in a responsive grid ───────
 const TrendsPanel: React.FC<{ ticker: string }> = ({ ticker }) => {
-  const isMobile = useIsMobile();
   const [trends, setTrends] = useState<TrendsResult | null>(null);
   const [quarterly, setQuarterly] = useState<QuarterlyResult | null>(null);
   const [returns, setReturns] = useState<PeriodReturns | null>(null);
@@ -383,13 +381,8 @@ const TrendsPanel: React.FC<{ ticker: string }> = ({ ticker }) => {
         Multi-year charts for <strong style={{ color: c.text }}>{trends.ticker}</strong>, from the full tag-merged
         filing history. Fiscal-year labels use each filing's period-end date.
       </p>
-      {isMobile ? (
-        <ChartCarousel slides={slides} label={`${trends.ticker} trend charts`} />
-      ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: gridCols(isMobile, 360), gap: 12 }}>
-          {slides.map(s => <React.Fragment key={s.key}>{s.node}</React.Fragment>)}
-        </div>
-      )}
+      {/* Responsive carousel at every width: 3-up ≥1200px, 2-up ≥768px, 1-up below. */}
+      <ChartCarousel slides={slides} label={`${trends.ticker} trend charts`} />
     </div>
   );
 };

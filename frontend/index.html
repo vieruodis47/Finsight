@@ -15,6 +15,10 @@
       /* Keyboard-only focus ring for the sidebar logo home link (sapphire brand). */
       .logo-home { outline: none; }
       .logo-home:focus-visible { outline: 2px solid #2563EB; outline-offset: 2px; }
+      /* Chart carousel: keyboard-only focus ring (arrow keys navigate when the
+         carousel region has focus). No ring on mouse focus. */
+      .chart-carousel { outline: none; }
+      .chart-carousel:focus-visible { outline: 2px solid #2563EB; outline-offset: 4px; border-radius: 8px; }
       /* App shell: full dynamic-viewport height. 100dvh accounts for the iOS
          Safari address bar (100vh does not, and would clip the FinChat
          composer). The 100vh line is a fallback for engines without dvh. */

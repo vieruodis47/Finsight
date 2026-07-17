@@ -6,8 +6,7 @@ import {
 import { TrendingUp, TrendingDown, Minus, AlertTriangle } from 'lucide-react';
 import { c, font } from '../theme';
 import { fmtUSD } from '../utils/format';
-import { gridCols, abbrevYear } from '../utils/chart';
-import { useIsMobile } from '../utils/hooks';
+import { abbrevYear } from '../utils/chart';
 import { ForecastResult, ForecastMetric } from '../services/gemini';
 import { ChartFigure } from './ChartDescription';
 import { ResponsiveChart } from './ResponsiveChart';
@@ -186,7 +185,6 @@ const MetricForecast: React.FC<{ m: ForecastMetric }> = ({ m }) => {
 };
 
 const ForecastPanel: React.FC<{ data: ForecastResult }> = ({ data }) => {
-  const isMobile = useIsMobile();
   // Guard the top-level shape too: a malformed response (metrics missing/not an
   // array) shows an empty state instead of throwing on `.map`.
   const metrics = Array.isArray(data?.metrics) ? data.metrics : [];
@@ -212,12 +210,9 @@ const ForecastPanel: React.FC<{ data: ForecastResult }> = ({ data }) => {
             No forecastable metrics were returned for {ticker || 'this company'}.
           </p>
         </div>
-      ) : isMobile ? (
-        <ChartCarousel slides={slides} label={`${ticker} forecast charts`} />
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: gridCols(isMobile, 320), gap: 12 }}>
-          {slides.map(s => <React.Fragment key={s.key}>{s.node}</React.Fragment>)}
-        </div>
+        // Responsive carousel at every width: 3-up ≥1200px, 2-up ≥768px, 1-up below.
+        <ChartCarousel slides={slides} label={`${ticker} forecast charts`} />
       )}
     </div>
   );
