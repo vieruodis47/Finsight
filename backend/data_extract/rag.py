@@ -15,11 +15,13 @@ Mount in app.py:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
-from typing import Literal, Optional
+from typing import Iterator, Literal, Optional
 
 from fastapi import APIRouter
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from google.genai import types
 
@@ -92,6 +94,27 @@ def generate_answer(question: str, chunks: list[FilingChunk]) -> str:
         ),
     )
     return (resp.text or "").strip()
+
+
+def generate_stream(system: str, prompt: str, temperature: float) -> Iterator[str]:
+    """
+    Stream a Gemini generation token-by-token. Yields text deltas as they arrive
+    (google-genai generate_content_stream). Used by the /chat/stream endpoint so
+    the browser renders words as they're produced rather than waiting for the
+    whole answer. Raising propagates to the endpoint, which emits an error event.
+    """
+    client = get_genai_client()
+    for chunk in client.models.generate_content_stream(
+        model=GEN_MODEL,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            system_instruction=system,
+            temperature=temperature,
+        ),
+    ):
+        delta = getattr(chunk, "text", None)
+        if delta:
+            yield delta
 
 
 def answer_question(
@@ -174,6 +197,88 @@ def chat(req: ChatRequest) -> ChatResponse:
         for c in chunks
     ]
     return ChatResponse(answer=answer, sources=sources, retrieval_path=path)
+
+
+# --- Streaming chat --------------------------------------------------------
+# Real end-to-end token streaming. Transport: newline-delimited JSON (NDJSON)
+# over a chunked HTTP response. The request is a POST with a body, which rules
+# out native EventSource/SSE (GET only); the client reads the response body as a
+# stream and parses one JSON event per line:
+#   {"type": "token", "text": "..."}                        -- an answer delta
+#   {"type": "done",  "sources": [...], "retrieval_path": "..."}  -- final meta
+#   {"type": "error", "message": "..."}                     -- mid-stream failure
+#
+# Retrieval (keyword routing + graph/vector lookup) runs FIRST — the client shows
+# the "retrieving" bird until the first token event — then generation streams.
+
+def _chat_event_stream(
+    question: str,
+    k: int,
+    ticker: Optional[str],
+    tickers: Optional[list[str]],
+    form: Optional[str],
+) -> Iterator[str]:
+    def _line(obj: dict) -> str:
+        return json.dumps(obj, ensure_ascii=False) + "\n"
+
+    # --- Pre-generation: route + retrieve (the "bird" phase) -----------------
+    try:
+        from backend.graph.router import prepare_chat_stream
+        segments, chunks, path = prepare_chat_stream(
+            question, k=k, ticker=ticker, tickers=tickers, form=form
+        )
+    except Exception as exc:
+        logger.warning("Stream router error, falling back to pure vector: %s", exc)
+        try:
+            chunks = search(question, k=k, ticker=ticker, tickers=tickers, form=form)
+        except Exception:
+            chunks = []
+        if chunks:
+            prompt = f"Context:\n{_format_context(chunks)}\n\nQuestion:\n{question}"
+            segments = [{"kind": "llm", "system": SYSTEM_PROMPT, "prompt": prompt, "temperature": 0.2}]
+            path = "vector"
+        else:
+            segments = [{"kind": "text", "text": NO_CONTEXT_MESSAGE}]
+            chunks = []
+            path = "none"
+
+    sources = [
+        {"ticker": c.ticker, "form": c.form, "chunk_index": c.chunk_index, "source": c.source}
+        for c in chunks
+    ]
+
+    # --- Generation: stream each segment -------------------------------------
+    try:
+        for seg in segments:
+            if seg["kind"] == "text":
+                if seg["text"]:
+                    yield _line({"type": "token", "text": seg["text"]})
+            else:
+                for delta in generate_stream(seg["system"], seg["prompt"], seg["temperature"]):
+                    if delta:
+                        yield _line({"type": "token", "text": delta})
+        yield _line({"type": "done", "sources": sources, "retrieval_path": path})
+    except Exception as exc:
+        # Mid-stream failure: emit an error event. The client keeps whatever
+        # partial text already arrived (it never blanks the bubble).
+        logger.warning("Stream generation error: %s", exc)
+        yield _line({"type": "error", "message": "The response was interrupted. Please try again."})
+
+
+@router.post("/chat/stream")
+def chat_stream(req: ChatRequest) -> StreamingResponse:
+    ticker = req.ticker.strip().upper() if req.ticker else None
+    stream = _chat_event_stream(req.question, req.k, ticker, req.tickers, req.form)
+    return StreamingResponse(
+        stream,
+        media_type="application/x-ndjson",
+        headers={
+            # Defeat any intermediary buffering (nginx / Cloud Run) so chunks
+            # reach the browser incrementally.
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 # --- Summary & comparison (generation over provided text, no retrieval) -----

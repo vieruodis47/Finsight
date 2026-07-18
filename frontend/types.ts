@@ -87,6 +87,8 @@ export interface ChatMessage {
   timestamp: Date;
   sources?: ChatSource[];         // filings that grounded an assistant answer
   retrievalPath?: 'graph' | 'vector' | 'both' | 'none' | 'vector_no_graph'; // which path answered
+  streaming?: boolean;            // assistant reply is still streaming in
+  error?: boolean;                // stream errored mid-flight (partial text kept)
 }
 
 export interface StockDataPoint {

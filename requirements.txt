@@ -16,6 +16,11 @@ pandas
 # Statistical forecasting for the Analysis "Forecast" endpoint
 # (backend/analysis/stats.py: scipy.stats + denoised weighted linear trend).
 scipy
+# Server-side Analysis PDF export (backend/data_extract/report_pdf.py): renders
+# the charts + deterministic descriptions + forecast as a VECTOR, print-ready PDF
+# via matplotlib's PDF backend. MUST be present in BOTH this file AND the image
+# (Dockerfile.python installs from here) or the Cloud Run build/import breaks.
+matplotlib>=3.8,<4
 # Graph / GraphRAG layer (backend/graph/)
 rdflib>=7.6.0
 pyparsing>=3.1.0

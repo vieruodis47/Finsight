@@ -932,22 +932,27 @@ _GRAPH_SYSTEM = (
 )
 
 
-def _answer_from_graph(question: str) -> tuple[str, bool]:
+def _graph_prompt(question: str) -> tuple[Optional[str], str]:
     """
-    Run SPARQL against the in-memory graph and generate a grounded NL answer.
-    Returns (answer, had_data). No embedding calls.
-    """
-    from ..data_extract.embeddings import get_genai_client
-    from google.genai import types as genai_types
+    Retrieval-only graph preparation (NO LLM call, no embeddings).
 
+    Runs SPARQL against the in-memory graph and builds the generation prompt plus
+    the deterministic tail (data-gap / period-end notes + source line) that is
+    appended verbatim AFTER the model's answer. Split out from _answer_from_graph
+    so the streaming path can do this retrieval work up front (the "bird" phase)
+    and then stream the generation.
+
+    Returns (prompt, tail): prompt is None when the graph has no usable data for
+    the question (caller falls back to vector). `tail` is templated text — never
+    LLM-generated — so phrasing is identical across calls for the same gap.
+    """
     g = _get_graph()
     if len(g) == 0:
-        return "", False
+        return None, ""
 
     known = _graph_tickers()
-
     if not known:
-        return "", False
+        return None, ""
 
     # Pass the known-ticker set so single-letter tickers (e.g. F for Ford) are
     # matched only when they are actually registered in the graph.
@@ -962,7 +967,7 @@ def _answer_from_graph(question: str) -> tuple[str, bool]:
     # proceed with all companies (available=[]) and let SPARQL return all rows.
     if raw_tickers and not available:
         logger.info("Graph missing tickers %s (have %s) — falling back", raw_tickers, known)
-        return "", False
+        return None, ""
 
     metric = _detect_metric(question)
     sparql = _build_sparql(question, available)
@@ -970,11 +975,11 @@ def _answer_from_graph(question: str) -> tuple[str, bool]:
         rows = run_sparql(g, sparql)
     except Exception as exc:
         logger.warning("SPARQL failed: %s", exc)
-        return "", False
+        return None, ""
 
     if not rows:
         logger.info("SPARQL returned 0 rows for: %s", question[:80])
-        return "", False
+        return None, ""
 
     table = results_to_markdown(rows)
 
@@ -994,8 +999,6 @@ def _answer_from_graph(question: str) -> tuple[str, bool]:
     # Period-end disclosure: only when FY-end months differ across compared companies
     period_note = _period_end_note(tickers_with_data, queried_year)
 
-    gen_model = os.getenv("GEMINI_GEN_MODEL", "gemini-3.1-flash-lite")
-
     # Schema annotations go BEFORE the table so the model understands column
     # semantics before it reads the data rows, and the question lands at the end.
     schema_parts = []
@@ -1012,6 +1015,30 @@ def _answer_from_graph(question: str) -> tuple[str, bool]:
         f"{table}\n\n"
         f"Question: {question}"
     )
+
+    tail = ""
+    if partial_note:
+        tail += f"\n\n{partial_note}"
+    if period_note:
+        tail += f"\n\n{period_note}"
+    tail += "\n\n_Source: structured financial data · SEC EDGAR XBRL metrics_"
+    return prompt, tail
+
+
+def _answer_from_graph(question: str) -> tuple[str, bool]:
+    """
+    Run SPARQL against the in-memory graph and generate a grounded NL answer.
+    Returns (answer, had_data). No embedding calls. Used by the non-streaming
+    /chat path; the streaming path uses _graph_prompt + streaming generation.
+    """
+    from ..data_extract.embeddings import get_genai_client
+    from google.genai import types as genai_types
+
+    prompt, tail = _graph_prompt(question)
+    if prompt is None:
+        return "", False
+
+    gen_model = os.getenv("GEMINI_GEN_MODEL", "gemini-3.1-flash-lite")
     try:
         client = get_genai_client()
         resp = client.models.generate_content(
@@ -1025,15 +1052,8 @@ def _answer_from_graph(question: str) -> tuple[str, bool]:
         text = (resp.text or "").strip()
         if not text:
             return "", False
-        # Append deterministic structured notes after the LLM answer.
-        # These are always templated — never LLM-generated — so the phrasing
-        # is identical across repeated calls for the same structural gap.
-        if partial_note:
-            text += f"\n\n{partial_note}"
-        if period_note:
-            text += f"\n\n{period_note}"
-        text += "\n\n_Source: structured financial data · SEC EDGAR XBRL metrics_"
-        return text, True
+        # Deterministic templated tail appended verbatim after the LLM answer.
+        return text + tail, True
     except Exception as exc:
         logger.warning("Graph LLM call failed: %s", exc)
         return "", False
@@ -1187,3 +1207,150 @@ def route_question(
         return vec_ans, chunks, "vector"
 
     return NO_CONTEXT_MESSAGE, [], "none"
+
+
+# Quota messages, shared by route_question (non-streaming) and prepare_chat_stream.
+_QUOTA_MSG_TXT = (
+    "The daily embedding quota is exhausted — vector search is unavailable until "
+    "midnight UTC. Try a metrics or comparison question; those use the structured "
+    "data graph and have no embedding quota."
+)
+_PER_MINUTE_QUOTA_MSG_TXT = (
+    "The per-minute embedding rate limit was hit — vector search is temporarily "
+    "unavailable. Please try again in about 60 seconds, or rephrase as a metrics "
+    "question (e.g. 'Apple gross margin FY2024') to use the structured data graph "
+    "instead (zero embedding calls)."
+)
+
+
+def prepare_chat_stream(
+    question: str,
+    k: int = 5,
+    ticker: Optional[str] = None,
+    tickers: Optional[list[str]] = None,
+    form: Optional[str] = None,
+) -> tuple[list[dict], list, str]:
+    """
+    Streaming counterpart to route_question. Does ONLY the pre-generation work
+    (classification + retrieval), then returns an ordered list of `segments` to
+    emit, the source chunks, and the retrieval path.
+
+    Each segment is one of:
+      {"kind": "llm",  "system": str, "prompt": str, "temperature": float}
+          -> the caller streams generate_content_stream token-by-token
+      {"kind": "text", "text": str}
+          -> emitted verbatim (deterministic headers / notes / "no context")
+
+    Splitting retrieval from generation is what makes real streaming possible:
+    the router's keyword classification + graph/vector retrieval run first (the
+    "bird" phase, nothing to stream yet), then the model output streams. The
+    graph/both deterministic tails and merge headers are plain `text` segments,
+    so the streamed answer is byte-for-byte the same shape as the non-streaming
+    /chat answer.
+    """
+    from ..data_extract.rag import (
+        search, _format_context, SYSTEM_PROMPT, NO_CONTEXT_MESSAGE,
+    )
+
+    def _llm(system: str, prompt: str, temp: float) -> dict:
+        return {"kind": "llm", "system": system, "prompt": prompt, "temperature": temp}
+
+    def _text(text: str) -> dict:
+        return {"kind": "text", "text": text}
+
+    # --- Vector scope resolution (identical precedence to route_question) ------
+    known = _graph_tickers()
+    mentioned = [t for t in _extract_tickers(question, known_tickers=known) if t in known]
+    explicit = [t.strip().upper() for t in (tickers or []) if t and t.strip()]
+    if explicit:
+        vector_scope: Optional[list[str]] = explicit
+    elif ticker:
+        vector_scope = [ticker.strip().upper()]
+    elif mentioned:
+        vector_scope = mentioned
+    else:
+        vector_scope = None
+
+    path = classify_question(question)
+    logger.info("Router(stream): path=%s | %s", path, question[:80])
+
+    def _vector_prep_raw() -> tuple[Optional[str], list, Optional[str]]:
+        """Retrieve chunks + build the prompt. Returns (prompt, chunks, err_text)."""
+        try:
+            chunks = search(question, k=k, tickers=vector_scope, form=form)
+        except DailyQuotaExceededError:
+            return None, [], _QUOTA_MSG_TXT
+        except PerMinuteQuotaError:
+            return None, [], _PER_MINUTE_QUOTA_MSG_TXT
+        if not chunks:
+            return None, [], None
+        prompt = f"Context:\n{_format_context(chunks)}\n\nQuestion:\n{question}"
+        return prompt, chunks, None
+
+    def _vector_segments() -> tuple[list[dict], list, str]:
+        prompt, chunks, err = _vector_prep_raw()
+        if err:
+            return [_text(err)], [], "none"
+        if prompt is None:
+            return [_text(NO_CONTEXT_MESSAGE)], [], "none"
+        return [_llm(SYSTEM_PROMPT, prompt, 0.2)], chunks, "vector"
+
+    if path == "vector":
+        return _vector_segments()
+
+    if path == "graph":
+        gprompt, gtail = _graph_prompt(question)
+        if gprompt is not None:
+            segs = [_llm(_GRAPH_SYSTEM, gprompt, 0.1)]
+            if gtail:
+                segs.append(_text(gtail))
+            return segs, [], "graph"
+        segs, chunks, vpath = _vector_segments()
+        return segs, chunks, ("vector_no_graph" if vpath == "vector" else vpath)
+
+    # path == "both": retrieve both halves concurrently (the bird phase), then
+    # stream graph generation followed by vector generation.
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        fut_graph = pool.submit(_graph_prompt, question)
+        fut_vector = pool.submit(_vector_prep_raw)
+        gprompt, gtail = fut_graph.result()
+        vprompt, chunks, verr = fut_vector.result()
+
+    had_graph = gprompt is not None
+
+    if had_graph and chunks:
+        # Coverage-qualified filing-text header (mirrors route_question's "both").
+        text_header = "**From SEC filing text:**"
+        if vector_scope:
+            requested = list(dict.fromkeys(vector_scope))
+            covered = {c.ticker.upper() for c in chunks}
+            if len(covered) < len(requested):
+                shown = [t for t in requested if t in covered]
+                names = (
+                    f"{shown[0]} only" if len(shown) == 1
+                    else f"{', '.join(shown[:-1])} and {shown[-1]} only"
+                )
+                text_header = f"**From SEC filing text ({names}):**"
+        segs = [
+            _text("**From structured financial data (XBRL metrics):**\n\n"),
+            _llm(_GRAPH_SYSTEM, gprompt, 0.1),
+        ]
+        if gtail:
+            segs.append(_text(gtail))
+        segs.append(_text(f"\n\n---\n\n{text_header}\n\n"))
+        segs.append(_llm(SYSTEM_PROMPT, vprompt, 0.2))
+        return segs, chunks, "both"
+
+    if had_graph:
+        segs = [_llm(_GRAPH_SYSTEM, gprompt, 0.1)]
+        if gtail:
+            segs.append(_text(gtail))
+        return segs, [], "graph"
+
+    if chunks:
+        return [_llm(SYSTEM_PROMPT, vprompt, 0.2)], chunks, "vector"
+
+    if verr:
+        return [_text(verr)], [], "none"
+
+    return [_text(NO_CONTEXT_MESSAGE)], [], "none"

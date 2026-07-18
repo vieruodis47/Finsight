@@ -3,11 +3,11 @@ import {
   BarChart, Bar, LineChart, Line, XAxis, YAxis, Tooltip, Legend,
   CartesianGrid, ReferenceLine,
 } from 'recharts';
-import { FileText, GitCompare, TrendingUp, BarChart3, Download, Loader2, AlertCircle, AlertTriangle } from 'lucide-react';
+import { FileText, GitCompare, TrendingUp, BarChart3, Download, FileDown, Loader2, AlertCircle, AlertTriangle } from 'lucide-react';
 import { Document } from '../types';
 import {
   generateSummary, compareDocuments, fetchCompareMetrics, CompareMetricsResult,
-  fetchForecast, ForecastResult,
+  fetchForecast, ForecastResult, exportAnalysisReport,
 } from '../services/gemini';
 import { c, font, seriesA, seriesB } from '../theme';
 import { fmtM, fmtPct, fmtRatio } from '../utils/format';
@@ -367,6 +367,52 @@ const CompareCharts: React.FC<{ data: CompareMetricsResult }> = ({ data }) => {
   );
 };
 
+// ── PDF export ────────────────────────────────────────────────────────────
+// Server-composed, vector, print-ready PDF (charts + the SAME deterministic
+// descriptions shown here + forecast values/CI/R²). Shows progress and surfaces
+// a clear error instead of a silent no-op.
+const ExportPdfButton: React.FC<{ ticker: string }> = ({ ticker }) => {
+  const [exporting, setExporting] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const run = async () => {
+    setErr(null);
+    setExporting(true);
+    try {
+      await exportAnalysisReport(ticker);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Export failed.');
+    } finally {
+      setExporting(false);
+    }
+  };
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-start' }}>
+      <button
+        onClick={run}
+        disabled={exporting}
+        aria-label={`Export ${ticker} analysis as PDF`}
+        style={{
+          display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 14px', borderRadius: 7,
+          fontSize: 13, fontWeight: 500, whiteSpace: 'nowrap', fontFamily: FF,
+          background: exporting ? c.surfaceAlt : c.bg, color: exporting ? c.textMuted : c.brand,
+          border: `0.5px solid ${c.border}`, cursor: exporting ? 'default' : 'pointer',
+        }}
+        onMouseEnter={e => { if (!exporting) e.currentTarget.style.background = c.surface; }}
+        onMouseLeave={e => { if (!exporting) e.currentTarget.style.background = c.bg; }}
+      >
+        {exporting
+          ? <><Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> Preparing PDF…</>
+          : <><FileDown size={14} /> Export PDF</>}
+      </button>
+      {err && (
+        <span role="alert" style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12, color: c.neg }}>
+          <AlertCircle size={12} style={{ flexShrink: 0 }} /> {err}
+        </span>
+      )}
+    </div>
+  );
+};
+
 // ── Main component ────────────────────────────────────────────────────────
 
 const AnalysisView: React.FC<AnalysisViewProps> = ({ documents }) => {
@@ -578,6 +624,10 @@ const AnalysisView: React.FC<AnalysisViewProps> = ({ documents }) => {
                   : <><TrendingUp size={14} /> Forecast</>
                 }
               </button>
+              {(() => {
+                const doc = documents.find(d => d.id === forecastDocId);
+                return doc?.ticker ? <ExportPdfButton ticker={doc.ticker} /> : null;
+              })()}
             </div>
           </div>
 
@@ -590,18 +640,26 @@ const AnalysisView: React.FC<AnalysisViewProps> = ({ documents }) => {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
           <div style={{ background: c.bg, border: `0.5px solid ${c.border}`, borderRadius: 10, padding: '16px 18px' }}>
             <label style={labelStyle}>Chart a company's multi-year financials</label>
-            <select
-              style={selectStyle}
-              value={trendsDocId}
-              onChange={e => setTrendsDocId(e.target.value)}
-              onFocus={e => (e.target.style.borderColor = c.brand)}
-              onBlur={e  => (e.target.style.borderColor = c.border)}
-            >
-              <option value="">— Select a filing —</option>
-              {documents.filter(d => d.ticker).map(d => (
-                <option key={d.id} value={d.id}>{d.name}{d.sector ? ` — ${d.sector}` : ''}</option>
-              ))}
-            </select>
+            <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+              <select
+                style={{ ...selectStyle, flex: 1, minWidth: 220 }}
+                value={trendsDocId}
+                onChange={e => setTrendsDocId(e.target.value)}
+                onFocus={e => (e.target.style.borderColor = c.brand)}
+                onBlur={e  => (e.target.style.borderColor = c.border)}
+              >
+                <option value="">— Select a filing —</option>
+                {documents.filter(d => d.ticker).map(d => (
+                  <option key={d.id} value={d.id}>{d.name}{d.sector ? ` — ${d.sector}` : ''}</option>
+                ))}
+              </select>
+              {(() => {
+                const doc = documents.find(d => d.id === trendsDocId);
+                // The PDF is the full single-company report (trends + forecast),
+                // built server-side from the same numbers/descriptions on screen.
+                return doc?.ticker ? <ExportPdfButton ticker={doc.ticker} /> : null;
+              })()}
+            </div>
           </div>
 
           {(() => {

@@ -19,6 +19,11 @@
          carousel region has focus). No ring on mouse focus. */
       .chart-carousel { outline: none; }
       .chart-carousel:focus-visible { outline: 2px solid #2563EB; outline-offset: 4px; border-radius: 8px; }
+      /* FinChat streaming caret — a thin blinking bar trailing the tokens as
+         they arrive. Colour is set inline (theme brand); motion is disabled
+         under prefers-reduced-motion (falls back to a steady bar). */
+      .stream-caret { display: inline-block; width: 2px; height: 1em; margin-left: 2px; vertical-align: text-bottom; border-radius: 1px; animation: stream-blink 1s steps(2, start) infinite; }
+      @keyframes stream-blink { to { visibility: hidden; } }
       /* App shell: full dynamic-viewport height. 100dvh accounts for the iOS
          Safari address bar (100vh does not, and would clip the FinChat
          composer). The 100vh line is a fallback for engines without dvh. */
@@ -59,6 +64,8 @@
         /* Static bird (mid-track) + label; no fly, no flap. */
         .finch-fly { animation: none; transform: translate(56px, 0); opacity: 1; }
         .finch-wing--l, .finch-wing--r { animation: none; transform: none; }
+        /* Steady (non-blinking) streaming caret. */
+        .stream-caret { animation: none; }
       }
     </style>
 </head>

@@ -41,6 +41,126 @@ export async function askFinSight(question: string, opts: AskOptions = {}): Prom
   };
 }
 
+export interface ChatStreamHandlers {
+  // Called with each incremental text delta as it arrives.
+  onToken: (delta: string) => void;
+  // Called once when the stream completes, carrying the source badges + path.
+  onDone: (meta: { sources: ChatSource[]; retrievalPath?: ChatResult['retrievalPath'] }) => void;
+  // Called on a mid-stream failure; any text already delivered via onToken stays.
+  onError: (message: string) => void;
+}
+
+// Real token streaming over /api/chat/stream. The response is NDJSON: one JSON
+// event per line ({type:"token"|"done"|"error"}). We read the body as a stream
+// and dispatch events as they arrive — no waiting for the full response. The
+// gateway forwards this route unbuffered (see backend/services/pyProxy.js).
+export async function askFinSightStream(
+  question: string,
+  opts: AskOptions,
+  handlers: ChatStreamHandlers,
+  signal?: AbortSignal,
+): Promise<void> {
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}/api/chat/stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/x-ndjson' },
+      body: JSON.stringify({ question, ...opts }),
+      signal,
+    });
+  } catch (e) {
+    handlers.onError(e instanceof Error ? e.message : 'Network error');
+    return;
+  }
+
+  if (!res.ok || !res.body) {
+    const msg = await res.text().catch(() => res.statusText);
+    handlers.onError(`Chat failed (${res.status}): ${msg}`);
+    return;
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let erroredOrDone = false;
+
+  const handleLine = (line: string) => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    let evt: { type: string; text?: string; sources?: ChatSource[]; retrieval_path?: string; message?: string };
+    try {
+      evt = JSON.parse(trimmed);
+    } catch {
+      return; // ignore a malformed/partial line
+    }
+    if (evt.type === 'token' && evt.text) {
+      handlers.onToken(evt.text);
+    } else if (evt.type === 'done') {
+      erroredOrDone = true;
+      handlers.onDone({
+        sources: evt.sources ?? [],
+        retrievalPath: evt.retrieval_path as ChatResult['retrievalPath'],
+      });
+    } else if (evt.type === 'error') {
+      erroredOrDone = true;
+      handlers.onError(evt.message ?? 'The response was interrupted.');
+    }
+  };
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      // NDJSON: process every complete line, keep the trailing partial in buffer.
+      let nl: number;
+      while ((nl = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, nl);
+        buffer = buffer.slice(nl + 1);
+        handleLine(line);
+      }
+    }
+    // Flush any trailing line without a newline.
+    if (buffer.trim()) handleLine(buffer);
+  } catch (e) {
+    // The connection dropped mid-stream. Surface an error unless we already
+    // saw a done/error event; partial text delivered so far is preserved.
+    if (!erroredOrDone) {
+      handlers.onError(e instanceof Error ? e.message : 'The connection was lost.');
+    }
+    return;
+  }
+
+  // The stream ended without a `done` or `error` event. A well-formed response
+  // always terminates with one of those, so reaching here means the connection
+  // was truncated mid-flight (e.g. the backend dropped). Surface it as an error;
+  // any partial text already delivered via onToken is preserved by the caller.
+  if (!erroredOrDone) {
+    handlers.onError('The connection closed before the response finished.');
+  }
+}
+
+// Download the server-composed Analysis PDF (charts + deterministic descriptions
+// + forecast) for a ticker. Fetches the blob and triggers a browser download.
+// Throws with the backend's detail message on failure so the caller can surface it.
+export async function exportAnalysisReport(ticker: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/analysis/report/${encodeURIComponent(ticker)}`);
+  if (!res.ok) {
+    let detail = res.statusText;
+    try { const j = await res.json(); detail = j.detail || detail; } catch { /* non-JSON error body */ }
+    throw new Error(`Export failed (${res.status}): ${detail}`);
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `FinSight_${ticker.toUpperCase()}_Analysis.pdf`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 export async function generateSummary(content: string): Promise<string> {
   const res = await fetch(`${API_BASE}/api/summary`, {
     method: 'POST',

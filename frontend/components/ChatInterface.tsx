@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, Bot, User } from 'lucide-react';
+import { Send, Bot, User, AlertTriangle } from 'lucide-react';
 import { Document, ChatMessage } from '../types';
-import { askFinSight } from '../services/gemini';
+import { askFinSightStream } from '../services/gemini';
 import { c, font } from '../theme';
 import { companyLabel } from '../utils/company';
 import { useIsMobile } from '../utils/hooks';
@@ -166,6 +166,10 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ documents }) => {
   const [selectedDocIds, setSelectedDocIds] = useState<string[]>([]);
   const [inputFocused, setInputFocused]     = useState(false);
   const [hoveredChip, setHoveredChip]       = useState<number | null>(null);
+  // A11y: the streaming bubble is NOT a live region (that would announce every
+  // token). Instead we push the COMPLETED answer here once, so a screen reader
+  // announces the finished reply a single time.
+  const [announcement, setAnnouncement]     = useState('');
 
   const scrollRef   = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -229,35 +233,73 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ documents }) => {
     };
 
     setMessages(prev => [...prev, userMsg]);
+    // Bird = pre-generation phase (keyword routing + graph/vector retrieval).
+    // It stays up until the FIRST token arrives, then we swap to streaming text.
     setIsLoading(true);
 
-    try {
-      const selected = documents.filter(d => selectedDocIds.includes(d.id));
-      const tickers  = Array.from(new Set(selected.map(d => d.ticker).filter((t): t is string => Boolean(t))));
-      const forms    = Array.from(new Set(selected.map(d => d.form).filter((f): f is '10-K' => Boolean(f))));
-      const ticker   = tickers.length === 1 ? tickers[0] : undefined;
-      const form     = forms.length   === 1 ? forms[0]   : undefined;
+    const assistantId = `a-${Date.now()}`;
+    let started = false;   // has the assistant bubble been inserted yet?
+    let acc = '';          // accumulated streamed text
 
-      const { answer, sources, retrievalPath } = await askFinSight(text, { ticker, form, k: 6 });
-
-      setMessages(prev => [...prev, {
-        id: (Date.now() + 1).toString(),
-        role: 'assistant',
-        text: answer,
-        sources,
-        retrievalPath,
-        timestamp: new Date(),
-      }]);
-    } catch (err) {
-      setMessages(prev => [...prev, {
-        id: (Date.now() + 1).toString(),
-        role: 'assistant',
-        text: `Error: ${err instanceof Error ? err.message : 'Failed to get a response.'}`,
-        timestamp: new Date(),
-      }]);
-    } finally {
+    // Insert the (empty) streaming assistant bubble on the first token, hiding
+    // the bird. Guarded so it runs exactly once.
+    const ensureStarted = () => {
+      if (started) return;
+      started = true;
       setIsLoading(false);
-    }
+      setMessages(prev => [...prev, {
+        id: assistantId,
+        role: 'assistant',
+        text: '',
+        streaming: true,
+        timestamp: new Date(),
+      }]);
+    };
+
+    const patch = (updates: Partial<ChatMessage>) =>
+      setMessages(prev => prev.map(m => (m.id === assistantId ? { ...m, ...updates } : m)));
+
+    const selected = documents.filter(d => selectedDocIds.includes(d.id));
+    const tickers  = Array.from(new Set(selected.map(d => d.ticker).filter((t): t is string => Boolean(t))));
+    const forms    = Array.from(new Set(selected.map(d => d.form).filter((f): f is '10-K' => Boolean(f))));
+    const ticker   = tickers.length === 1 ? tickers[0] : undefined;
+    const form     = forms.length   === 1 ? forms[0]   : undefined;
+
+    await askFinSightStream(text, { ticker, form, k: 6 }, {
+      onToken: (delta) => {
+        ensureStarted();
+        acc += delta;
+        patch({ text: acc });
+      },
+      onDone: ({ sources, retrievalPath }) => {
+        ensureStarted();
+        patch({ text: acc, sources, retrievalPath, streaming: false });
+        // Announce the finished answer once (see `announcement` a11y note).
+        setAnnouncement(acc);
+      },
+      onError: (message) => {
+        if (!started) {
+          // Failed before any token — show a standalone error bubble.
+          started = true;
+          setIsLoading(false);
+          setMessages(prev => [...prev, {
+            id: assistantId,
+            role: 'assistant',
+            text: acc || `Error: ${message}`,
+            streaming: false,
+            error: true,
+            timestamp: new Date(),
+          }]);
+        } else {
+          // Mid-stream failure: keep the partial text, flag the error.
+          patch({ text: acc, streaming: false, error: true });
+        }
+      },
+    });
+
+    // Safety net: if the stream returned without ever starting (shouldn't
+    // happen — the backend always emits at least one text token), clear the bird.
+    if (!started) setIsLoading(false);
   };
 
   const handleSend = () => {
@@ -278,6 +320,16 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ documents }) => {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', background: c.bg, ...fs }}>
+
+      {/* Visually-hidden polite live region: announces each COMPLETED answer
+          once (not per token — that would spam assistive tech during streaming). */}
+      <div
+        aria-live="polite"
+        aria-atomic="true"
+        style={{ position: 'absolute', width: 1, height: 1, margin: -1, padding: 0, overflow: 'hidden', clip: 'rect(0 0 0 0)', whiteSpace: 'nowrap', border: 0 }}
+      >
+        {announcement}
+      </div>
 
       {/* ── Filter chips — relocated from the old inner Companies panel. Same
           selectedDocIds state/logic (empty selection = "All"); the duplicate
@@ -372,14 +424,28 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ documents }) => {
                       ...(isUser ? { whiteSpace: 'pre-wrap', fontFamily: font.ui } : {}),
                     }}
                   >
-                    {/* Answer body */}
+                    {/* Answer body. During streaming a blinking caret trails the
+                        text as tokens arrive. */}
                     {isUser
                       ? msg.text
-                      : renderChatMarkdown(msg.text)
+                      : <>
+                          {renderChatMarkdown(msg.text)}
+                          {msg.streaming && (
+                            <span className="stream-caret" aria-hidden="true" style={{ background: c.brand }} />
+                          )}
+                        </>
                     }
 
-                    {/* Source metadata — visually separated from answer body */}
-                    {!isUser && <AnswerMeta retrievalPath={msg.retrievalPath} sources={msg.sources} />}
+                    {/* Mid-stream failure — keep the partial text above, flag it. */}
+                    {!isUser && msg.error && (
+                      <p role="alert" style={{ display: 'flex', alignItems: 'center', gap: 6, margin: '8px 0 0', fontSize: 12, color: c.neg }}>
+                        <AlertTriangle size={13} style={{ flexShrink: 0 }} />
+                        The response was interrupted. Please try asking again.
+                      </p>
+                    )}
+
+                    {/* Source metadata — only once the answer has finished streaming. */}
+                    {!isUser && !msg.streaming && <AnswerMeta retrievalPath={msg.retrievalPath} sources={msg.sources} />}
 
                     {/* Timestamp */}
                     <p style={{ fontSize: 10, color: isUser ? c.textMuted : c.textFaint, margin: '6px 0 0', textAlign: isUser ? 'right' : 'left', fontFamily: font.ui }}>
