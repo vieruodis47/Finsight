@@ -35,7 +35,7 @@ from typing import Optional
 
 from rdflib import Graph
 
-from .rdf_graph import build_graph, run_sparql, results_to_markdown, MULTI_METRIC_QUERY
+from .rdf_graph import build_graph, run_sparql, results_to_markdown, MULTI_METRIC_QUERY, _metric_unit
 from ..data_extract.embeddings import DailyQuotaExceededError, PerMinuteQuotaError
 
 logger = logging.getLogger(__name__)
@@ -459,13 +459,17 @@ def classify_question(question: str) -> str:
     """
     Return one of: 'graph', 'vector', 'both'.
 
-    Decision logic:
-      - Direct factual lookup + metric + year     → graph (overrides narrative signal)
-      - Narrative trigger with no structure/year  → vector (or both if metric mentioned)
-      - Narrative + structured/year               → both
-      - Structured comparison or metric + year    → graph
-      - Metric alone (no narrative)               → graph
-      - No clear signal                           → vector (safer: prose fallback)
+    Decision logic (bias precise/numeric questions to the exact-fact GRAPH path;
+    keep VECTOR for open-ended/narrative). Rules, in order:
+      1. Direct factual lookup + metric ("what was Apple's net income")  → graph
+         (the year is NOT required, and this overrides an incidental narrative
+         keyword — the primary intent is the exact number).
+      2. Narrative/qualitative trigger → both (when it also needs figures) else
+         vector.
+      3. Direct factual lookup anchored to a year, no explicit metric word
+         ("what were Apple's numbers in 2024?")                          → graph
+      4. Structured comparison, or any metric mentioned                   → graph
+      5. No factual signal                                                → vector
     """
     has_metric        = bool(_METRIC_KW.search(question))
     has_structured    = bool(_STRUCTURED_KW.search(question))
@@ -473,28 +477,38 @@ def classify_question(question: str) -> str:
     has_year          = bool(_YEAR_RE.search(question))
     has_direct_lookup = bool(_DIRECT_METRIC_RE.search(question))
 
-    # A time-anchored direct metric question ("What was Apple's product revenue in
-    # FY2024?") should always go to graph even when a narrative keyword fires.
-    # Rationale: 'product', 'segment', 'international', etc. appear in _NARRATIVE_KW
-    # to catch MD&A questions, but they also appear in plain metric questions.
-    # The combination of direct-lookup phrasing + metric keyword + a specific year
-    # is an unambiguous signal for a structured data retrieval.
+    # 1a. Direct + metric + YEAR -> graph, overriding an incidental narrative
+    # keyword. Words like product/segment/international sit in _NARRATIVE_KW to
+    # catch MD&A questions but also appear in plain metric asks; a specific year
+    # plus direct-lookup phrasing is an unambiguous structured-data request
+    # ("What was Apple's product revenue in FY2024?").
     if has_direct_lookup and has_metric and has_year:
         return "graph"
 
+    # 1b. Direct + metric, and NOT narrative -> graph. A pure factual metric
+    # lookup with no qualitative ask ("What is Apple's net income?") wants the
+    # exact XBRL fact, not fuzzy text — no year required. When the question ALSO
+    # asks to describe/explain (narrative), it falls through to `both` below so
+    # the prose half isn't lost.
+    if has_direct_lookup and has_metric and not has_narrative:
+        return "graph"
+
+    # 2. Narrative/qualitative intent -> vector, or both when figures are also needed.
     if has_narrative:
-        if has_structured or has_year:
-            return "both"
-        if has_metric:
+        if has_structured or has_year or has_metric:
             return "both"
         return "vector"
 
-    if has_structured or (has_metric and has_year):
+    # 3. "What were Apple's numbers in 2024?" — direct lookup + a year but no named
+    # metric. Still a factual figures question: graph's multi-metric summary answers it.
+    if has_direct_lookup and has_year:
         return "graph"
 
-    if has_metric:
+    # 4. Structured comparison ("compare/highest/rank"), or any metric mentioned.
+    if has_structured or has_metric:
         return "graph"
 
+    # 5. No structured/numeric signal at all -> narrative fallback.
     return "vector"
 
 
@@ -923,13 +937,127 @@ def _partial_data_note(
 # Graph answer generation (ZERO embeddings)
 # ---------------------------------------------------------------------------
 
+# The graph value is authoritative and EXACT. The single biggest hallucination
+# seam on the graph path was the old prompt telling the model to rescale/reformat
+# numbers ("$391,000M = $391B") — i.e. do arithmetic on the figures. Instead we
+# now pre-format every value in the table with its correct unit/scale so the
+# model only has to COPY it verbatim, and the prompt forbids any recomputation,
+# any number not in the table, and any guessing when a figure is absent.
 _GRAPH_SYSTEM = (
-    "You are FinSight, an expert financial analyst. "
-    "Answer concisely and factually using ONLY the data table provided. "
-    "Cite specific numbers. Format percentages to one decimal place; "
-    "dollar amounts in millions as 'M' (e.g. $391,000M = $391B). "
-    "If data is missing from the table, say so explicitly."
+    "You are FinSight, a financial-data assistant. Answer the question using ONLY "
+    "the DATA TABLE provided — it is exact structured data extracted from SEC XBRL "
+    "filings, and every value is already shown with its correct unit and scale.\n"
+    "\n"
+    "Strict rules:\n"
+    "1. Use ONLY numbers that appear in the table. Copy each figure VERBATIM — the "
+    "exact digits, scale, and unit as written (e.g. write \"$391.04B\" if the table "
+    "says \"$391.04B\"). Do NOT recompute, re-scale, convert, or re-round any value.\n"
+    "2. Every number in your answer must be one that appears in the table. Never "
+    "introduce a figure from prior knowledge, memory, or estimation.\n"
+    "3. If the table does not contain a figure the question asks for, say exactly: "
+    "\"That figure is not disclosed in the available filings.\" Do NOT guess, "
+    "approximate, or fill the gap from general knowledge.\n"
+    "4. Fiscal-year labels (e.g. FY2024) are given in the table — use them as-is; "
+    "do not relabel or shift years.\n"
+    "5. Be concise and state the fiscal year for each figure you cite."
 )
+
+
+# --- Exact, verbatim-ready value formatting (Seam 3: grounded generation) ----
+# Values reach the model already formatted so it never has to do arithmetic.
+_MULTIMETRIC_COLUMN_UNIT = {
+    "revenue": "usd_millions", "netIncome": "usd_millions",
+    "netMargin": "percent", "operatingMargin": "percent", "roe": "percent",
+}
+
+
+def _column_unit(col: str, metric: Optional[str]) -> Optional[str]:
+    if col == "ticker":
+        return "ticker"
+    if col in ("fiscalYear", "fy", "year"):
+        return "year"
+    if col in _MULTIMETRIC_COLUMN_UNIT:
+        return _MULTIMETRIC_COLUMN_UNIT[col]
+    if col == "value" and metric:
+        return _metric_unit(metric)
+    return None
+
+
+def _fmt_cell(unit: Optional[str], v) -> str:
+    if v is None:
+        return "n/a"
+    if unit == "ticker":
+        return str(v)
+    if unit == "year":
+        return f"FY{str(v).split('.')[0]}"
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return str(v)
+    if unit == "usd_millions":
+        # Show both billions (friendly) and exact millions so the model can copy
+        # either verbatim; both are the graph's exact value, not a re-derivation.
+        return f"${x / 1000:,.2f}B (${x:,.0f}M)" if abs(x) >= 1000 else f"${x:,.1f}M"
+    if unit == "percent":
+        return f"{x:.2f}%"
+    if unit == "ratio":
+        return f"{x:.3f}"
+    if unit == "usd_per_share":
+        return f"${x:.2f}"
+    return str(v)
+
+
+def _format_graph_table(rows: list[dict], metric: Optional[str]) -> str:
+    """Markdown table with every metric value pre-formatted to its exact
+    unit/scale, so the model copies figures verbatim instead of rescaling them."""
+    if not rows:
+        return "_No results._"
+    cols = list(rows[0].keys())
+    units = {c: _column_unit(c, metric) for c in cols}
+    lines = [
+        "| " + " | ".join(cols) + " |",
+        "| " + " | ".join("---" for _ in cols) + " |",
+    ]
+    for r in rows:
+        lines.append("| " + " | ".join(_fmt_cell(units[c], r.get(c)) for c in cols) + " |")
+    return "\n".join(lines)
+
+
+# --- Numeric grounding check (Seam 3e) --------------------------------------
+# Extract "financial-looking" numbers (has a decimal, a $/%, or is large) and
+# ignore bare small integers and 4-digit years, which are labels not claims.
+_NUM_RE = re.compile(r"\$?\s?-?\d[\d,]*\.?\d*\s?%?")
+
+
+def _financial_numbers(text: str) -> set[str]:
+    out: set[str] = set()
+    for m in _NUM_RE.finditer(text or ""):
+        raw = m.group()
+        # Normalise first (incl. a trailing period from end-of-sentence, e.g.
+        # "FY2024." -> "2024") so the year/size filters below see a clean number.
+        core = raw.replace("$", "").replace("%", "").replace(",", "").replace(" ", "").strip("-").rstrip(".")
+        if not core or core == ".":
+            continue
+        # Skip 4-digit years (labels) and tiny bare integers (list markers, "one").
+        if re.fullmatch(r"(19|20)\d{2}", core):
+            continue
+        if "." not in core and "%" not in raw and "$" not in raw and len(core) < 3:
+            continue
+        out.add(core)
+    return out
+
+
+def _unsupported_numbers(answer: str, context: str) -> list[str]:
+    """Numbers asserted in `answer` that do not appear in `context`. Prefix
+    matching both ways tolerates a provided value being cited at coarser
+    precision (391 vs 391.04) but still catches an invented figure."""
+    ctx = _financial_numbers(context)
+    bad: list[str] = []
+    for n in _financial_numbers(answer):
+        if any(n == c or c.startswith(n) or n.startswith(c) for c in ctx):
+            continue
+        bad.append(n)
+    return bad
 
 
 def _graph_prompt(question: str) -> tuple[Optional[str], str]:
@@ -981,7 +1109,9 @@ def _graph_prompt(question: str) -> tuple[Optional[str], str]:
         logger.info("SPARQL returned 0 rows for: %s", question[:80])
         return None, ""
 
-    table = results_to_markdown(rows)
+    # Pre-format every value to its exact unit/scale so the model copies figures
+    # verbatim (no rescaling/rounding — the old $391,000M→$391B seam).
+    table = _format_graph_table(rows, metric)
 
     # Tickers present in SPARQL results (order-preserving dedup)
     tickers_with_data = list(dict.fromkeys(
@@ -999,20 +1129,16 @@ def _graph_prompt(question: str) -> tuple[Optional[str], str]:
     # Period-end disclosure: only when FY-end months differ across compared companies
     period_note = _period_end_note(tickers_with_data, queried_year)
 
-    # Schema annotations go BEFORE the table so the model understands column
-    # semantics before it reads the data rows, and the question lands at the end.
-    schema_parts = []
-    if metric and "value" in (rows[0] if rows else {}):
-        schema_parts.append(f"The 'value' column contains the metric: {metric}.")
-    schema_parts.append(
-        "Column naming: '_millions' suffix = USD millions, '_pct' suffix = percentage."
-    )
-    schema_note = " ".join(schema_parts)
+    # A short lead-in names the metric (for the single-'value'-column queries) so
+    # the model knows what the column is; values themselves are pre-formatted.
+    lead = ""
+    if metric and rows and "value" in rows[0]:
+        lead = f"The 'value' column is the metric: {metric}.\n\n"
 
     prompt = (
-        f"{schema_note}\n\n"
-        f"Structured financial data retrieved via SPARQL from an RDF graph of SEC filings:\n\n"
-        f"{table}\n\n"
+        "DATA TABLE — exact figures from SEC XBRL filings, each already shown with "
+        "its correct unit and scale. Use these values verbatim.\n\n"
+        f"{lead}{table}\n\n"
         f"Question: {question}"
     )
 
@@ -1039,19 +1165,42 @@ def _answer_from_graph(question: str) -> tuple[str, bool]:
         return "", False
 
     gen_model = os.getenv("GEMINI_GEN_MODEL", "gemini-3.1-flash-lite")
-    try:
+
+    def _generate(extra: str = "") -> str:
         client = get_genai_client()
         resp = client.models.generate_content(
             model=gen_model,
-            contents=prompt,
+            contents=prompt + extra,
             config=genai_types.GenerateContentConfig(
                 system_instruction=_GRAPH_SYSTEM,
                 temperature=0.1,
             ),
         )
-        text = (resp.text or "").strip()
+        return (resp.text or "").strip()
+
+    try:
+        text = _generate()
         if not text:
             return "", False
+        # Numeric grounding check (Seam 3e): every figure asserted must appear in
+        # the table. If one doesn't, the model invented/derived it — regenerate
+        # once with a pointed reminder; if it still can't ground, keep the answer
+        # but log the unsupported figures for visibility.
+        unsupported = _unsupported_numbers(text, prompt)
+        if unsupported:
+            logger.warning("Graph answer had unsupported numbers %s — regenerating once", unsupported)
+            retry = _generate(
+                "\n\nIMPORTANT: your previous answer used a number that is NOT in the "
+                "table. Use ONLY the exact figures shown above, copied verbatim; if a "
+                "figure is absent, say it is not disclosed in the available filings."
+            )
+            if retry and not _unsupported_numbers(retry, prompt):
+                text = retry
+            else:
+                still = _unsupported_numbers(retry or text, prompt)
+                logger.warning("Graph answer STILL unsupported after retry: %s", still)
+                if retry:
+                    text = retry
         # Deterministic templated tail appended verbatim after the LLM answer.
         return text + tail, True
     except Exception as exc:
@@ -1136,6 +1285,13 @@ def route_question(
             return _QUOTA_MSG, [], "none"
         except PerMinuteQuotaError:
             return _PER_MINUTE_QUOTA_MSG, [], "none"
+        except Exception as exc:
+            # Any other vector-infra failure (e.g. the vector store is
+            # unreachable) must degrade to an honest "not found" rather than
+            # crash the whole request — especially on the graph-miss fallback,
+            # where a factual question should end in "no data", not a 500.
+            logger.warning("Vector retrieval failed: %s", exc)
+            return NO_CONTEXT_MESSAGE, [], "none"
         if not chunks:
             return NO_CONTEXT_MESSAGE, [], "none"
         return ans, chunks, "vector"
@@ -1163,6 +1319,9 @@ def route_question(
             return _QUOTA_MSG, []
         except PerMinuteQuotaError:
             return _PER_MINUTE_QUOTA_MSG, []
+        except Exception as exc:
+            logger.warning("Vector retrieval failed (both path): %s", exc)
+            return "", []
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         fut_graph = pool.submit(_answer_from_graph, question)
@@ -1194,7 +1353,7 @@ def route_question(
                 )
                 text_header = f"**From SEC filing text ({names}):**"
         merged = (
-            f"**From structured financial data (XBRL metrics):**\n\n{graph_ans}"
+            f"**From structured financial data (XBRL metrics) — the authoritative exact figures:**\n\n{graph_ans}"
             f"\n\n---\n\n"
             f"{text_header}\n\n{vec_ans}"
         )
@@ -1282,6 +1441,11 @@ def prepare_chat_stream(
             return None, [], _QUOTA_MSG_TXT
         except PerMinuteQuotaError:
             return None, [], _PER_MINUTE_QUOTA_MSG_TXT
+        except Exception as exc:
+            # Vector store unreachable etc. — degrade to "no data" (None err ->
+            # NO_CONTEXT_MESSAGE) rather than crash the stream.
+            logger.warning("Vector retrieval failed (stream): %s", exc)
+            return None, [], None
         if not chunks:
             return None, [], None
         prompt = f"Context:\n{_format_context(chunks)}\n\nQuestion:\n{question}"
@@ -1332,7 +1496,7 @@ def prepare_chat_stream(
                 )
                 text_header = f"**From SEC filing text ({names}):**"
         segs = [
-            _text("**From structured financial data (XBRL metrics):**\n\n"),
+            _text("**From structured financial data (XBRL metrics) — the authoritative exact figures:**\n\n"),
             _llm(_GRAPH_SYSTEM, gprompt, 0.1),
         ]
         if gtail:
