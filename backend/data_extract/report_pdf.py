@@ -287,14 +287,21 @@ def build_report(ticker: str) -> bytes:
         fig.text(MARGIN_L, 0.83, ticker, fontsize=40, color=TEXT, fontweight="bold")
         fig.text(MARGIN_L, 0.795, coverage, fontsize=10, color=TEXT2)
         fig.text(MARGIN_L, 0.775, f"Generated {generated}", fontsize=9, color=FAINT)
-        # Cover carries the first two trend panels.
-        _panel(fig, 0.71, "Revenue", lambda ax: _draw_line(ax, points, years, "revenue", True), descs.get("revenue", ""))
-        _panel(fig, 0.40, "Revenue vs Net income", lambda ax: _draw_rev_vs_income(ax, points, years), descs.get("revenue_vs_income", ""))
+        # Cross-metric synthesis paragraph: what the margin cascade describes.
+        synthesis = descs.get("synthesis", "")
+        rev_top = 0.71
+        if synthesis:
+            fig.text(MARGIN_L, 0.745, "What these trends describe", fontsize=11, color=TEXT, fontweight="bold")
+            fig.text(MARGIN_L, 0.728, _wrap(synthesis), fontsize=8.6, color=TEXT2, va="top", linespacing=1.4)
+            rev_top = 0.60  # push the Revenue chart down to make room
+        # Cover carries the Revenue chart; Revenue-vs-Net-income moves to the trend pages.
+        _panel(fig, rev_top, "Revenue", lambda ax: _draw_line(ax, points, years, "revenue", True), descs.get("revenue", ""))
         _footer(fig, page)
         pdf.savefig(fig)
 
         # ---- Trend panels (2 per page) ------------------------------------
         panels = [
+            ("Revenue vs Net income", lambda ax: _draw_rev_vs_income(ax, points, years), descs.get("revenue_vs_income", "")),
             ("Net income", lambda ax: _draw_line(ax, points, years, "net_income", True), descs.get("net_income", "")),
             ("Cost structure — COGS + Gross profit", lambda ax: _draw_cost_structure(ax, points, years), descs.get("cost_structure", "")),
             ("Gross margin", lambda ax: _draw_line(ax, points, years, "gross_margin_pct", False), descs.get("gross_margin_pct", "")),

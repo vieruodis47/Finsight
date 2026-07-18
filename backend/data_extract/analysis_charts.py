@@ -34,6 +34,7 @@ from ..analysis.descriptions import (
     describe_series,
     describe_quarterly,
     describe_distribution,
+    describe_margin_cascade,
 )
 
 # Human labels for the surfaced metrics, shared by the trend descriptions.
@@ -145,6 +146,15 @@ def trends(ticker: str) -> dict:
         "cost_structure": describe_series(cogs_share, "pct", "COGS as a share of revenue"),
         "revenue_vs_income": describe_series(
             margin_series["net_margin_pct"], "pct", "Net margin (net income ÷ revenue)"
+        ),
+        # Cross-metric synthesis: the margin cascade (gross → operating → net) and
+        # what its gaps/divergence say about cost structure and operating leverage.
+        # Computed from the same margin series above, so prose matches the charts.
+        "synthesis": describe_margin_cascade(
+            margin_series["gross_margin_pct"],
+            margin_series["operating_margin_pct"],
+            margin_series["net_margin_pct"],
+            rev,
         ),
     }
 

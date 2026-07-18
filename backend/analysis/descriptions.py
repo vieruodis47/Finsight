@@ -107,6 +107,161 @@ def _fy(year_key: str) -> str:
     return str(year_key)[:4]
 
 
+# ── interpretive layer (backward-looking, operational — NOT advisory) ─────────
+#
+# These add an ANALYTICAL sentence to the statistical restatement: what the
+# level/trend of a metric indicates about operations, and how metrics relate.
+# The strict discipline (mirrors the rest of the file):
+#   * every figure is computed from the same series the chart plots;
+#   * the language describes what the FILINGS show (levels, cost structure,
+#     operating leverage) — it never opines on the company as an investment
+#     (no "well-positioned", "attractive", "should", buy/sell/valuation framing);
+#   * trend words stay neutral (rose/fell/widened/narrowed), consistent with the
+#     "not investment advice" line the whole module already holds to.
+
+
+def _metric_kind(label: str) -> str:
+    """Infer which metric a series is, from its human label, for interpretation."""
+    l = label.lower()
+    if "gross margin" in l:
+        return "gross_margin"
+    if "operating margin" in l:
+        return "operating_margin"
+    if "net margin" in l or "net income ÷" in l:
+        return "net_margin"
+    if "cogs" in l or "cost of revenue" in l or ("cost" in l and "share" in l):
+        return "cost_share"
+    if "net income" in l:
+        return "net_income"
+    if "revenue" in l:
+        return "revenue"
+    return "generic"
+
+
+def _revenue_shape(pairs: list) -> str:
+    """Acceleration/deceleration read: compare late-window vs early-window CAGR."""
+    ys = [v for _, v in pairs]
+    n = len(ys)
+    if n < 4 or ys[0] <= 0 or ys[-1] <= 0:
+        return ""
+    mid = n // 2
+
+    def _cagr(seg: list):
+        s = len(seg) - 1
+        if s < 1 or seg[0] <= 0 or seg[-1] <= 0:
+            return None
+        return (seg[-1] / seg[0]) ** (1 / s) - 1
+
+    ce, cl = _cagr(ys[: mid + 1]), _cagr(ys[mid:])
+    if ce is None or cl is None:
+        return ""
+    diff = cl - ce
+    if diff > 0.03:
+        shape = "accelerated"
+        tail = "a quickening pace of top-line expansion"
+    elif diff < -0.03:
+        shape = "decelerated"
+        tail = "a slowing pace of top-line expansion"
+    else:
+        shape = "was steady"
+        tail = "a consistent pace of top-line expansion"
+    return (
+        f" Growth {shape}: the later years compounded at ≈{cl * 100:.0f}% versus "
+        f"≈{ce * 100:.0f}% earlier in the window, indicating {tail}."
+    )
+
+
+# NOTE ON PRECISION: values that appear on the charts (margin levels, pt-moves)
+# are formatted at the SAME precision as the statistical line / chart axis (.1f
+# for pt-moves) so the prose can never disagree with the plot. Only DERIVED,
+# illustrative figures that aren't plotted directly (the $-per-$100 split, the
+# cascade gaps) are rounded and hedged with "about"/"roughly".
+
+def _gross_margin_interp(latest: float, pt_move: float) -> str:
+    cost = 100 - latest
+    if latest >= 50:
+        tier = "a level consistent with substantial pricing power or low relative input cost"
+    elif latest >= 30:
+        tier = "a level consistent with moderate pricing power alongside meaningful direct-cost intensity"
+    else:
+        tier = "a thin, cost-of-revenue-heavy level where direct product cost consumes most of each sales dollar"
+    s = (
+        f" At this level roughly ${cost:.0f} of every $100 of revenue goes to the direct cost of "
+        f"goods and about ${latest:.0f} remains as gross profit — {tier}."
+    )
+    if abs(pt_move) >= 2:
+        s += (
+            f" The {abs(pt_move):.1f}-pt {'widening' if pt_move > 0 else 'narrowing'} points to "
+            f"{'easing' if pt_move > 0 else 'rising'} direct-cost intensity or "
+            f"{'firmer' if pt_move > 0 else 'softer'} pricing over the window."
+        )
+    return s
+
+
+def _operating_margin_interp(latest: float, pt_move: float) -> str:
+    s = (
+        " Operating margin is what remains after operating expenses such as SG&A, R&D, and "
+        "depreciation, before interest and tax."
+    )
+    if abs(pt_move) >= 2:
+        s += (
+            f" Its {abs(pt_move):.1f}-pt {'gain' if pt_move > 0 else 'decline'} indicates operating "
+            f"costs grew {'slower' if pt_move > 0 else 'faster'} than revenue over the window "
+            f"({'operating leverage' if pt_move > 0 else 'operating deleverage'})."
+        )
+    return s
+
+
+def _net_margin_interp(latest: float, pt_move: float) -> str:
+    s = (
+        " Net margin is the share of each revenue dollar kept as profit after all costs, interest, "
+        "and tax — the bottom-line conversion of sales into earnings."
+    )
+    if abs(pt_move) >= 2:
+        s += (
+            f" The {abs(pt_move):.1f}-pt {'rise' if pt_move > 0 else 'fall'} is the combined result of "
+            f"gross-level and below-the-line (operating, interest, tax) cost changes over the window."
+        )
+    return s
+
+
+def _cost_share_interp(latest: float, pt_move: float) -> str:
+    s = (
+        " Cost of revenue is the mirror image of gross margin: what is not spent on the direct cost "
+        "of goods is gross profit."
+    )
+    if abs(pt_move) >= 2:
+        s += (
+            f" The {abs(pt_move):.1f}-pt {'rise' if pt_move > 0 else 'fall'} shows "
+            f"{'increasing' if pt_move > 0 else 'easing'} direct-cost pressure per dollar of revenue."
+        )
+    return s
+
+
+def _interpret_series(kind: str, unit: str, pairs: list, vN: float) -> str:
+    """One interpretive clause for a single series (empty for generic/unknowns)."""
+    if kind == "revenue":
+        return _revenue_shape(pairs)
+    if kind == "net_income":
+        return (
+            " Net income is the bottom-line profit after all costs, interest, and tax; measured "
+            "against revenue it sets the net margin shown separately."
+        )
+    if unit != "pct" or not pairs:
+        return ""
+    v0 = pairs[0][1]
+    pt_move = vN - v0
+    if kind == "gross_margin":
+        return _gross_margin_interp(vN, pt_move)
+    if kind == "operating_margin":
+        return _operating_margin_interp(vN, pt_move)
+    if kind == "net_margin":
+        return _net_margin_interp(vN, pt_move)
+    if kind == "cost_share":
+        return _cost_share_interp(vN, pt_move)
+    return ""
+
+
 # ── public builders ───────────────────────────────────────────────────────────
 
 _ADVICE = "Statistical summary of historical filings, not investment advice."
@@ -120,8 +275,11 @@ def describe_series(
     subject: Optional[str] = None,
     anomaly_years: Optional[list] = None,
     allow_cagr: bool = True,
+    interpret: bool = True,
+    kind: Optional[str] = None,
 ) -> str:
-    """One-to-two sentence description of a single time series.
+    """One-to-two sentence description of a single time series, plus an
+    interpretive clause on what the level/trend indicates operationally.
 
     values_by_year: {year_or_period_end: value}; None values are ignored.
     unit:           'usd' | 'pct' | 'ratio'
@@ -129,6 +287,8 @@ def describe_series(
     subject:        optional ticker/name to lead the sentence
     anomaly_years:  years already de-noised/flagged off-trend (any format)
     allow_cagr:     include a CAGR clause for strictly-positive series over >=2y
+    interpret:      append the operational interpretation clause (default True)
+    kind:           override the inferred metric kind (revenue/gross_margin/…)
     """
     pairs = sorted(
         ((_fy(k), float(v)) for k, v in values_by_year.items() if v is not None),
@@ -197,7 +357,97 @@ def describe_series(
         f"{lead} {verb} from {_fmt(v0, unit)} in FY{y0} to {_fmt(vN, unit)} in "
         f"FY{yN}{change_clause}{cagr_clause}{fit}"
     )
-    return f"{sentence}{extremes}{anomaly_clause} {_ADVICE}"
+
+    # Interpretive clause: what this level/trend indicates operationally. Derived
+    # only from the computed series (vN = latest, v0 = first), never invented.
+    interp = ""
+    if interpret:
+        interp = _interpret_series(kind or _metric_kind(label), unit, pairs, vN)
+
+    return f"{sentence}{extremes}{anomaly_clause}{interp} {_ADVICE}"
+
+
+def _cascade_divergence(dG: float, dN: float, dO: float) -> str:
+    """The core cross-metric read: how gross vs net margin moved together, and
+    what that implies about cost structure and operating leverage. All figures
+    are computed pt-moves over the window."""
+    thr = 1.0  # pts; smaller moves read as "roughly flat"
+
+    def word(d):
+        return "roughly flat" if abs(d) < thr else (f"rose {d:.1f} pts" if d > 0 else f"fell {abs(d):.1f} pts")
+
+    if dG <= -thr and dN >= thr:
+        return (
+            f"Over the window gross margin fell {abs(dG):.1f} pts while net margin rose {dN:.1f} pts — "
+            f"direct cost-of-revenue pressure was more than offset lower in the cascade, with operating "
+            f"and below-the-line costs growing slower than revenue (operating leverage and scale)."
+        )
+    if dG >= thr and dN >= thr:
+        return (
+            f"Gross margin rose {dG:.1f} pts and net margin rose {dN:.1f} pts, so gains at the gross "
+            f"level carried through to the bottom line rather than being absorbed by other costs."
+        )
+    if dG >= thr and dN <= -thr:
+        return (
+            f"Gross margin rose {dG:.1f} pts but net margin fell {abs(dN):.1f} pts — below-gross costs "
+            f"(operating, interest, or tax) grew faster than the gross-level gain over the window."
+        )
+    if dG <= -thr and dN <= -thr:
+        return (
+            f"Gross and net margin both fell (gross {word(dG)}, net {word(dN)}), so direct-cost "
+            f"pressure flowed through to the bottom line rather than being offset lower in the cascade."
+        )
+    # Mixed / flat: describe each leg neutrally and note where the change concentrated.
+    leg = "operating expenses" if abs(dO) >= abs(dN) else "interest and tax"
+    return (
+        f"Over the window gross margin {word(dG)}, operating margin {word(dO)}, and net margin "
+        f"{word(dN)} — a comparatively stable cost cascade, with what movement there is "
+        f"concentrated in {leg}."
+    )
+
+
+def describe_margin_cascade(
+    gross_by_year: dict,
+    operating_by_year: dict,
+    net_by_year: dict,
+    revenue_by_year: Optional[dict] = None,
+) -> str:
+    """Cross-metric synthesis of the margin cascade (gross → operating → net).
+
+    Computes, from the same series the charts plot:
+      * the latest cascade and the pt-gaps it implies (operating-expense burden
+        = gross−operating; interest+tax burden = operating−net);
+      * how gross and net margin moved over the window, and what that divergence
+        says about where cost pressure or operating leverage sat.
+    Strictly descriptive of the filings — no forward or investment judgement.
+    """
+    def _series(d: dict) -> list:
+        return sorted(
+            ((_fy(k), float(v)) for k, v in (d or {}).items() if v is not None),
+            key=lambda p: p[0],
+        )
+
+    g, o, n = _series(gross_by_year), _series(operating_by_year), _series(net_by_year)
+    if not (g and o and n):
+        return ""
+
+    yr = g[-1][0]
+    G, O, N = g[-1][1], o[-1][1], n[-1][1]
+    opex_gap = G - O          # operating-expense burden, pts of revenue
+    belowline_gap = O - N     # interest + tax burden, pts of revenue
+
+    def _pt(seg: list) -> float:
+        return seg[-1][1] - seg[0][1] if len(seg) >= 2 else 0.0
+
+    dG, dO, dN = _pt(g), _pt(o), _pt(n)
+
+    snapshot = (
+        f"The FY{yr} margin cascade runs gross {G:.1f}% → operating {O:.1f}% → net {N:.1f}%: "
+        f"operating expenses absorb about {opex_gap:.0f} pts of each revenue dollar and interest "
+        f"plus tax a further {max(belowline_gap, 0):.0f} pts."
+    )
+    divergence = _cascade_divergence(dG, dN, dO)
+    return f"{snapshot} {divergence} {_ADVICE}"
 
 
 def describe_comparison(
@@ -339,10 +589,34 @@ def describe_forecast(
         anomaly_clause = (
             f" {n} off-trend year(s) were de-noised before fitting."
         )
+
+    # Interpret the fit + band as a statement about how well the HISTORICAL
+    # pattern is established — explicitly NOT confidence the company will perform.
+    if r_squared >= 0.7:
+        fit_note = (
+            "The high R² means the past values line up closely with the fitted line, "
+            "so the historical pattern is well established"
+        )
+    elif r_squared >= 0.3:
+        fit_note = "The moderate R² means the historical pattern is only loosely consistent"
+    else:
+        fit_note = (
+            "The low R² means the history is noisy and the pattern is weak, so the "
+            "projection rests on a loose fit"
+        )
+    band_note = ""
+    if predicted and lo is not None and hi is not None and predicted != 0:
+        rel = abs(hi - lo) / abs(predicted)
+        if rel >= 0.4:
+            band_note = "; the wide 95% band reflects high year-to-year variability in the history"
+        elif rel <= 0.15:
+            band_note = "; the narrow 95% band reflects a steady history"
+    interp = f" {fit_note}{band_note} — a statement about the historical pattern, not a forecast of company performance."
+
     return (
         f"Projects {label.lower()} at {_fmt(predicted, unit)} for "
         f"{next_label.replace(' (projected)', '')} (95% CI {_fmt(lo, unit)}–"
         f"{_fmt(hi, unit)}), from {_fmt(last_v, unit)} in FY{_fy(last['year'])}"
-        f"{move}. The fitted trend is {trend_word} (R²={r_squared:.2f}).{anomaly_clause} "
+        f"{move}. The fitted trend is {trend_word} (R²={r_squared:.2f}).{anomaly_clause}{interp} "
         f"Statistical estimate from historical filings, not investment advice."
     )

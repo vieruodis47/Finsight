@@ -381,6 +381,18 @@ const TrendsPanel: React.FC<{ ticker: string }> = ({ ticker }) => {
         Multi-year charts for <strong style={{ color: c.text }}>{trends.ticker}</strong>, from the full tag-merged
         filing history. Fiscal-year labels use each filing's period-end date.
       </p>
+      {/* Cross-metric synthesis — the margin cascade and what its gaps/divergence
+          describe operationally. Deterministic; matches the chart numbers. */}
+      {trends.descriptions?.synthesis && (
+        <div style={{ background: c.surface, border: `0.5px solid ${c.border}`, borderRadius: 10, padding: '12px 14px' }}>
+          <p style={{ fontSize: 11, color: c.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', margin: '0 0 4px', fontWeight: 600 }}>
+            What these trends describe
+          </p>
+          <p style={{ fontSize: 12.5, color: c.text2, margin: 0, lineHeight: 1.6 }}>
+            {trends.descriptions.synthesis}
+          </p>
+        </div>
+      )}
       {/* Responsive carousel at every width: 3-up ≥1200px, 2-up ≥768px, 1-up below. */}
       <ChartCarousel slides={slides} label={`${trends.ticker} trend charts`} />
     </div>
