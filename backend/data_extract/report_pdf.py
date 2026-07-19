@@ -124,14 +124,17 @@ def _series(points: list[dict], field: str) -> tuple[list[int], list[float]]:
 def _style_axes(ax, years: list[str], usd: bool) -> None:
     n = len(years)
     ax.set_xlim(-0.5, n - 0.5)
-    # Thin year ticks so a ~19-year axis stays legible in print, always keeping
-    # the first and last year.
-    step = 1 if n <= 10 else (2 if n <= 18 else 3)
-    idx = list(range(0, n, step))
-    if idx[-1] != n - 1:
-        idx.append(n - 1)
-    ax.set_xticks(idx)
-    ax.set_xticklabels([f"'{years[i][2:]}" for i in idx], fontsize=7, color=MUTED)
+    # PDF prints at full width, so label EVERY fiscal year that has data — one
+    # tick per real data point (`years` is already per-data-year, so a missing
+    # filing year is simply absent, never synthesised into a fake tick). Angle
+    # the labels 45° (right-anchored) so ~19 of them don't collide; the compact
+    # 'YY format keeps them short. Web/mobile keep their responsive thinning —
+    # this thinning-removal is the server-rendered PDF path only.
+    ax.set_xticks(list(range(n)))
+    ax.set_xticklabels(
+        [f"'{y[2:]}" for y in years],
+        fontsize=7, color=MUTED, rotation=45, ha="right", rotation_mode="anchor",
+    )
     ax.yaxis.set_major_formatter(FuncFormatter(_usd_axis if usd else _pct_axis))
     ax.tick_params(axis="y", labelsize=7, colors=MUTED, length=0)
     ax.tick_params(axis="x", length=0)
@@ -206,13 +209,14 @@ def _draw_forecast(ax, metric: dict):
         labels.append(str(metric.get("next_label", "Next")).replace(" (projected)", ""))
     total = n + (1 if pv is not None else 0)
     ax.set_xlim(-0.5, total - 0.5)
-    step = 1 if total <= 10 else 2
-    idx = list(range(0, total, step))
-    if idx[-1] != total - 1:
-        idx.append(total - 1)
+    # Label every point — all historical years plus the projected column (FY2026);
+    # no thinning in the PDF. Rotated 45° so the full-density labels don't collide.
+    idx = list(range(total))
     ax.set_xticks(idx)
-    ax.set_xticklabels([f"'{labels[i][2:]}" if labels[i][:2] == "20" else labels[i] for i in idx],
-                       fontsize=7, color=MUTED)
+    ax.set_xticklabels(
+        [f"'{labels[i][2:]}" if labels[i][:2] == "20" else labels[i] for i in idx],
+        fontsize=7, color=MUTED, rotation=45, ha="right", rotation_mode="anchor",
+    )
     ax.yaxis.set_major_formatter(FuncFormatter(_usd_axis if usd else _pct_axis))
     ax.tick_params(axis="y", labelsize=7, colors=MUTED, length=0)
     ax.tick_params(axis="x", length=0)
@@ -254,7 +258,8 @@ def _panel(fig, top: float, title: str, draw, description: str) -> None:
     ax = fig.add_axes([MARGIN_L, top - 0.235, CONTENT_W, 0.205])
     draw(ax)
     desc = _wrap(description)
-    fig.text(MARGIN_L, top - 0.255, desc, fontsize=8.3, color=TEXT2, va="top",
+    # Extra clearance below the axis for the angled x labels before the caption.
+    fig.text(MARGIN_L, top - 0.263, desc, fontsize=8.3, color=TEXT2, va="top",
              linespacing=1.35)
 
 
@@ -379,10 +384,11 @@ def _forecast_panel(fig, top: float, m: dict) -> None:
     stat = (f"{m.get('next_label', 'Next period')}:  {pv}      95% CI  {lo} – {hi}      "
             f"R²  {r2:.2f}      Reliability: {rel}" if isinstance(r2, (int, float))
             else f"{m.get('next_label', 'Next period')}:  {pv}      95% CI  {lo} – {hi}      Reliability: {rel}")
-    fig.text(MARGIN_L, top - 0.258, stat, fontsize=8.6, color=TEXT, va="top", fontweight="bold")
+    # Extra clearance below the axis for the angled x labels before the stat line.
+    fig.text(MARGIN_L, top - 0.264, stat, fontsize=8.6, color=TEXT, va="top", fontweight="bold")
     desc = m.get("description")
     if desc:
-        fig.text(MARGIN_L, top - 0.276, _wrap(desc), fontsize=8.3, color=TEXT2, va="top", linespacing=1.35)
+        fig.text(MARGIN_L, top - 0.282, _wrap(desc), fontsize=8.3, color=TEXT2, va="top", linespacing=1.35)
 
 
 @router.get("/report/{ticker}")
