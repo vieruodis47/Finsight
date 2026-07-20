@@ -6,6 +6,7 @@ import { c, font } from '../theme';
 import { companyLabel } from '../utils/company';
 import { useIsMobile } from '../utils/hooks';
 import { renderChatMarkdown, AnswerMeta } from '../utils/chatRender';
+import BirdLoader from './BirdLoader';
 
 interface ChatInterfaceProps {
   documents: Document[];
@@ -123,31 +124,9 @@ const FinchAvatar: React.FC = () => {
   );
 };
 
-// ── "Fetching an answer" indicator ────────────────────────────────────────────
-// A small sapphire gull that flies left→right in a gentle arc while flapping,
-// shown as an assistant bubble while awaiting the reply. The wing flap animates
-// a CSS transform (NOT the SVG `d`, which Firefox can't animate); the fly-path
-// and flap keyframes live in index.html so they can honor prefers-reduced-motion.
-// role="status" announces it to assistive tech; the SVG itself is aria-hidden.
-const FlyingBird: React.FC = () => (
-  <div
-    role="status"
-    aria-live="polite"
-    aria-label="FinChat is fetching an answer"
-    style={{ display: 'flex', alignItems: 'center', gap: 10 }}
-  >
-    <span style={{ position: 'relative', display: 'inline-block', width: 150, height: 26, flexShrink: 0 }}>
-      <span className="finch-fly" style={{ position: 'absolute', left: 0, top: 4, display: 'inline-block', willChange: 'transform' }}>
-        <svg aria-hidden="true" width="24" height="18" viewBox="0 0 24 18" fill="none" xmlns="http://www.w3.org/2000/svg">
-          {/* two stroked wings meeting at the body (12,11); each flaps about that root */}
-          <path className="finch-wing finch-wing--l" d="M2 6 Q 7 4 12 11" stroke={c.brand}      strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-          <path className="finch-wing finch-wing--r" d="M22 6 Q 17 4 12 11" stroke={c.brandLight} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
-      </span>
-    </span>
-    <span style={{ fontSize: 13, color: c.textMuted, fontFamily: font.ui }}>Fetching an answer…</span>
-  </div>
-);
+// The "fetching an answer" indicator is the shared <BirdLoader variant="full">
+// (see components/BirdLoader.tsx) — one source of truth for the flying gull,
+// reused per-widget on the Dashboard.
 
 // ── component ────────────────────────────────────────────────────────────────
 
@@ -502,7 +481,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ documents }) => {
             <div style={{ display: 'flex', alignItems: 'flex-start', gap: AVATAR_GAP }}>
               <FinchAvatar />
               <div style={{ padding: '10px 14px', borderRadius: 11, borderBottomLeftRadius: 3, background: c.surface, display: 'flex', alignItems: 'center', boxShadow: '0 1px 2px rgba(0,0,0,0.05)' }}>
-                <FlyingBird />
+                <BirdLoader variant="full" label="Fetching an answer…" ariaLabel="FinChat is fetching an answer" />
               </div>
             </div>
           )}
