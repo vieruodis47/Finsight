@@ -35,6 +35,7 @@ from ..analysis.descriptions import (
     describe_quarterly,
     describe_distribution,
     describe_margin_cascade,
+    describe_peer_distribution,
 )
 
 # Human labels for the surfaced metrics, shared by the trend descriptions.
@@ -70,6 +71,19 @@ _DIST_UNITS = {
 }
 
 _QUARTERLY_FIELDS = ["revenue", "cogs", "gross_profit", "operating_income", "net_income"]
+
+# Ratios shown on the loaded-peer distribution box plots. `unit` feeds _fmt in
+# descriptions (pct -> "46.2%", ratio -> "1.20×"). These are the same three
+# benchmarks Michelle's offline industry-boxplot used, but scoped to the
+# companies the user has loaded (real data only — no simulated sector proxy).
+_PEER_DIST_METRICS = [
+    ("gross_margin_pct", "Gross margin", "pct"),
+    ("inventory_turnover", "Inventory turnover", "ratio"),
+    ("debt_to_equity", "Debt-to-equity", "ratio"),
+]
+# A box plot needs a spread: require the target + at least two peers before we
+# draw quartiles for a metric.
+_MIN_PEER_DIST = 3
 
 
 def _load(ticker: str):
@@ -249,4 +263,80 @@ def distribution(ticker: str, metric: str = Query("revenue")) -> dict:
         "std": std,
         "points": points,
         "description": description,
+    }
+
+
+@router.get("/peer-distribution/{ticker}")
+def peer_distribution(ticker: str, peers: list[str] = Query(default=[])) -> dict:
+    """Box-plot distribution of three key ratios across the user's LOADED
+    companies, with the target company positioned on each spectrum.
+
+    This is a LOADED-PEER distribution (target + the tickers the frontend passes
+    in `peers`), NOT a full-industry one — we don't fetch a sector universe live.
+    REAL data only: any company we can't load is skipped, never simulated. A
+    metric is only given quartiles once at least `_MIN_PEER_DIST` companies
+    report it; below that it's returned as insufficient so the UI can say so.
+
+    Response (per metric): {min,q1,median,q3,max}, every company's value +
+    is_target flag (so the frontend can plot each dot and the target marker),
+    the target's value, and a deterministic caption.
+    """
+    ticker = ticker.upper()
+    universe = list(dict.fromkeys(
+        [ticker] + [p.strip().upper() for p in (peers or []) if p and p.strip()]
+    ))
+
+    # Latest-fiscal-year ratios per company. Skip peers that won't load (real
+    # data only); a failure on the TARGET itself surfaces as HTTP (via _load).
+    latest: dict[str, dict] = {}
+    for tk in universe:
+        try:
+            ratios = calculate_ratios(_load(tk))
+        except HTTPException:
+            if tk == ticker:
+                raise
+            continue
+        except Exception as e:
+            logger.info("peer-distribution: skipping %s (%s)", tk, e)
+            continue
+        if ratios:
+            latest[tk] = ratios[max(ratios.keys())]
+
+    metrics_out = []
+    for key, label, unit in _PEER_DIST_METRICS:
+        vals = [
+            (tk, float(latest[tk][key]))
+            for tk in universe
+            if tk in latest and latest[tk].get(key) is not None
+        ]
+        companies = [{"ticker": tk, "value": v, "is_target": tk == ticker} for tk, v in vals]
+        target_value = next((v for tk, v in vals if tk == ticker), None)
+        n = len(vals)
+
+        entry: dict = {
+            "key": key, "label": label, "unit": unit, "n": n,
+            "companies": companies, "target_value": target_value,
+            "sufficient": n >= _MIN_PEER_DIST,
+            "min": None, "q1": None, "median": None, "q3": None, "max": None,
+            "description": "",
+        }
+        if n >= _MIN_PEER_DIST:
+            arr = np.array([v for _, v in vals], dtype=float)
+            entry.update({
+                "min": float(np.min(arr)),
+                "q1": float(np.percentile(arr, 25)),
+                "median": float(np.percentile(arr, 50)),
+                "q3": float(np.percentile(arr, 75)),
+                "max": float(np.max(arr)),
+            })
+            entry["description"] = describe_peer_distribution(
+                label, unit, target_value, entry["q1"], entry["median"], entry["q3"], n
+            )
+        metrics_out.append(entry)
+
+    return {
+        "ticker": ticker,
+        "peers": universe,
+        "min_peers": _MIN_PEER_DIST,
+        "metrics": metrics_out,
     }

@@ -456,6 +456,45 @@ export async function fetchDistribution(ticker: string, metric: string): Promise
   return (await res.json()) as DistributionResult;
 }
 
+// Loaded-peer distribution box plots: three key ratios spread across the target
+// + the other loaded companies, with the target positioned on each spectrum.
+// Real data only (companies that don't load are skipped server-side); a metric
+// with fewer than `min_peers` reporters comes back `sufficient: false`.
+export interface PeerDistributionMetric {
+  key: string;
+  label: string;
+  unit: 'pct' | 'ratio';
+  n: number;
+  companies: { ticker: string; value: number; is_target: boolean }[];
+  target_value: number | null;
+  sufficient: boolean;
+  min: number | null;
+  q1: number | null;
+  median: number | null;
+  q3: number | null;
+  max: number | null;
+  description: string;
+}
+
+export interface PeerDistributionResult {
+  ticker: string;
+  peers: string[];
+  min_peers: number;
+  metrics: PeerDistributionMetric[];
+}
+
+export async function fetchPeerDistribution(ticker: string, peers: string[]): Promise<PeerDistributionResult> {
+  const qs = peers.map(p => `peers=${encodeURIComponent(p)}`).join('&');
+  const res = await fetch(
+    `${API_BASE}/analysis/peer-distribution/${encodeURIComponent(ticker)}${qs ? `?${qs}` : ''}`,
+  );
+  if (!res.ok) {
+    const msg = await res.text().catch(() => res.statusText);
+    throw new Error(`Peer distribution failed (${res.status}): ${msg}`);
+  }
+  return (await res.json()) as PeerDistributionResult;
+}
+
 // Trailing price returns (1M/3M/6M/1Y), computed client-side from the existing
 // /market daily-close history so we add no new market egress path. Each return
 // anchors to the close at-or-before the target date (or the earliest close if

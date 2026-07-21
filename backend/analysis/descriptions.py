@@ -561,6 +561,33 @@ def describe_distribution(
     )
 
 
+def describe_peer_distribution(
+    label: str, unit: str, target_value, q1: float, median: float, q3: float, n: int
+) -> str:
+    """One-line caption placing the company on the loaded-peer distribution.
+
+    Deterministic: the quartile position is read straight off the same quartiles
+    the box plot draws, so the prose can't disagree with the chart. This is a
+    LOADED-peer spread (the companies the user has open), not a full-industry one.
+    """
+    if target_value is None:
+        return (
+            f"{label} isn't reported for this company, so it can't be placed on the "
+            f"loaded-peer spread ({n} companies). {_ADVICE}"
+        )
+    if target_value >= q3:
+        pos = "in the top quartile"
+    elif target_value <= q1:
+        pos = "in the bottom quartile"
+    else:
+        pos = "mid-pack"
+    rel = "above" if target_value >= median else "below"
+    return (
+        f"{label} of {_fmt(target_value, unit)} sits {rel} the loaded-peer median "
+        f"({_fmt(median, unit)}) — {pos} across {n} loaded companies. {_ADVICE}"
+    )
+
+
 def describe_forecast(
     history: list[dict],
     predicted: float,

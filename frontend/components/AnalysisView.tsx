@@ -664,7 +664,10 @@ const AnalysisView: React.FC<AnalysisViewProps> = ({ documents }) => {
 
           {(() => {
             const doc = documents.find(d => d.id === trendsDocId);
-            return doc?.ticker ? <TrendsPanel key={doc.ticker} ticker={doc.ticker} /> : null;
+            // Loaded companies feed the "Peer distribution" box plots (real data,
+            // scoped to what's open — not a full-industry universe).
+            const peers = documents.map(d => d.ticker).filter((t): t is string => Boolean(t));
+            return doc?.ticker ? <TrendsPanel key={doc.ticker} ticker={doc.ticker} peers={peers} /> : null;
           })()}
         </div>
       )}

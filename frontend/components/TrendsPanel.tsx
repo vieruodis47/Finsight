@@ -8,12 +8,14 @@ import { c, font, seriesB } from '../theme';
 import { fmtUSD, fmtPct } from '../utils/format';
 import { gridFaint, abbrevYear, xAxisBase, yAxisBase, tooltipStyle, legendProps } from '../utils/chart';
 import {
-  fetchTrends, fetchQuarterly, fetchDistribution, fetchReturns,
+  fetchTrends, fetchQuarterly, fetchDistribution, fetchReturns, fetchPeerDistribution,
   TrendsResult, QuarterlyResult, DistributionResult, PeriodReturns,
+  PeerDistributionResult, PeerDistributionMetric,
 } from '../services/gemini';
 import { ChartFigure } from './ChartDescription';
 import { ResponsiveChart } from './ResponsiveChart';
 import { ChartCarousel, CarouselSlide } from './ChartCarousel';
+import { useElementWidth } from '../utils/hooks';
 
 // Ported from Michelle's offline Plotly charts.py to Recharts. Six single-company
 // views. Green/red is used ONLY on the returns bars (a directional market signal,
@@ -252,6 +254,138 @@ const DistributionChart: React.FC<{ ticker: string }> = ({ ticker }) => {
   );
 };
 
+// ── #10 Loaded-peer distribution (box plots) ────────────────────────────────
+// Ported (scoped) from Michelle's offline industry-benchmarking box plots. Our
+// live layer can't fetch a whole sector universe, so this is a LOADED-PEER
+// spread — the target vs the other companies the user has open — with NO
+// simulated fallback (real data only). Recharts has no native box-and-whisker,
+// so each metric row is a small controlled SVG in the same Panel/ChartFigure
+// chrome. Distribution is not directional → sapphire/neutral only (no green/red);
+// the target is a sapphire diamond, peers are muted dots.
+
+const fmtPeerVal = (v: number, unit: 'pct' | 'ratio'): string =>
+  unit === 'pct' ? `${v.toFixed(1)}%` : `${v.toFixed(2)}×`;
+
+const BoxRow: React.FC<{ m: PeerDistributionMetric }> = ({ m }) => {
+  const [ref, width] = useElementWidth<HTMLDivElement>();
+  const W = Math.max(width || 0, 260);
+  const H = 88;
+  const padL = 14, padR = 14;
+  const trackW = W - padL - padR;
+  const centerY = 46;
+
+  const stats = [m.min, m.q1, m.median, m.q3, m.max].filter((x): x is number => x != null);
+  const allVals = m.companies.map(c => c.value).concat(stats);
+  let lo = Math.min(...allVals);
+  let hi = Math.max(...allVals);
+  if (!isFinite(lo) || !isFinite(hi)) { lo = 0; hi = 1; }
+  if (lo === hi) { lo -= 1; hi += 1; }
+  const span = hi - lo;
+  lo -= span * 0.08; hi += span * 0.08;
+  const x = (v: number) => padL + ((v - lo) / (hi - lo)) * trackW;
+
+  const q1 = m.q1!, q3 = m.q3!, med = m.median!, mn = m.min!, mx = m.max!;
+  const target = m.companies.find(cpy => cpy.is_target);
+
+  return (
+    <div ref={ref} style={{ width: '100%' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 2 }}>
+        <span style={{ fontSize: 12, fontWeight: 600, color: c.text, fontFamily: FF }}>{m.label}</span>
+        {target && (
+          <span style={{ fontSize: 11, color: c.brand, fontFamily: FF, fontWeight: 600 }}>
+            {target.ticker} {fmtPeerVal(target.value, m.unit)}
+          </span>
+        )}
+      </div>
+      <svg width={W} height={H} role="img" aria-hidden="true" style={{ display: 'block' }}>
+        {/* whisker: min → max, with end caps */}
+        <line x1={x(mn)} y1={centerY} x2={x(mx)} y2={centerY} stroke={c.textFaint} strokeWidth={1} />
+        <line x1={x(mn)} y1={centerY - 6} x2={x(mn)} y2={centerY + 6} stroke={c.textFaint} strokeWidth={1} />
+        <line x1={x(mx)} y1={centerY - 6} x2={x(mx)} y2={centerY + 6} stroke={c.textFaint} strokeWidth={1} />
+        {/* IQR box: q1 → q3 */}
+        <rect x={x(q1)} y={centerY - 10} width={Math.max(1, x(q3) - x(q1))} height={20} rx={2}
+              fill={c.brandTint} stroke={c.brand} strokeWidth={1} />
+        {/* median */}
+        <line x1={x(med)} y1={centerY - 10} x2={x(med)} y2={centerY + 10} stroke={c.brand} strokeWidth={2} />
+        {/* peer dots (non-target) */}
+        {m.companies.filter(cpy => !cpy.is_target).map(cpy => (
+          <circle key={cpy.ticker} cx={x(cpy.value)} cy={centerY} r={3.5}
+                  fill={c.textMuted} stroke={c.bg} strokeWidth={1}>
+            <title>{cpy.ticker}: {fmtPeerVal(cpy.value, m.unit)}</title>
+          </circle>
+        ))}
+        {/* target diamond */}
+        {target && (
+          <path d={`M ${x(target.value)} ${centerY - 6} L ${x(target.value) + 6} ${centerY} L ${x(target.value)} ${centerY + 6} L ${x(target.value) - 6} ${centerY} Z`}
+                fill={c.brand} stroke={c.bg} strokeWidth={1.5}>
+            <title>{target.ticker}: {fmtPeerVal(target.value, m.unit)}</title>
+          </path>
+        )}
+        {/* quartile value labels (spread by construction; min/median/max only) */}
+        <text x={x(mn)} y={centerY + 26} fontSize={9.5} fill={c.textFaint} textAnchor="middle" fontFamily={FF}>{fmtPeerVal(mn, m.unit)}</text>
+        <text x={x(med)} y={centerY + 26} fontSize={9.5} fill={c.textMuted} textAnchor="middle" fontFamily={FF}>med {fmtPeerVal(med, m.unit)}</text>
+        <text x={x(mx)} y={centerY + 26} fontSize={9.5} fill={c.textFaint} textAnchor="middle" fontFamily={FF}>{fmtPeerVal(mx, m.unit)}</text>
+      </svg>
+    </div>
+  );
+};
+
+const PeerDistributionChart: React.FC<{ ticker: string; peers: string[] }> = ({ ticker, peers }) => {
+  const [data, setData] = useState<PeerDistributionResult | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const peerKey = peers.join(',');
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true); setErr(null); setData(null);
+    fetchPeerDistribution(ticker, peers)
+      .then(d => { if (!cancelled) setData(d); })
+      .catch(e => { if (!cancelled) setErr(e instanceof Error ? e.message : 'Failed'); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ticker, peerKey]);
+
+  const anySufficient = data?.metrics.some(m => m.sufficient);
+
+  return (
+    <Panel title="Peer distribution" subtitle="loaded companies · ◆ = this company">
+      {loading && (
+        <div style={{ height: 200, display: 'flex', alignItems: 'center', justifyContent: 'center', color: c.textMuted, fontSize: 13 }}>
+          <Loader2 size={15} style={{ animation: 'spin 1s linear infinite', marginRight: 6 }} /> Loading…
+        </div>
+      )}
+      {!loading && err && (
+        <div style={{ height: 120, display: 'flex', alignItems: 'center', justifyContent: 'center', color: c.textMuted, fontSize: 12, textAlign: 'center' }}>
+          Couldn't load the peer distribution for {ticker}.
+        </div>
+      )}
+      {!loading && !err && data && !anySufficient && (
+        <div style={{ height: 120, display: 'flex', alignItems: 'center', justifyContent: 'center', color: c.textMuted, fontSize: 12.5, textAlign: 'center', lineHeight: 1.6, padding: '0 12px' }}>
+          Load at least {data.min_peers} companies (with reported ratios) to see how {ticker} compares —
+          only {data.peers.length} loaded so far.
+        </div>
+      )}
+      {!loading && !err && data && anySufficient && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          {data.metrics.map(m =>
+            m.sufficient ? (
+              <ChartFigure key={m.key} description={m.description}>
+                <BoxRow m={m} />
+              </ChartFigure>
+            ) : (
+              <div key={m.key} style={{ fontSize: 11.5, color: c.textFaint, fontFamily: FF }}>
+                {m.label}: not enough loaded companies report this ({m.n}).
+              </div>
+            )
+          )}
+        </div>
+      )}
+    </Panel>
+  );
+};
+
 // ── #8 Trailing returns (directional → green/red allowed) ───────────────────
 const ReturnsChart: React.FC<{ returns: PeriodReturns }> = ({ returns }) => {
   const rows = [
@@ -305,8 +439,10 @@ const ReturnsChart: React.FC<{ returns: PeriodReturns }> = ({ returns }) => {
   );
 };
 
-// ── Container: fetch once, lay the six charts out in a responsive grid ───────
-const TrendsPanel: React.FC<{ ticker: string }> = ({ ticker }) => {
+// ── Container: fetch once, lay the charts out in a responsive grid ───────────
+// `peers` is the set of OTHER loaded companies (tickers); when 2+ are present a
+// "Peer distribution" slide is added. Omitted/short → the slide self-hides.
+const TrendsPanel: React.FC<{ ticker: string; peers?: string[] }> = ({ ticker, peers = [] }) => {
   const [trends, setTrends] = useState<TrendsResult | null>(null);
   const [quarterly, setQuarterly] = useState<QuarterlyResult | null>(null);
   const [returns, setReturns] = useState<PeriodReturns | null>(null);
@@ -356,6 +492,12 @@ const TrendsPanel: React.FC<{ ticker: string }> = ({ ticker }) => {
   // (one chart per view) instead of a tall vertical stack; desktop keeps the
   // responsive grid. Each entry carries a label used by the carousel's live
   // region + position readout.
+  // Peer set for the loaded-peer distribution: dedupe the loaded tickers; only
+  // offer the slide once there are ≥2 OTHER companies (target + 2 = a 3-point
+  // box). Below that the slide would only ever say "load more", so we hide it.
+  const peerSet = Array.from(new Set(peers.map(p => p.toUpperCase()).filter(Boolean)));
+  const showPeerDist = peerSet.filter(p => p !== ticker.toUpperCase()).length >= 2;
+
   const slides: CarouselSlide[] = [
     { key: 'metric', label: 'Metric over time', node: <TrendChart data={trends} /> },
     { key: 'revprofit', label: 'Revenue vs Net income', node: <RevenueProfitChart data={trends} /> },
@@ -373,6 +515,9 @@ const TrendsPanel: React.FC<{ ticker: string }> = ({ ticker }) => {
         ? <ReturnsChart returns={returns} />
         : <Panel title="Trailing price return"><div style={{ height: 200, display: 'flex', alignItems: 'center', justifyContent: 'center', color: c.textMuted, fontSize: 12 }}>No market data for {ticker}.</div></Panel>,
     },
+    ...(showPeerDist
+      ? [{ key: 'peerdist', label: 'Peer distribution', node: <PeerDistributionChart ticker={ticker} peers={peerSet} /> }]
+      : []),
   ];
 
   return (
