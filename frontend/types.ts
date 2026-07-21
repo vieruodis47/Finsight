@@ -99,6 +99,13 @@ export interface ChatMessage {
   retrievalPath?: 'graph' | 'vector' | 'both' | 'none' | 'vector_no_graph'; // which path answered
   streaming?: boolean;            // assistant reply is still streaming in
   error?: boolean;                // stream errored mid-flight (partial text kept)
+  // Clarification prompt: FinChat needs to know which company before it can
+  // answer. Carries the original question + the loaded companies to offer as
+  // quick-pick chips; no retrieval/generation happens until one is chosen.
+  clarify?: {
+    question: string;                          // the pending question to resume
+    companies: { ticker: string; label: string }[];
+  };
 }
 
 export interface StockDataPoint {

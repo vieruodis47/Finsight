@@ -6,6 +6,9 @@ import { c, font } from '../theme';
 import { companyLabel } from '../utils/company';
 import { useIsMobile } from '../utils/hooks';
 import { GroundedAnswer } from '../utils/chatRender';
+import {
+  resolveCompaniesInQuestion, looksLikeComparison, isCompanySpecific,
+} from '../utils/questionQuality';
 import BirdLoader from './BirdLoader';
 
 interface ChatInterfaceProps {
@@ -24,6 +27,17 @@ const pillBase: React.CSSProperties = {
 
 const pillActive: React.CSSProperties   = { ...pillBase, background: c.brandTint, color: c.brand };
 const pillInactive: React.CSSProperties = { ...pillBase, background: c.surfaceAlt, color: c.textMuted };
+
+// Quick-pick chips offered with a clarifying question.
+const clarifyChip: React.CSSProperties = {
+  fontSize: 12, fontWeight: 600, padding: '6px 12px', borderRadius: 8,
+  cursor: 'pointer', fontFamily: font.ui,
+  background: c.brandTint, color: c.brand, border: `1px solid ${c.brand}`,
+};
+const clarifyChipAlt: React.CSSProperties = {
+  ...clarifyChip, fontWeight: 500,
+  background: c.bg, color: c.textMuted, border: `1px solid ${c.border}`,
+};
 
 // ── Ticker → company name map ─────────────────────────────────────────────────
 // Covers common S&P 500 names. Falls back to the ticker if not found.
@@ -145,6 +159,12 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ documents }) => {
   const [selectedDocIds, setSelectedDocIds] = useState<string[]>([]);
   const [inputFocused, setInputFocused]     = useState(false);
   const [hoveredChip, setHoveredChip]       = useState<number | null>(null);
+  // Active company in the conversation — the last company a query resolved to.
+  // Drives context carry-over so a follow-up ("and its FCF?") isn't re-asked.
+  const [contextCompany, setContextCompany] = useState<string | null>(null);
+  // Set while FinChat is waiting for the user to say which company; carries the
+  // original question forward so a chip/reply resumes it without retyping.
+  const [pendingClarify, setPendingClarify] = useState<string | null>(null);
   // A11y: the streaming bubble is NOT a live region (that would announce every
   // token). Instead we push the COMPLETED answer here once, so a screen reader
   // announces the finished reply a single time.
@@ -201,90 +221,163 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ documents }) => {
         'What was free cash flow last year?',
       ];
 
-  const sendMessage = async (text: string) => {
-    if (!text.trim() || isLoading) return;
+  // The companies in play for the clarify gate: the explicitly-selected subset if
+  // the user picked one/some ("All" = empty selection), else every loaded doc.
+  const gateCompanies = (): Document[] => {
+    const selected = documents.filter(d => selectedDocIds.includes(d.id));
+    return uniqueCompanies(selected.length > 0 ? selected : documents);
+  };
 
-    const userMsg: ChatMessage = {
-      id: Date.now().toString(),
-      role: 'user',
-      text,
-      timestamp: new Date(),
-    };
+  const tk = (d: Document): string => (d.ticker || d.name || '').toUpperCase();
 
-    setMessages(prev => [...prev, userMsg]);
+  // Make the resolved company explicit in the text sent to the backend, so the
+  // GRAPH path (which resolves the company from the question, not the ticker
+  // scope) also confines to it. Skips injection when the company is already named.
+  const withCompany = (text: string, d: Document): string => {
+    const ticker = tk(d);
+    const label = companyLabel(d);
+    const already = new RegExp(`\\b(${ticker}|${label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})\\b`, 'i').test(text);
+    return already ? text : `${text} (${ticker})`;
+  };
+
+  // Form filter for a resolved scope (all filings are 10-K today, but keep it
+  // derived rather than hardcoded).
+  const formFor = (scope: string[]): '10-K' | undefined => {
+    const forms = Array.from(new Set(
+      documents.filter(d => scope.includes(tk(d))).map(d => d.form).filter((f): f is '10-K' => Boolean(f))
+    ));
+    return forms.length === 1 ? forms[0] : undefined;
+  };
+
+  // The actual retrieval + streaming call. `displayText` is the user's bubble;
+  // `sentText` is what the backend sees (company-injected); `scope` is the ticker
+  // filter; `newContext` becomes the active company for follow-ups.
+  const runQuery = async (
+    displayText: string, sentText: string, scope: string[], newContext: string | null,
+  ) => {
+    if (isLoading) return;
+    setPendingClarify(null);
+    setContextCompany(newContext);
+
+    setMessages(prev => [...prev, {
+      id: Date.now().toString(), role: 'user', text: displayText, timestamp: new Date(),
+    }]);
     // Bird = pre-generation phase (keyword routing + graph/vector retrieval).
-    // It stays up until the FIRST token arrives, then we swap to streaming text.
     setIsLoading(true);
 
     const assistantId = `a-${Date.now()}`;
-    let started = false;   // has the assistant bubble been inserted yet?
-    let acc = '';          // accumulated streamed text
+    let started = false;
+    let acc = '';
 
-    // Insert the (empty) streaming assistant bubble on the first token, hiding
-    // the bird. Guarded so it runs exactly once.
     const ensureStarted = () => {
       if (started) return;
       started = true;
       setIsLoading(false);
       setMessages(prev => [...prev, {
-        id: assistantId,
-        role: 'assistant',
-        text: '',
-        streaming: true,
-        timestamp: new Date(),
+        id: assistantId, role: 'assistant', text: '', streaming: true, timestamp: new Date(),
       }]);
     };
-
     const patch = (updates: Partial<ChatMessage>) =>
       setMessages(prev => prev.map(m => (m.id === assistantId ? { ...m, ...updates } : m)));
 
-    // Scope retrieval to the user's LOADED companies so vector search can't
-    // surface arbitrary corpus companies (the "Charter/Verizon for a NVDA/AAPL
-    // question" bug). An explicit doc selection narrows further; empty selection
-    // ("All") scopes to every loaded doc. The backend treats this ticker list as
-    // an authoritative `ticker IN (...)` filter, and the graph→vector fallback
-    // inherits the same scope, so a graph miss can no longer widen to the corpus.
-    const selected  = documents.filter(d => selectedDocIds.includes(d.id));
-    const scopeDocs = selected.length > 0 ? selected : documents;
-    const tickers   = Array.from(new Set(scopeDocs.map(d => d.ticker).filter((t): t is string => Boolean(t))));
-    const forms     = Array.from(new Set(scopeDocs.map(d => d.form).filter((f): f is '10-K' => Boolean(f))));
-    const form      = forms.length === 1 ? forms[0] : undefined;
-
-    await askFinSightStream(text, { tickers: tickers.length ? tickers : undefined, form, k: 6 }, {
-      onToken: (delta) => {
-        ensureStarted();
-        acc += delta;
-        patch({ text: acc });
+    await askFinSightStream(
+      sentText,
+      { tickers: scope.length ? scope : undefined, form: formFor(scope), k: 6 },
+      {
+        onToken: (delta) => { ensureStarted(); acc += delta; patch({ text: acc }); },
+        onDone: ({ sources, validCitations, retrievalPath }) => {
+          ensureStarted();
+          patch({ text: acc, sources, validCitations, retrievalPath, streaming: false });
+          setAnnouncement(acc);
+        },
+        onError: (message) => {
+          if (!started) {
+            started = true;
+            setIsLoading(false);
+            setMessages(prev => [...prev, {
+              id: assistantId, role: 'assistant', text: acc || `Error: ${message}`,
+              streaming: false, error: true, timestamp: new Date(),
+            }]);
+          } else {
+            patch({ text: acc, streaming: false, error: true });
+          }
+        },
       },
-      onDone: ({ sources, validCitations, retrievalPath }) => {
-        ensureStarted();
-        patch({ text: acc, sources, validCitations, retrievalPath, streaming: false });
-        // Announce the finished answer once (see `announcement` a11y note).
-        setAnnouncement(acc);
-      },
-      onError: (message) => {
-        if (!started) {
-          // Failed before any token — show a standalone error bubble.
-          started = true;
-          setIsLoading(false);
-          setMessages(prev => [...prev, {
-            id: assistantId,
-            role: 'assistant',
-            text: acc || `Error: ${message}`,
-            streaming: false,
-            error: true,
-            timestamp: new Date(),
-          }]);
-        } else {
-          // Mid-stream failure: keep the partial text, flag the error.
-          patch({ text: acc, streaming: false, error: true });
-        }
-      },
-    });
-
-    // Safety net: if the stream returned without ever starting (shouldn't
-    // happen — the backend always emits at least one text token), clear the bird.
+    );
     if (!started) setIsLoading(false);
+  };
+
+  // Resume a pending/typed question scoped to ONE resolved company.
+  const resolveToCompany = (question: string, d: Document) =>
+    runQuery(withCompany(question, d), withCompany(question, d), [tk(d)], tk(d));
+
+  // Resume a pending/typed question as a head-to-head across companies.
+  const resolveToCompare = (question: string, docs: Document[]) => {
+    const tickers = docs.map(tk);
+    const already = /\b(compare|versus|vs\.?|both|between)\b/i.test(question);
+    const sent = already ? question : `${question} — compare ${tickers.join(' and ')}`;
+    runQuery(sent, sent, tickers, null);
+  };
+
+  // Ask which company, offering the loaded options as quick-pick chips. No
+  // retrieval or Gemini call happens here — the question is parked until answered.
+  const askClarify = (question: string, companies: Document[]) => {
+    setPendingClarify(question);
+    const tickers = companies.map(tk);
+    const compareHint = tickers.length === 2 ? 'Or want both compared?' : 'Or compare them?';
+    setMessages(prev => [...prev, {
+      id: `clarify-${Date.now()}`,
+      role: 'assistant',
+      text: `Which company do you mean — ${tickers.join(', ')}? ${compareHint}`,
+      timestamp: new Date(),
+      clarify: { question, companies: companies.map(d => ({ ticker: tk(d), label: companyLabel(d) })) },
+    }]);
+  };
+
+  // ── Pre-retrieval clarify gate ──────────────────────────────────────────────
+  // Deterministically decide whether the query is answerable as-is or needs a
+  // "which company?" question, BEFORE any retrieval/generation. Mirrors the Help
+  // page's "name the company + year + metric" rule (shared questionQuality util).
+  const sendMessage = (raw: string) => {
+    const text = raw.trim();
+    if (!text || isLoading) return;
+    const companies = gateCompanies();
+
+    // If we're awaiting a clarification, interpret this reply as its answer and
+    // resume the ORIGINAL question — don't make the user retype it.
+    if (pendingClarify) {
+      const picked = resolveCompaniesInQuestion(text, companies);
+      const wantsAll = looksLikeComparison(text) || /\b(both|all|either|every)\b/i.test(text);
+      if (picked.length >= 1 || wantsAll) {
+        const q = pendingClarify;
+        setPendingClarify(null);
+        if (picked.length === 1 && !wantsAll) return resolveToCompany(q, picked[0]);
+        return resolveToCompare(q, picked.length >= 2 ? picked : companies);
+      }
+      // Not an answer to the clarify — fall through and treat as a new question.
+      setPendingClarify(null);
+    }
+
+    const matches = resolveCompaniesInQuestion(text, companies);
+    if (matches.length >= 2) return resolveToCompare(text, matches);   // named several → compare
+    if (matches.length === 1) {                                        // named one → proceed
+      const d = matches[0];
+      return runQuery(text, text, [tk(d)], tk(d));
+    }
+
+    // No company named:
+    if (looksLikeComparison(text)) return runQuery(text, text, companies.map(tk), null); // corpus-wide compare
+    if (contextCompany && isCompanySpecific(text)) {                                      // follow-up carry-over
+      const d = companies.find(x => tk(x) === contextCompany);
+      if (d) return runQuery(text, withCompany(text, d), [contextCompany], contextCompany);
+    }
+    if (companies.length <= 1) {                                                          // 0/1 loaded → assume
+      const d = companies[0];
+      return runQuery(text, d ? withCompany(text, d) : text, d ? [tk(d)] : [], d ? tk(d) : null);
+    }
+    if (isCompanySpecific(text)) return askClarify(text, companies);                      // ambiguous → ASK
+
+    return runQuery(text, text, companies.map(tk), null);                                 // non-specific → proceed
   };
 
   const handleSend = () => {
@@ -293,6 +386,13 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ documents }) => {
     setInput('');
     sendMessage(text);
   };
+
+  // Resolve a clarify via a tapped chip: resume the parked question.
+  const pickClarifyCompany = (question: string, ticker: string) => {
+    const d = gateCompanies().find(x => tk(x) === ticker.toUpperCase());
+    if (d) resolveToCompany(question, d);
+  };
+  const pickClarifyCompare = (question: string) => resolveToCompare(question, gateCompanies());
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }
@@ -416,15 +516,46 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ documents }) => {
                         no reflow of the text above. */}
                     {isUser
                       ? msg.text
-                      : (
-                          <GroundedAnswer
-                            text={msg.text}
-                            streaming={msg.streaming}
-                            retrievalPath={msg.retrievalPath}
-                            sources={msg.sources}
-                            validCitations={msg.validCitations}
-                          />
-                        )
+                      : msg.clarify
+                        ? (
+                            <>
+                              <p style={{ fontSize: 13, color: c.text, margin: 0, lineHeight: 1.6, fontFamily: font.ui }}>
+                                {msg.text}
+                              </p>
+                              <div role="group" aria-label="Choose a company" style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 10 }}>
+                                {msg.clarify.companies.map(co => (
+                                  <button
+                                    key={co.ticker}
+                                    type="button"
+                                    onClick={() => pickClarifyCompany(msg.clarify!.question, co.ticker)}
+                                    aria-label={`Answer for ${co.label}`}
+                                    style={{ ...clarifyChip, minHeight: isMobile ? 40 : undefined }}
+                                  >
+                                    {co.ticker}
+                                  </button>
+                                ))}
+                                {msg.clarify.companies.length >= 2 && (
+                                  <button
+                                    type="button"
+                                    onClick={() => pickClarifyCompare(msg.clarify!.question)}
+                                    aria-label="Compare the loaded companies"
+                                    style={{ ...clarifyChipAlt, minHeight: isMobile ? 40 : undefined }}
+                                  >
+                                    Compare {msg.clarify.companies.length === 2 ? 'both' : 'all'}
+                                  </button>
+                                )}
+                              </div>
+                            </>
+                          )
+                        : (
+                            <GroundedAnswer
+                              text={msg.text}
+                              streaming={msg.streaming}
+                              retrievalPath={msg.retrievalPath}
+                              sources={msg.sources}
+                              validCitations={msg.validCitations}
+                            />
+                          )
                     }
 
                     {/* Mid-stream failure — keep the partial text above, flag it. */}

@@ -7,6 +7,7 @@ import {
 import { c, font } from '../theme';
 import { useIsMobile } from '../utils/hooks';
 import { gridCols } from '../utils/chart';
+import { checkSpecificity } from '../utils/questionQuality';
 
 const FF = font.ui;
 
@@ -89,17 +90,13 @@ const HelpView: React.FC = () => {
   const [feedback, setFeedback] = useState<string | null>(null);
 
   const checkQuestion = () => {
-    const q = triedQ.trim().toLowerCase();
+    const q = triedQ.trim();
     if (!q) return;
-    const issues: string[] = [];
-    const hasCompany = /gap|pvh|aeo|american eagle|inditex|h&m|gps/.test(q);
-    const hasYear    = /fy20|20\d\d|fiscal/.test(q);
-    const hasMetric  = /revenue|margin|income|profit|debt|cash|inventory|turnover|eps|ebitda|guidance|risk|growth/.test(q);
-    if (!hasCompany) issues.push('• Mention a specific company (e.g. Gap, PVH, AEO)');
-    if (!hasYear)    issues.push('• Include a fiscal year (e.g. FY2024)');
-    if (!hasMetric)  issues.push('• Name a specific metric or topic (e.g. gross margin, risk factors)');
+    // Same specificity rule FinChat enforces before retrieving (single source of
+    // truth — see utils/questionQuality).
+    const { ok, issues } = checkSpecificity(q);
     setFeedback(
-      issues.length === 0
+      ok
         ? 'Looks good! This question is specific enough for FinSight to answer well.'
         : 'This question could be more specific:\n' + issues.join('\n')
     );
