@@ -148,8 +148,10 @@ export async function askFinSightStream(
 // Download the server-composed Analysis PDF (charts + deterministic descriptions
 // + forecast) for a ticker. Fetches the blob and triggers a browser download.
 // Throws with the backend's detail message on failure so the caller can surface it.
-export async function exportAnalysisReport(ticker: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/analysis/report/${encodeURIComponent(ticker)}`);
+export async function exportAnalysisReport(ticker: string, peers: string[] = []): Promise<void> {
+  // Loaded companies (optional) add the "Peer distribution" page to the PDF.
+  const qs = peers.map(p => `peers=${encodeURIComponent(p)}`).join('&');
+  const res = await fetch(`${API_BASE}/analysis/report/${encodeURIComponent(ticker)}${qs ? `?${qs}` : ''}`);
   if (!res.ok) {
     let detail = res.statusText;
     try { const j = await res.json(); detail = j.detail || detail; } catch { /* non-JSON error body */ }

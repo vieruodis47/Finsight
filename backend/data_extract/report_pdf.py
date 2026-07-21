@@ -46,10 +46,11 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.ticker import FuncFormatter
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
 
 from .analysis_charts import trends as _trends_endpoint
+from .analysis_charts import peer_distribution as _peer_dist_endpoint
 from .prediction import prediction as _forecast_endpoint
 
 logger = logging.getLogger(__name__)
@@ -263,7 +264,7 @@ def _panel(fig, top: float, title: str, draw, description: str) -> None:
              linespacing=1.35)
 
 
-def build_report(ticker: str) -> bytes:
+def build_report(ticker: str, peers: list[str] | None = None) -> bytes:
     ticker = ticker.upper()
     data = _trends_endpoint(ticker)          # raises HTTPException on bad ticker
     points = data["points"]
@@ -350,6 +351,20 @@ def build_report(ticker: str) -> bytes:
             _footer(fig, page)
             pdf.savefig(fig)
 
+        # ---- Loaded-peer distribution -------------------------------------
+        # Only when enough peers were passed for a real box (target + ≥2 others).
+        # Non-fatal: a peer-fetch hiccup must never sink the whole report.
+        if peers:
+            try:
+                pd = _peer_dist_endpoint(ticker, list(peers))
+                sufficient = [m for m in pd.get("metrics", []) if m.get("sufficient")]
+                if sufficient:
+                    page = _peer_dist_page(pdf, ticker, page, sufficient)
+            except HTTPException:
+                pass
+            except Exception as e:
+                logger.warning("peer-distribution page skipped for %s: %s", ticker, e)
+
         d = pdf.infodict()
         d["Title"] = f"FinSight Analysis Report — {ticker}"
         d["Author"] = "FinSight"
@@ -391,10 +406,87 @@ def _forecast_panel(fig, top: float, m: dict) -> None:
         fig.text(MARGIN_L, top - 0.282, _wrap(desc), fontsize=8.3, color=TEXT2, va="top", linespacing=1.35)
 
 
+# --- Loaded-peer distribution (box plots) -----------------------------------
+# Mirrors the Analysis "Peer distribution" slide: the target vs the other loaded
+# companies, real data only. Distribution is NOT directional, so it stays on the
+# sapphire/neutral palette (no green/red) — target is a sapphire diamond, peers
+# are grey dots. matplotlib has a native box primitive (bxp), used here.
+
+def _peer_axis_fmt(unit: str):
+    if unit == "pct":
+        return FuncFormatter(_pct_axis)
+    return FuncFormatter(lambda v, _pos: f"{v:.1f}×")
+
+
+def _draw_peer_box(ax, m: dict) -> None:
+    stat = {
+        "med": m["median"], "q1": m["q1"], "q3": m["q3"],
+        "whislo": m["min"], "whishi": m["max"], "fliers": [],
+    }
+    ax.bxp(
+        [stat], vert=False, widths=0.55, showfliers=False, patch_artist=True,
+        boxprops=dict(facecolor=BRAND_TINT, edgecolor=BRAND, linewidth=1.1),
+        medianprops=dict(color=BRAND, linewidth=1.8),
+        whiskerprops=dict(color=MUTED, linewidth=1.0),
+        capprops=dict(color=MUTED, linewidth=1.0),
+    )
+    # Peer dots (grey) then the target (sapphire diamond) on top.
+    for cpy in m["companies"]:
+        if cpy["is_target"]:
+            continue
+        ax.plot(cpy["value"], 1, marker="o", ms=4.5, color=PEER,
+                mec="white", mew=0.6, zorder=5)
+    tgt = next((c for c in m["companies"] if c["is_target"]), None)
+    if tgt is not None:
+        ax.plot(tgt["value"], 1, marker="D", ms=8, color=BRAND,
+                mec="white", mew=1.0, zorder=6)
+
+    ax.set_yticks([])
+    ax.xaxis.set_major_formatter(_peer_axis_fmt(m["unit"]))
+    ax.tick_params(axis="x", labelsize=7, colors=MUTED, length=0)
+    ax.grid(axis="x", color=GRIDCOL, lw=0.6)
+    ax.set_axisbelow(True)
+    for spine in ("top", "right", "left"):
+        ax.spines[spine].set_visible(False)
+    ax.spines["bottom"].set_color(BORDER)
+
+
+def _peer_box_panel(fig, top: float, m: dict) -> None:
+    unit = m["unit"]
+    tv = m.get("target_value")
+    tv_str = (_fmt_pct(tv) if unit == "pct" else (f"{tv:.2f}×" if tv is not None else "—"))
+    fig.text(MARGIN_L, top, m["label"], fontsize=11, color=TEXT, fontweight="bold")
+    tgt = next((c for c in m["companies"] if c["is_target"]), None)
+    if tgt is not None:
+        fig.text(0.95, top, f"{tgt['ticker']}  {tv_str}", fontsize=9, color=BRAND,
+                 fontweight="bold", ha="right")
+    ax = fig.add_axes([MARGIN_L, top - 0.105, CONTENT_W, 0.072])
+    _draw_peer_box(ax, m)
+    fig.text(MARGIN_L, top - 0.128, _wrap(m.get("description", "")), fontsize=8.3,
+             color=TEXT2, va="top", linespacing=1.35)
+
+
+def _peer_dist_page(pdf, ticker: str, page: int, metrics: list[dict]) -> int:
+    """One page of loaded-peer box plots. Returns the (incremented) page number."""
+    page += 1
+    fig = Figure(figsize=(PAGE_W, PAGE_H))
+    fig.patch.set_facecolor("white")
+    fig.text(MARGIN_L, 0.945, f"{ticker} · Peer distribution", fontsize=10, color=MUTED)
+    fig.text(0.95, 0.945, "vs loaded companies · ◆ = this company · real data",
+             fontsize=8, color=FAINT, ha="right")
+    _rule(fig, 0.935)
+    tops = [0.85, 0.56, 0.27]
+    for j, m in enumerate(metrics[:3]):
+        _peer_box_panel(fig, tops[j], m)
+    _footer(fig, page)
+    pdf.savefig(fig)
+    return page
+
+
 @router.get("/report/{ticker}")
-def report(ticker: str) -> Response:
+def report(ticker: str, peers: list[str] = Query(default=[])) -> Response:
     try:
-        pdf_bytes = build_report(ticker)
+        pdf_bytes = build_report(ticker, peers=peers)
     except HTTPException:
         raise
     except Exception as e:

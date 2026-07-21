@@ -371,14 +371,14 @@ const CompareCharts: React.FC<{ data: CompareMetricsResult }> = ({ data }) => {
 // Server-composed, vector, print-ready PDF (charts + the SAME deterministic
 // descriptions shown here + forecast values/CI/R²). Shows progress and surfaces
 // a clear error instead of a silent no-op.
-const ExportPdfButton: React.FC<{ ticker: string }> = ({ ticker }) => {
+const ExportPdfButton: React.FC<{ ticker: string; peers?: string[] }> = ({ ticker, peers = [] }) => {
   const [exporting, setExporting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const run = async () => {
     setErr(null);
     setExporting(true);
     try {
-      await exportAnalysisReport(ticker);
+      await exportAnalysisReport(ticker, peers);
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'Export failed.');
     } finally {
@@ -626,7 +626,8 @@ const AnalysisView: React.FC<AnalysisViewProps> = ({ documents }) => {
               </button>
               {(() => {
                 const doc = documents.find(d => d.id === forecastDocId);
-                return doc?.ticker ? <ExportPdfButton ticker={doc.ticker} /> : null;
+                const peers = documents.map(d => d.ticker).filter((t): t is string => Boolean(t));
+                return doc?.ticker ? <ExportPdfButton ticker={doc.ticker} peers={peers} /> : null;
               })()}
             </div>
           </div>
@@ -655,9 +656,11 @@ const AnalysisView: React.FC<AnalysisViewProps> = ({ documents }) => {
               </select>
               {(() => {
                 const doc = documents.find(d => d.id === trendsDocId);
-                // The PDF is the full single-company report (trends + forecast),
-                // built server-side from the same numbers/descriptions on screen.
-                return doc?.ticker ? <ExportPdfButton ticker={doc.ticker} /> : null;
+                // The PDF is the full single-company report (trends + forecast +
+                // loaded-peer distribution), built server-side from the same
+                // numbers/descriptions on screen.
+                const peers = documents.map(d => d.ticker).filter((t): t is string => Boolean(t));
+                return doc?.ticker ? <ExportPdfButton ticker={doc.ticker} peers={peers} /> : null;
               })()}
             </div>
           </div>
