@@ -80,7 +80,9 @@ export interface ChatSource {
   source: string;             // section label (back-compat alias of `section`)
   // --- Deterministic citation fields (built server-side from retrieved chunks) ---
   number?: number;            // 1-based citation number an inline [n] resolves to
+  company?: string;           // resolved readable name ("Gap Inc."), not the ticker
   section?: string;           // e.g. "Risk Factors", "MD&A"
+  url?: string;               // SEC source URL — used only as the EDGAR href
   accession_number?: string;
   filing_date?: string;
   preview?: string;           // short snippet for the reference row

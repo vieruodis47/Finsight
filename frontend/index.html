@@ -43,6 +43,16 @@
       /* FinChat suggested questions: 2×2 grid of equal-width cards, 1-col below 640px. */
       .chat-suggest-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; align-items: stretch; }
       @media (max-width: 640px) { .chat-suggest-grid { grid-template-columns: 1fr; } }
+      /* FinChat source-citation rows: subtle hover + a soft reveal on expand so
+         the appearing chunk doesn't pop (rows below shift gently, not abruptly). */
+      .cite-row { transition: border-color 0.12s ease, background 0.12s ease; }
+      .cite-row:hover { border-color: #C9D3DE; background: #FCFDFE; }
+      .cite-reveal { animation: cite-reveal 0.18s ease-out; }
+      @keyframes cite-reveal {
+        from { opacity: 0; transform: translateY(-3px); }
+        to   { opacity: 1; transform: translateY(0); }
+      }
+      @media (prefers-reduced-motion: reduce) { .cite-reveal { animation: none; } }
       /* FinChat "fetching an answer" flying bird.
          Fly = translate across a ~150px track in a gentle arc (2.6s).
          Flap = CSS transform on each wing (NOT the SVG `d`, which Firefox can't

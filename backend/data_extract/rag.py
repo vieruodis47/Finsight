@@ -106,27 +106,67 @@ def _preview(text: str, limit: int = 240) -> str:
     return t[:limit] + ("…" if len(t) > limit else "")
 
 
+# Ingest concatenates sections as "## {Label}\n\n{text}" (see app._build_ingest_text),
+# so the section a chunk belongs to is the "## " heading at/near its start. Chunks
+# in the middle of a long section carry no heading — those get a blank section and
+# the UI simply shows "{Company} · {form}".
+_SECTION_RE = re.compile(r"^\s*##\s+(.+?)\s*$", re.MULTILINE)
+
+
+def _section_from_text(text: str) -> str:
+    m = _SECTION_RE.search(text or "")
+    if not m:
+        return ""
+    label = m.group(1).strip()
+    # Headings sometimes run straight into body ("Business Item 1. Business …");
+    # keep just the leading title-ish part so the row label stays short.
+    label = re.split(r"\s+Item\s+\d", label, maxsplit=1)[0].strip()
+    return label[:60]
+
+
+_LEADING_HEADING_RE = re.compile(r"^\s*##\s+.*?(?:\n+|$)")
+
+
+def _strip_leading_heading(text: str) -> str:
+    """Drop a leading '## Heading' line — it's surfaced as the row's section label,
+    so it would be redundant/raw in the snippet and the passage body."""
+    return _LEADING_HEADING_RE.sub("", text or "", count=1).lstrip()
+
+
 def build_references(chunks: list[FilingChunk]) -> list[dict]:
     """Numbered reference list [1..N] from the actual retrieved chunks.
 
     Numbering matches _format_context (retrieval rank order), so an inline [n]
-    resolves to references[n-1]. Each entry carries enough to show filing context
-    (ticker/form/section) and to let the user inspect the exact source passage
-    (full `text`, capped to keep the payload bounded).
+    resolves to references[n-1]. Each entry carries enough to show readable filing
+    context (resolved company name, form, best-effort section) and to let the user
+    inspect the exact source passage (full `text`) and open the filing (`url`).
+
+    `company` is resolved from the SEC registry so the row shows "Gap Inc." rather
+    than the bare/cryptic registry ticker ("GAP", "S"). `url` (the SEC source) is
+    carried for the "View on SEC EDGAR" href only — never as visible text.
     """
+    try:
+        from .sec_client import company_name_for_ticker
+    except Exception:
+        company_name_for_ticker = lambda _t: None  # noqa: E731 — fail soft to ticker
+
     refs: list[dict] = []
     for i, c in enumerate(chunks, start=1):
+        url = c.source if (c.source or "").startswith("http") else ""
+        body = _strip_leading_heading(c.text)
         refs.append({
             "number": i,
             "ticker": c.ticker,
+            "company": company_name_for_ticker(c.ticker) or c.ticker,
             "form": c.form,
             "accession_number": c.accession_number,
-            "section": c.source,
-            "source": c.source,            # back-compat alias for older UI reads
+            "section": _section_from_text(c.text),
+            "url": url,
+            "source": c.source,            # back-compat; the UI never renders this
             "chunk_index": c.chunk_index,
             "filing_date": c.filing_date,
-            "preview": _preview(c.text),
-            "text": (c.text or "")[:6000],
+            "preview": _preview(body),
+            "text": body[:6000],
         })
     return refs
 
@@ -280,10 +320,12 @@ class Source(BaseModel):
     # 1-based citation number an inline [n] marker resolves to.
     number: int = 0
     ticker: str
+    company: str = ""          # resolved readable name ("Gap Inc."), not the ticker
     form: str
     chunk_index: int
     source: str
     section: str = ""
+    url: str = ""              # SEC source URL — used only as the EDGAR href
     accession_number: str = ""
     filing_date: str = ""
     preview: str = ""

@@ -122,25 +122,88 @@ _local_ticker_map: dict | None = None
 _remote_ticker_map: dict | None = None
 
 
+_local_name_map: dict | None = None
+
+
 def _load_local_ticker_map() -> dict:
-    """Lazily load and cache the bundled ticker->CIK map. Fails soft to {}."""
-    global _local_ticker_map
+    """Lazily load and cache the bundled ticker->CIK map. Fails soft to {}.
+
+    Also builds a ticker->company-name map (see company_name_for_ticker) from the
+    same registry so callers can render a real company name ("Gap Inc.") instead
+    of a bare/cryptic ticker ("GAP", "S").
+    """
+    global _local_ticker_map, _local_name_map
     if _local_ticker_map is not None:
         return _local_ticker_map
     with _ticker_map_lock:
         if _local_ticker_map is None:
             m: dict = {}
+            names: dict = {}
             try:
                 data = json.loads(_TICKER_MAP_PATH.read_text())
                 for c in data.get("companies", []):
                     t = (c.get("ticker") or "").upper()
                     if t:
                         m[t] = str(c["cik"]).zfill(10)
+                        nm = (c.get("name") or "").strip()
+                        if nm and t not in names:
+                            names[t] = nm
                 logger.info("Loaded %d tickers from local SEC registry", len(m))
             except Exception as e:
                 logger.warning("Could not load local ticker map: %s", e)
             _local_ticker_map = m
+            _local_name_map = names
     return _local_ticker_map
+
+
+# Registry names are mostly SCREAMING-CASE ("GAP INC", "MICROSOFT CORP"); a few
+# are already mixed-case ("SentinelOne, Inc."). Prettify only the all-caps ones by
+# capitalizing each word, with a small token map for legal suffixes and genuine
+# acronyms that must NOT be title-cased. (A blanket "short word stays uppercase"
+# rule is wrong — it turns "GAP" into "GAP" instead of "Gap"; real acronyms are
+# listed explicitly instead.)
+_NAME_FIXUPS = {
+    # legal suffixes / connectors
+    "inc": "Inc.", "corp": "Corp.", "co": "Co.", "ltd": "Ltd.", "llc": "LLC",
+    "plc": "PLC", "lp": "LP", "llp": "LLP", "sa": "SA", "ag": "AG", "nv": "NV",
+    "holdings": "Holdings", "group": "Group", "the": "the", "and": "and",
+    "of": "of", "for": "for",
+    # acronyms / initialisms that should stay uppercase
+    "usa": "USA", "us": "US", "uk": "UK", "hp": "HP", "ibm": "IBM", "3m": "3M",
+    "att": "AT&T", "ge": "GE", "cvs": "CVS", "ups": "UPS", "pnc": "PNC",
+    "adt": "ADT", "kla": "KLA", "amd": "AMD", "ii": "II", "iii": "III", "iv": "IV",
+}
+
+
+def _prettify_name(raw: str) -> str:
+    if not raw:
+        return raw
+    # Already mixed-case (has a lowercase letter) -> trust the registry's casing.
+    if any(ch.islower() for ch in raw):
+        return raw
+    out: list[str] = []
+    for word in raw.split():
+        key = word.strip(".").lower()
+        if key in _NAME_FIXUPS:
+            out.append(_NAME_FIXUPS[key])
+        else:
+            out.append(word.capitalize())
+    return " ".join(out)
+
+
+def company_name_for_ticker(ticker: str) -> str | None:
+    """Resolve a ticker to a readable company name from the bundled SEC registry.
+
+    The chunk's stored `ticker` is the SEC registry ticker (e.g. "S" for
+    SentinelOne, "GAP" for Gap Inc.); rendering that bare symbol is what produced
+    the mangled "S 10-K" / "GAP 10-K" labels. Returns None when the ticker isn't
+    in the registry so callers can fall back to the raw symbol.
+    """
+    if not ticker:
+        return None
+    _load_local_ticker_map()  # populates _local_name_map as a side effect
+    raw = (_local_name_map or {}).get(ticker.strip().upper())
+    return _prettify_name(raw) if raw else None
 
 
 def get_sic(cik: str) -> str | None:

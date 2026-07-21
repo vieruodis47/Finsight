@@ -39,7 +39,23 @@ const pathBadgeLabel = (path: string): string =>
     ? '◎ filing text · graph data not loaded'
     : '◉ filing text';
 
-const sectionLabel = (s: ChatSource): string => s.section || s.source || 'Filing';
+// Readable company name (resolved server-side); fall back to the bare ticker.
+// Never the raw source URL.
+const companyName = (s: ChatSource): string => s.company || s.ticker;
+// Best-effort section; may be empty (mid-section chunks). Never the source URL.
+const sectionLabel = (s: ChatSource): string => s.section || '';
+// The SEC href lives here — used only as a link target, never rendered as text.
+const edgarUrl = (s: ChatSource): string =>
+  (s.url || (s.source?.startsWith('http') ? s.source : '')) || '';
+
+// Palette values from the sources spec that aren't theme tokens (theme tokens are
+// used everywhere they exist — see c.brand / c.brandTint / c.text / c.textMuted).
+const CITE = {
+  label: '#788798',    // small-caps label + section text
+  snippet: '#8595A5',  // one-line snippet grey
+  cardBorder: '#E4E9EF',
+  quoteBg: '#F7F9FB',
+} as const;
 
 // ── inline markers ────────────────────────────────────────────────────────────
 
@@ -58,10 +74,13 @@ const markerSuper: React.CSSProperties = {
   fontFamily: font.ui,
 };
 
+const citeAriaLabel = (n: number, s: ChatSource): string => {
+  const sec = sectionLabel(s);
+  return `Source ${n}: ${companyName(s)} ${s.form}${sec ? `, ${sec}` : ''}`;
+};
+
 const CitationMarker: React.FC<{ n: number; source?: ChatSource; onCite: (n: number) => void }> = ({ n, source, onCite }) => {
-  const label = source
-    ? `Source ${n}: ${source.ticker} ${source.form} ${sectionLabel(source)}`
-    : `Source ${n}`;
+  const label = source ? citeAriaLabel(n, source) : `Source ${n}`;
   return (
     <button
       type="button"
@@ -186,76 +205,113 @@ export const renderChatMarkdown = (text: string, cite?: CiteContext): React.Reac
 
 // ── reference list ─────────────────────────────────────────────────────────────
 
+const dot = <span aria-hidden="true" style={{ color: CITE.label, margin: '0 5px' }}>·</span>;
+
 const ReferenceRow: React.FC<{
   source: ChatSource;
   open: boolean;
   onToggle: () => void;
   liRef: (el: HTMLLIElement | null) => void;
-  cited: boolean;
-}> = ({ source, open, onToggle, liRef, cited }) => {
+}> = ({ source, open, onToggle, liRef }) => {
   const panelId = `cite-panel-${source.number}-${useId()}`;
-  const context = `${source.ticker} ${source.form} · ${sectionLabel(source)}`;
+  const company = companyName(source);
+  const section = sectionLabel(source);
+  const url = edgarUrl(source);
+
   return (
     <li
       ref={liRef}
       tabIndex={-1}
-      aria-label={`Source ${source.number}: ${source.ticker} ${source.form} ${sectionLabel(source)}`}
-      style={{ listStyle: 'none', outlineOffset: 2 }}
+      className="cite-row"
+      style={{
+        listStyle: 'none', background: c.bg,
+        border: `1px solid ${CITE.cardBorder}`, borderRadius: 10, overflow: 'hidden',
+      }}
     >
+      {/* Collapsed row — the whole card header is one accessible button. */}
       <button
         type="button"
         onClick={onToggle}
         aria-expanded={open}
         aria-controls={panelId}
+        aria-label={citeAriaLabel(source.number!, source)}
         style={{
-          display: 'flex', alignItems: 'baseline', gap: 7, width: '100%',
+          display: 'flex', alignItems: 'center', gap: 9, width: '100%',
           textAlign: 'left', background: 'transparent', border: 'none',
-          padding: '5px 0', cursor: 'pointer', fontFamily: font.ui,
+          padding: '8px 10px', cursor: 'pointer', fontFamily: font.ui,
         }}
       >
-        <span style={{
-          flexShrink: 0, minWidth: 15, height: 15, marginTop: 1, borderRadius: 4,
-          display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-          fontSize: 9, fontWeight: 600,
-          background: cited ? c.brandTint : c.surfaceAlt,
-          color: cited ? c.brand : c.textMuted,
-        }}>
+        {/* Numbered sapphire chip — inverts to filled when expanded. */}
+        <span
+          aria-hidden="true"
+          style={{
+            flexShrink: 0, minWidth: 18, height: 18, borderRadius: 5,
+            display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+            fontSize: 10.5, fontWeight: 600, lineHeight: 1,
+            background: open ? c.brand : c.brandTint,
+            color: open ? c.onBrand : c.brand,
+          }}
+        >
           {source.number}
         </span>
+
         <span style={{ flex: 1, minWidth: 0 }}>
-          <span style={{ fontSize: 11.5, fontWeight: 600, color: c.text }}>{context}</span>
+          {/* {Company} · {form} · {section} — company semibold ink, form muted,
+              section label-grey. */}
+          <span style={{ display: 'block', fontSize: 12.5, lineHeight: 1.35, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            <span style={{ fontWeight: 600, color: c.text }}>{company}</span>
+            {dot}
+            <span style={{ color: c.textMuted }}>{source.form}</span>
+            {section && <>{dot}<span style={{ color: CITE.label }}>{section}</span></>}
+          </span>
+          {/* One-line snippet, collapsed only (full text shows when open). */}
           {!open && source.preview && (
-            <span style={{ display: 'block', fontSize: 11.5, color: c.textMuted, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            <span style={{ display: 'block', fontSize: 11.5, color: CITE.snippet, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', lineHeight: 1.35 }}>
               {source.preview}
             </span>
           )}
         </span>
-        <span aria-hidden="true" style={{ flexShrink: 0, fontSize: 10, color: c.textFaint, marginTop: 2 }}>
-          {open ? '▲' : '▼'}
+
+        <span aria-hidden="true" style={{ flexShrink: 0, fontSize: 11, color: CITE.label }}>
+          {open ? '▴' : '▾'}
         </span>
       </button>
+
+      {/* Expanded: full chunk in a sapphire-ruled quote block + the EDGAR link
+          (the only place the URL appears — as an href, never as text). */}
       {open && (
         <div
           id={panelId}
           role="region"
           aria-live="polite"
           aria-label={`Source ${source.number} passage`}
-          style={{
-            margin: '2px 0 8px 22px', padding: '9px 11px', background: c.bg,
-            border: `0.5px solid ${c.border}`, borderRadius: 8,
-            fontSize: 12, lineHeight: 1.6, color: c.text2, fontFamily: font.ui,
-            whiteSpace: 'pre-wrap', maxHeight: 260, overflowY: 'auto',
-          }}
+          className="cite-reveal"
+          style={{ padding: '0 10px 10px' }}
         >
-          {source.accession_number && (
-            <div style={{ fontSize: 10, color: c.textFaint, marginBottom: 6 }}>
-              {source.ticker} {source.form}
-              {source.filing_date ? ` · filed ${source.filing_date}` : ''}
-              {` · accession ${source.accession_number}`}
-              {` · chunk #${source.chunk_index}`}
-            </div>
+          <blockquote
+            style={{
+              margin: '2px 0 0', padding: '9px 12px', background: CITE.quoteBg,
+              borderLeft: `2px solid ${c.brand}`, borderRadius: '0 6px 6px 0',
+              fontSize: 12, lineHeight: 1.65, color: c.text2, fontFamily: font.ui,
+              whiteSpace: 'pre-wrap', maxHeight: 260, overflowY: 'auto',
+            }}
+          >
+            {source.text || source.preview || '(passage text unavailable)'}
+          </blockquote>
+          {url && (
+            <a
+              href={url}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 4, marginTop: 8,
+                fontSize: 11.5, fontWeight: 500, color: c.brand,
+                fontFamily: font.ui, textDecoration: 'none',
+              }}
+            >
+              View on SEC EDGAR <span aria-hidden="true">↗</span>
+            </a>
           )}
-          {source.text || source.preview || '(passage text unavailable)'}
         </div>
       )}
     </li>
@@ -322,17 +378,16 @@ export const GroundedAnswer: React.FC<{
           )}
           {refs.length > 0 && (
             <>
-              <p style={{ fontSize: 10, color: c.textFaint, textTransform: 'uppercase', letterSpacing: '0.04em', margin: '0 0 2px', fontFamily: font.ui }}>
-                Sources · {refs.length} retrieved passage{refs.length > 1 ? 's' : ''}
+              <p style={{ fontSize: 10, fontWeight: 600, color: CITE.label, textTransform: 'uppercase', letterSpacing: '0.07em', margin: '0 0 7px', fontFamily: font.ui }}>
+                Sources · {refs.length} passage{refs.length > 1 ? 's' : ''}
               </p>
-              <ol aria-label="Source references" style={{ margin: 0, padding: 0 }}>
+              <ol aria-label="Source references" style={{ display: 'flex', flexDirection: 'column', gap: 8, margin: 0, padding: 0, listStyle: 'none' }}>
                 {refs.map(s => (
                   <ReferenceRow
                     key={s.number}
                     source={s}
                     open={expanded.has(s.number)}
                     onToggle={() => toggle(s.number)}
-                    cited={validSet.has(s.number)}
                     liRef={el => { if (el) rowRefs.current.set(s.number, el); else rowRefs.current.delete(s.number); }}
                   />
                 ))}
