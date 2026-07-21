@@ -171,6 +171,33 @@ def build_references(chunks: list[FilingChunk]) -> list[dict]:
     return refs
 
 
+def _assemble_sources(chunks: list[FilingChunk], graph_sources: Optional[list[dict]]) -> list[dict]:
+    """One reference list across retrieval paths: vector passages first (numbered
+    1..V, the numbers inline [n] markers resolve to), then graph/XBRL fact cards
+    (V+1..). Both are the SAME shape, so the UI renders one consistent component
+    regardless of path — a graph answer is never given a lesser treatment."""
+    refs = build_references(chunks)
+    n = len(refs)
+    for j, gs in enumerate(graph_sources or [], start=1):
+        refs.append({**gs, "number": n + j})
+    return refs
+
+
+# A grounded answer that turns out to be "I can't find/identify this" must NOT
+# carry a citation list — dangling passages for a non-answer read as misleading
+# evidence. These are the exact refusal sentinels the prompts/router emit.
+_REFUSAL_SIGNS = (
+    "could not find sufficient information",
+    "couldn't find anything relevant",
+    "could not find anything relevant",
+)
+
+
+def _looks_like_refusal(text: str) -> bool:
+    t = (text or "").lower()
+    return any(s in t for s in _REFUSAL_SIGNS)
+
+
 _CITATION_RE = re.compile(r"\[(\d{1,3})\]")
 
 # "Financial-looking" numbers (has a decimal, a $/%, or is 3+ digits); bare small
@@ -347,9 +374,10 @@ def chat(req: ChatRequest) -> ChatResponse:
     # sync def -> FastAPI runs it in a threadpool, so the blocking
     # google-genai / RavenDB calls don't stall the event loop.
     ticker = req.ticker.strip().upper() if req.ticker else None
+    graph_sources: list[dict] = []
     try:
         from backend.graph.router import route_question
-        answer, chunks, path = route_question(
+        answer, chunks, graph_sources, path = route_question(
             req.question, k=req.k, ticker=ticker, tickers=req.tickers, form=req.form
         )
     except Exception as exc:
@@ -363,7 +391,12 @@ def chat(req: ChatRequest) -> ChatResponse:
         if not chunks:
             answer = NO_CONTEXT_MESSAGE
 
-    sources = [Source(**r) for r in build_references(chunks)]
+    # Refusal answers carry no citations (see _looks_like_refusal).
+    if _looks_like_refusal(answer):
+        return ChatResponse(answer=answer, sources=[], valid_citations=[], retrieval_path=path)
+
+    refs = _assemble_sources(chunks, graph_sources)
+    sources = [Source(**r) for r in refs]
     valid = validate_citations(answer, chunks)
     return ChatResponse(answer=answer, sources=sources, valid_citations=valid, retrieval_path=path)
 
@@ -391,9 +424,10 @@ def _chat_event_stream(
         return json.dumps(obj, ensure_ascii=False) + "\n"
 
     # --- Pre-generation: route + retrieve (the "bird" phase) -----------------
+    graph_sources: list[dict] = []
     try:
         from backend.graph.router import prepare_chat_stream
-        segments, chunks, path = prepare_chat_stream(
+        segments, chunks, graph_sources, path = prepare_chat_stream(
             question, k=k, ticker=ticker, tickers=tickers, form=form
         )
     except Exception as exc:
@@ -411,9 +445,9 @@ def _chat_event_stream(
             chunks = []
             path = "none"
 
-    # Deterministic reference list built from the ACTUAL retrieved chunks — not
-    # the model. Numbering matches _format_context, so inline [n] resolve here.
-    references = build_references(chunks)
+    # One reference list across paths: vector passages (numbered, inline-cited) +
+    # graph/XBRL fact cards, same shape → one consistent citation UI.
+    references = _assemble_sources(chunks, graph_sources)
 
     # --- Generation: stream each segment -------------------------------------
     # Accumulate the full answer as it streams so citations can be validated at
@@ -432,7 +466,13 @@ def _chat_event_stream(
                     if delta:
                         parts.append(delta)
                         yield _line({"type": "token", "text": delta})
-        valid = validate_citations("".join(parts), chunks)
+        full_answer = "".join(parts)
+        # A refusal ("I can't find/identify this") must not show a citation list —
+        # dangling passages under a non-answer read as misleading evidence.
+        if _looks_like_refusal(full_answer):
+            references, valid = [], []
+        else:
+            valid = validate_citations(full_answer, chunks)
         yield _line({
             "type": "done",
             "sources": references,

@@ -191,6 +191,14 @@ def _prettify_name(raw: str) -> str:
     return " ".join(out)
 
 
+def cik_for_ticker(ticker: str) -> str | None:
+    """Zero-padded 10-digit CIK for a ticker from the bundled registry, or None.
+    Used to build an EDGAR filing URL for graph/XBRL citations."""
+    if not ticker:
+        return None
+    return _load_local_ticker_map().get(ticker.strip().upper())
+
+
 def company_name_for_ticker(ticker: str) -> str | None:
     """Resolve a ticker to a readable company name from the bundled SEC registry.
 

@@ -228,7 +228,9 @@ const ReferenceRow: React.FC<{
         border: `1px solid ${CITE.cardBorder}`, borderRadius: 10, overflow: 'hidden',
       }}
     >
-      {/* Collapsed row — the whole card header is one accessible button. */}
+      {/* Collapsed row — the whole card header is one accessible button.
+          Compact: single line, small chip, ~13px company (semibold, not bold
+          black), muted form/section, one-line snippet. */}
       <button
         type="button"
         onClick={onToggle}
@@ -236,18 +238,18 @@ const ReferenceRow: React.FC<{
         aria-controls={panelId}
         aria-label={citeAriaLabel(source.number!, source)}
         style={{
-          display: 'flex', alignItems: 'center', gap: 9, width: '100%',
+          display: 'flex', alignItems: 'center', gap: 8, width: '100%',
           textAlign: 'left', background: 'transparent', border: 'none',
-          padding: '8px 10px', cursor: 'pointer', fontFamily: font.ui,
+          padding: '7px 9px', cursor: 'pointer', fontFamily: font.ui,
         }}
       >
         {/* Numbered sapphire chip — inverts to filled when expanded. */}
         <span
           aria-hidden="true"
           style={{
-            flexShrink: 0, minWidth: 18, height: 18, borderRadius: 5,
+            flexShrink: 0, minWidth: 16, height: 16, borderRadius: 4,
             display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-            fontSize: 10.5, fontWeight: 600, lineHeight: 1,
+            fontSize: 10, fontWeight: 600, lineHeight: 1,
             background: open ? c.brand : c.brandTint,
             color: open ? c.onBrand : c.brand,
           }}
@@ -258,7 +260,7 @@ const ReferenceRow: React.FC<{
         <span style={{ flex: 1, minWidth: 0 }}>
           {/* {Company} · {form} · {section} — company semibold ink, form muted,
               section label-grey. */}
-          <span style={{ display: 'block', fontSize: 12.5, lineHeight: 1.35, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+          <span style={{ display: 'block', fontSize: 12, lineHeight: 1.3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
             <span style={{ fontWeight: 600, color: c.text }}>{company}</span>
             {dot}
             <span style={{ color: c.textMuted }}>{source.form}</span>
@@ -266,13 +268,13 @@ const ReferenceRow: React.FC<{
           </span>
           {/* One-line snippet, collapsed only (full text shows when open). */}
           {!open && source.preview && (
-            <span style={{ display: 'block', fontSize: 11.5, color: CITE.snippet, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', lineHeight: 1.35 }}>
+            <span style={{ display: 'block', fontSize: 11, color: CITE.snippet, marginTop: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', lineHeight: 1.35 }}>
               {source.preview}
             </span>
           )}
         </span>
 
-        <span aria-hidden="true" style={{ flexShrink: 0, fontSize: 11, color: CITE.label }}>
+        <span aria-hidden="true" style={{ flexShrink: 0, fontSize: 10, color: CITE.label }}>
           {open ? '▴' : '▾'}
         </span>
       </button>
@@ -379,7 +381,12 @@ export const GroundedAnswer: React.FC<{
           {refs.length > 0 && (
             <>
               <p style={{ fontSize: 10, fontWeight: 600, color: CITE.label, textTransform: 'uppercase', letterSpacing: '0.07em', margin: '0 0 7px', fontFamily: font.ui }}>
-                Sources · {refs.length} passage{refs.length > 1 ? 's' : ''}
+                {(() => {
+                  // Graph/XBRL citations are facts, not "passages" — keep the noun
+                  // honest per path so both answer types read naturally.
+                  const noun = retrievalPath === 'graph' ? 'source' : 'passage';
+                  return `Sources · ${refs.length} ${noun}${refs.length > 1 ? 's' : ''}`;
+                })()}
               </p>
               <ol aria-label="Source references" style={{ display: 'flex', flexDirection: 'column', gap: 8, margin: 0, padding: 0, listStyle: 'none' }}>
                 {refs.map(s => (

@@ -238,13 +238,19 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ documents }) => {
     const patch = (updates: Partial<ChatMessage>) =>
       setMessages(prev => prev.map(m => (m.id === assistantId ? { ...m, ...updates } : m)));
 
-    const selected = documents.filter(d => selectedDocIds.includes(d.id));
-    const tickers  = Array.from(new Set(selected.map(d => d.ticker).filter((t): t is string => Boolean(t))));
-    const forms    = Array.from(new Set(selected.map(d => d.form).filter((f): f is '10-K' => Boolean(f))));
-    const ticker   = tickers.length === 1 ? tickers[0] : undefined;
-    const form     = forms.length   === 1 ? forms[0]   : undefined;
+    // Scope retrieval to the user's LOADED companies so vector search can't
+    // surface arbitrary corpus companies (the "Charter/Verizon for a NVDA/AAPL
+    // question" bug). An explicit doc selection narrows further; empty selection
+    // ("All") scopes to every loaded doc. The backend treats this ticker list as
+    // an authoritative `ticker IN (...)` filter, and the graph→vector fallback
+    // inherits the same scope, so a graph miss can no longer widen to the corpus.
+    const selected  = documents.filter(d => selectedDocIds.includes(d.id));
+    const scopeDocs = selected.length > 0 ? selected : documents;
+    const tickers   = Array.from(new Set(scopeDocs.map(d => d.ticker).filter((t): t is string => Boolean(t))));
+    const forms     = Array.from(new Set(scopeDocs.map(d => d.form).filter((f): f is '10-K' => Boolean(f))));
+    const form      = forms.length === 1 ? forms[0] : undefined;
 
-    await askFinSightStream(text, { ticker, form, k: 6 }, {
+    await askFinSightStream(text, { tickers: tickers.length ? tickers : undefined, form, k: 6 }, {
       onToken: (delta) => {
         ensureStarted();
         acc += delta;
