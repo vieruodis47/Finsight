@@ -3,7 +3,7 @@ import { MessageSquare, Send, Loader2, Info } from 'lucide-react';
 import { c, font } from '../theme';
 import { askFinSight, fetchIndexedStatus, ChatResult } from '../services/gemini';
 import { useIsMobile } from '../utils/hooks';
-import { renderChatMarkdown, AnswerMeta } from '../utils/chatRender';
+import { GroundedAnswer } from '../utils/chatRender';
 
 interface FinChatStripProps {
   anchor: string;
@@ -146,9 +146,15 @@ const FinChatStrip: React.FC<FinChatStripProps> = ({ anchor, peer }) => {
           {answer && !asking && (
             <div style={{ marginTop: 12, padding: '12px 14px', background: c.surface, borderRadius: 10, boxShadow: '0 1px 2px rgba(0,0,0,0.05)' }}>
               {answer.answer
-                ? renderChatMarkdown(answer.answer)
+                ? (
+                    <GroundedAnswer
+                      text={answer.answer}
+                      retrievalPath={answer.retrievalPath}
+                      sources={answer.sources}
+                      validCitations={answer.validCitations}
+                    />
+                  )
                 : <p style={{ fontSize: 13, color: c.textMuted, margin: 0 }}>No answer was returned.</p>}
-              <AnswerMeta retrievalPath={answer.retrievalPath} sources={answer.sources} />
             </div>
           )}
 

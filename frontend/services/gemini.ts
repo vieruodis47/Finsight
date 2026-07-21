@@ -9,6 +9,7 @@ const API_BASE = import.meta.env.VITE_API_BASE ?? '';
 export interface ChatResult {
   answer: string;
   sources: ChatSource[];
+  validCitations?: number[];
   retrievalPath?: 'graph' | 'vector' | 'both' | 'none' | 'vector_no_graph';
 }
 
@@ -33,10 +34,11 @@ export async function askFinSight(question: string, opts: AskOptions = {}): Prom
     const msg = await res.text().catch(() => res.statusText);
     throw new Error(`Chat failed (${res.status}): ${msg}`);
   }
-  const data = await res.json() as { answer: string; sources: ChatSource[]; retrieval_path?: string };
+  const data = await res.json() as { answer: string; sources: ChatSource[]; valid_citations?: number[]; retrieval_path?: string };
   return {
     answer: data.answer,
     sources: data.sources,
+    validCitations: data.valid_citations ?? [],
     retrievalPath: data.retrieval_path as ChatResult['retrievalPath'],
   };
 }
@@ -44,8 +46,10 @@ export async function askFinSight(question: string, opts: AskOptions = {}): Prom
 export interface ChatStreamHandlers {
   // Called with each incremental text delta as it arrives.
   onToken: (delta: string) => void;
-  // Called once when the stream completes, carrying the source badges + path.
-  onDone: (meta: { sources: ChatSource[]; retrievalPath?: ChatResult['retrievalPath'] }) => void;
+  // Called once when the stream completes, carrying the reference list, the
+  // validated inline-citation numbers, and the retrieval path. Citations resolve
+  // here (at completion), never per-token.
+  onDone: (meta: { sources: ChatSource[]; validCitations: number[]; retrievalPath?: ChatResult['retrievalPath'] }) => void;
   // Called on a mid-stream failure; any text already delivered via onToken stays.
   onError: (message: string) => void;
 }
@@ -87,7 +91,7 @@ export async function askFinSightStream(
   const handleLine = (line: string) => {
     const trimmed = line.trim();
     if (!trimmed) return;
-    let evt: { type: string; text?: string; sources?: ChatSource[]; retrieval_path?: string; message?: string };
+    let evt: { type: string; text?: string; sources?: ChatSource[]; valid_citations?: number[]; retrieval_path?: string; message?: string };
     try {
       evt = JSON.parse(trimmed);
     } catch {
@@ -99,6 +103,7 @@ export async function askFinSightStream(
       erroredOrDone = true;
       handlers.onDone({
         sources: evt.sources ?? [],
+        validCitations: evt.valid_citations ?? [],
         retrievalPath: evt.retrieval_path as ChatResult['retrievalPath'],
       });
     } else if (evt.type === 'error') {

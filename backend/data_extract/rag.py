@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from typing import Iterator, Literal, Optional
 
 from fastapi import APIRouter
@@ -47,11 +48,14 @@ SYSTEM_PROMPT = (
     "- Present the conflicting values or statements.\n"
     "- Explain that the correct answer cannot be determined from the provided context alone.\n"
     "\n"
-    "Citation rule: every sentence that states a specific fact or number MUST include an inline "
-    "citation tag matching the block header where you found it. Use the exact format: [TICKER FORM #N]. "
-    "Example: 'Apple's net sales were $391.0B in fiscal 2024 [AAPL 10-K #4].'\n"
-    "If you draw on multiple chunks, cite each one inline. Place the tag immediately after the "
-    "relevant sentence, before the period or at end of clause."
+    "Citation rule: the context is a NUMBERED list of source passages, each beginning with a "
+    "marker like [1], [2], [3]. Every sentence that states a specific fact or figure MUST end with "
+    "the bracketed number(s) of the passage(s) that actually support it. "
+    "Example: 'Apple's net sales were $391.0B in fiscal 2024 [2].'\n"
+    "Use ONLY the numbers shown in the context. NEVER invent a number that is not in the list, and "
+    "NEVER attach a citation to a passage that does not support the claim. If you draw on more than "
+    "one passage, cite each, e.g. [1][3]. If a statement is general financial background rather than "
+    "a fact from the filings, do not attach any citation."
 )
 
 NO_CONTEXT_MESSAGE = (
@@ -63,22 +67,135 @@ NO_CONTEXT_MESSAGE = (
 # --- Core ------------------------------------------------------------------
 
 def _format_context(chunks: list[FilingChunk]) -> str:
-    """Tag each chunk with its source so the model can ground and cite.
+    """Tag each chunk with a STABLE citation number [n] so the model can cite it.
 
-    Ordering: rank-0 (most relevant) first, rank-1 (second-most relevant) last,
-    ranks 2..k-1 in the middle. The two best chunks bookend the context so both
-    sit in the high-attention zones at either end of the contents string,
-    reducing the "lost in the middle" attention drop for the second-best passage.
+    The citation number is the chunk's 1-based position in the retrieval-ranked
+    `chunks` list (n=1 is rank-0, the most relevant). That number is what the
+    reference list (build_references) and the validator (validate_citations) both
+    key on, so the [n] the model emits maps deterministically back to a real
+    retrieved chunk — the model never chooses or invents the numbering.
+
+    Ordering: the two best chunks still bookend the physical text (rank-0 first,
+    rank-1 last, the rest between) to reduce the "lost in the middle" attention
+    drop — but each block keeps its own [n] header, so physical order and
+    citation number are independent.
     """
-    if len(chunks) > 2:
-        ordered = [chunks[0]] + chunks[2:] + [chunks[1]]
+    numbered = list(enumerate(chunks, start=1))  # (n, chunk) in retrieval order
+    if len(numbered) > 2:
+        ordered = [numbered[0]] + numbered[2:] + [numbered[1]]
     else:
-        ordered = chunks
+        ordered = numbered
     blocks = []
-    for c in ordered:
-        tag = f"[{c.ticker} {c.form} #{c.chunk_index} | {c.source}]"
+    for n, c in ordered:
+        loc = f" — {c.source}" if c.source else ""
+        tag = f"[{n}] {c.ticker} {c.form}{loc}"
         blocks.append(f"{tag}\n{c.text}")
     return "\n\n---\n\n".join(blocks)
+
+
+# --- Deterministic reference list + anti-fabrication citation validation ------
+# The reference list is built from the ACTUAL retrieved chunks — never from the
+# model. The model only emits inline [n] markers; validate_citations() then keeps
+# a marker only if n is in range AND (for numeric claims) the cited chunk really
+# contains the figure. A hallucinated citation looks verified, so we prefer to
+# drop a marker than render a misleading link.
+
+def _preview(text: str, limit: int = 240) -> str:
+    """Collapse whitespace and cap to a short, single-line snippet for the UI."""
+    t = " ".join((text or "").split())
+    return t[:limit] + ("…" if len(t) > limit else "")
+
+
+def build_references(chunks: list[FilingChunk]) -> list[dict]:
+    """Numbered reference list [1..N] from the actual retrieved chunks.
+
+    Numbering matches _format_context (retrieval rank order), so an inline [n]
+    resolves to references[n-1]. Each entry carries enough to show filing context
+    (ticker/form/section) and to let the user inspect the exact source passage
+    (full `text`, capped to keep the payload bounded).
+    """
+    refs: list[dict] = []
+    for i, c in enumerate(chunks, start=1):
+        refs.append({
+            "number": i,
+            "ticker": c.ticker,
+            "form": c.form,
+            "accession_number": c.accession_number,
+            "section": c.source,
+            "source": c.source,            # back-compat alias for older UI reads
+            "chunk_index": c.chunk_index,
+            "filing_date": c.filing_date,
+            "preview": _preview(c.text),
+            "text": (c.text or "")[:6000],
+        })
+    return refs
+
+
+_CITATION_RE = re.compile(r"\[(\d{1,3})\]")
+
+# "Financial-looking" numbers (has a decimal, a $/%, or is 3+ digits); bare small
+# integers and 4-digit years are labels, not claims. Mirrors the graph-path
+# grounding check so numeric support is judged the same way across both paths.
+_NUM_RE = re.compile(r"\$?\s?-?\d[\d,]*\.?\d*\s?%?")
+
+
+def _financial_numbers(text: str) -> set[str]:
+    out: set[str] = set()
+    for m in _NUM_RE.finditer(text or ""):
+        raw = m.group()
+        core = raw.replace("$", "").replace("%", "").replace(",", "").replace(" ", "").strip("-").rstrip(".")
+        if not core or core == ".":
+            continue
+        if re.fullmatch(r"(19|20)\d{2}", core):
+            continue
+        if "." not in core and "%" not in raw and "$" not in raw and len(core) < 3:
+            continue
+        out.add(core)
+    return out
+
+
+# A sentence break is a terminator FOLLOWED BY whitespace, or a newline — so the
+# decimal point in "$391.04" (followed by a digit) is NOT treated as a boundary
+# and the figure stays inside the claim it belongs to.
+_SENT_BREAK = re.compile(r"[.;:](?=\s)|\n")
+
+
+def _claim_before(answer: str, idx: int) -> str:
+    """The clause/sentence immediately preceding a citation marker at `idx` —
+    from the previous sentence break up to the marker."""
+    last = 0
+    for m in _SENT_BREAK.finditer(answer[:idx]):
+        last = m.end()
+    return answer[last:idx]
+
+
+def validate_citations(answer: str, chunks: list[FilingChunk]) -> list[int]:
+    """Return the sorted set of citation numbers in `answer` that are BOTH in
+    range [1..N] AND supported by the cited chunk.
+
+    Support rule: if the claim preceding the marker contains financial figures,
+    at least one must appear in the cited chunk's text (prefix-tolerant, so a
+    figure cited at coarser precision — 391 vs 391.04 — still matches). Purely
+    qualitative claims pass the existence check (n is a real chunk). Any marker
+    that fails is dropped by the caller — never rendered as a link.
+    """
+    n = len(chunks)
+    valid: set[int] = set()
+    for m in _CITATION_RE.finditer(answer or ""):
+        num = int(m.group(1))
+        if not (1 <= num <= n):
+            continue
+        if num in valid:
+            continue
+        claim_nums = _financial_numbers(_claim_before(answer, m.start()))
+        if not claim_nums:
+            valid.add(num)
+            continue
+        chunk_nums = _financial_numbers(chunks[num - 1].text or "")
+        if any(any(a == b or b.startswith(a) or a.startswith(b) for b in chunk_nums) for a in claim_nums):
+            valid.add(num)
+        # else: a numeric claim the cited chunk does not contain — drop it.
+    return sorted(valid)
 
 
 def generate_answer(question: str, chunks: list[FilingChunk]) -> str:
@@ -159,15 +276,27 @@ class ChatRequest(BaseModel):
 
 
 class Source(BaseModel):
+    # Deterministic reference-list entry (see build_references). `number` is the
+    # 1-based citation number an inline [n] marker resolves to.
+    number: int = 0
     ticker: str
     form: str
     chunk_index: int
     source: str
+    section: str = ""
+    accession_number: str = ""
+    filing_date: str = ""
+    preview: str = ""
+    text: str = ""
 
 
 class ChatResponse(BaseModel):
     answer: str
     sources: list[Source]
+    # Citation numbers that survived validation (in range + supported). The UI
+    # linkifies ONLY these inline [n]; any other [n] is a fabricated citation and
+    # is dropped rather than rendered.
+    valid_citations: list[int] = []
     retrieval_path: str = "vector"   # "graph" | "vector" | "both" | "none"
 
 
@@ -192,11 +321,9 @@ def chat(req: ChatRequest) -> ChatResponse:
         if not chunks:
             answer = NO_CONTEXT_MESSAGE
 
-    sources = [
-        Source(ticker=c.ticker, form=c.form, chunk_index=c.chunk_index, source=c.source)
-        for c in chunks
-    ]
-    return ChatResponse(answer=answer, sources=sources, retrieval_path=path)
+    sources = [Source(**r) for r in build_references(chunks)]
+    valid = validate_citations(answer, chunks)
+    return ChatResponse(answer=answer, sources=sources, valid_citations=valid, retrieval_path=path)
 
 
 # --- Streaming chat --------------------------------------------------------
@@ -242,22 +369,34 @@ def _chat_event_stream(
             chunks = []
             path = "none"
 
-    sources = [
-        {"ticker": c.ticker, "form": c.form, "chunk_index": c.chunk_index, "source": c.source}
-        for c in chunks
-    ]
+    # Deterministic reference list built from the ACTUAL retrieved chunks — not
+    # the model. Numbering matches _format_context, so inline [n] resolve here.
+    references = build_references(chunks)
 
     # --- Generation: stream each segment -------------------------------------
+    # Accumulate the full answer as it streams so citations can be validated at
+    # COMPLETION (the full claim set isn't known mid-stream). Tokens still stream
+    # to the client for live rendering; the reference list + validated marker set
+    # are attached only in the terminal `done` event.
+    parts: list[str] = []
     try:
         for seg in segments:
             if seg["kind"] == "text":
                 if seg["text"]:
+                    parts.append(seg["text"])
                     yield _line({"type": "token", "text": seg["text"]})
             else:
                 for delta in generate_stream(seg["system"], seg["prompt"], seg["temperature"]):
                     if delta:
+                        parts.append(delta)
                         yield _line({"type": "token", "text": delta})
-        yield _line({"type": "done", "sources": sources, "retrieval_path": path})
+        valid = validate_citations("".join(parts), chunks)
+        yield _line({
+            "type": "done",
+            "sources": references,
+            "valid_citations": valid,
+            "retrieval_path": path,
+        })
     except Exception as exc:
         # Mid-stream failure: emit an error event. The client keeps whatever
         # partial text already arrived (it never blanks the bubble).

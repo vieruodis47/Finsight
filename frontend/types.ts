@@ -77,7 +77,14 @@ export interface ChatSource {
   ticker: string;
   form: string;
   chunk_index: number;
-  source: string;
+  source: string;             // section label (back-compat alias of `section`)
+  // --- Deterministic citation fields (built server-side from retrieved chunks) ---
+  number?: number;            // 1-based citation number an inline [n] resolves to
+  section?: string;           // e.g. "Risk Factors", "MD&A"
+  accession_number?: string;
+  filing_date?: string;
+  preview?: string;           // short snippet for the reference row
+  text?: string;              // full chunk text revealed in the expander
 }
 
 export interface ChatMessage {
@@ -86,6 +93,7 @@ export interface ChatMessage {
   text: string;
   timestamp: Date;
   sources?: ChatSource[];         // filings that grounded an assistant answer
+  validCitations?: number[];      // inline [n] numbers that passed validation (linkify only these)
   retrievalPath?: 'graph' | 'vector' | 'both' | 'none' | 'vector_no_graph'; // which path answered
   streaming?: boolean;            // assistant reply is still streaming in
   error?: boolean;                // stream errored mid-flight (partial text kept)

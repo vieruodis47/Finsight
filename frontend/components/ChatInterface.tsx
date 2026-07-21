@@ -5,7 +5,7 @@ import { askFinSightStream } from '../services/gemini';
 import { c, font } from '../theme';
 import { companyLabel } from '../utils/company';
 import { useIsMobile } from '../utils/hooks';
-import { renderChatMarkdown, AnswerMeta } from '../utils/chatRender';
+import { GroundedAnswer } from '../utils/chatRender';
 import BirdLoader from './BirdLoader';
 
 interface ChatInterfaceProps {
@@ -250,9 +250,9 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ documents }) => {
         acc += delta;
         patch({ text: acc });
       },
-      onDone: ({ sources, retrievalPath }) => {
+      onDone: ({ sources, validCitations, retrievalPath }) => {
         ensureStarted();
-        patch({ text: acc, sources, retrievalPath, streaming: false });
+        patch({ text: acc, sources, validCitations, retrievalPath, streaming: false });
         // Announce the finished answer once (see `announcement` a11y note).
         setAnnouncement(acc);
       },
@@ -403,16 +403,22 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ documents }) => {
                       ...(isUser ? { whiteSpace: 'pre-wrap', fontFamily: font.ui } : {}),
                     }}
                   >
-                    {/* Answer body. During streaming a blinking caret trails the
-                        text as tokens arrive. */}
+                    {/* Answer body + (at completion) retrieval badge and the
+                        numbered, inspectable reference list. During streaming a
+                        blinking caret trails the text; citations resolve once the
+                        stream finishes, so the reference list appends below with
+                        no reflow of the text above. */}
                     {isUser
                       ? msg.text
-                      : <>
-                          {renderChatMarkdown(msg.text)}
-                          {msg.streaming && (
-                            <span className="stream-caret" aria-hidden="true" style={{ background: c.brand }} />
-                          )}
-                        </>
+                      : (
+                          <GroundedAnswer
+                            text={msg.text}
+                            streaming={msg.streaming}
+                            retrievalPath={msg.retrievalPath}
+                            sources={msg.sources}
+                            validCitations={msg.validCitations}
+                          />
+                        )
                     }
 
                     {/* Mid-stream failure — keep the partial text above, flag it. */}
@@ -422,9 +428,6 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ documents }) => {
                         The response was interrupted. Please try asking again.
                       </p>
                     )}
-
-                    {/* Source metadata — only once the answer has finished streaming. */}
-                    {!isUser && !msg.streaming && <AnswerMeta retrievalPath={msg.retrievalPath} sources={msg.sources} />}
 
                     {/* Timestamp */}
                     <p style={{ fontSize: 10, color: isUser ? c.textMuted : c.textFaint, margin: '6px 0 0', textAlign: isUser ? 'right' : 'left', fontFamily: font.ui }}>
