@@ -321,10 +321,12 @@ const BoxRow: React.FC<{ m: PeerDistributionMetric }> = ({ m }) => {
             <title>{target.ticker}: {fmtPeerVal(target.value, m.unit)}</title>
           </path>
         )}
-        {/* quartile value labels (spread by construction; min/median/max only) */}
-        <text x={x(mn)} y={centerY + 26} fontSize={9.5} fill={c.textFaint} textAnchor="middle" fontFamily={FF}>{fmtPeerVal(mn, m.unit)}</text>
-        <text x={x(med)} y={centerY + 26} fontSize={9.5} fill={c.textMuted} textAnchor="middle" fontFamily={FF}>med {fmtPeerVal(med, m.unit)}</text>
-        <text x={x(mx)} y={centerY + 26} fontSize={9.5} fill={c.textFaint} textAnchor="middle" fontFamily={FF}>{fmtPeerVal(mx, m.unit)}</text>
+        {/* Value labels on SEPARATE rows/anchors so they never collide when the
+            quartiles compress: median ABOVE the box; min pinned to the left end
+            and max to the right end BELOW. */}
+        <text x={Math.min(Math.max(x(med), padL + 18), W - padR - 18)} y={centerY - 14} fontSize={9.5} fill={c.textMuted} textAnchor="middle" fontFamily={FF}>med {fmtPeerVal(med, m.unit)}</text>
+        <text x={padL} y={centerY + 24} fontSize={9.5} fill={c.textFaint} textAnchor="start" fontFamily={FF}>{fmtPeerVal(mn, m.unit)}</text>
+        <text x={W - padR} y={centerY + 24} fontSize={9.5} fill={c.textFaint} textAnchor="end" fontFamily={FF}>{fmtPeerVal(mx, m.unit)}</text>
       </svg>
     </div>
   );
@@ -496,7 +498,10 @@ const TrendsPanel: React.FC<{ ticker: string; peers?: string[] }> = ({ ticker, p
   // offer the slide once there are ≥2 OTHER companies (target + 2 = a 3-point
   // box). Below that the slide would only ever say "load more", so we hide it.
   const peerSet = Array.from(new Set(peers.map(p => p.toUpperCase()).filter(Boolean)));
-  const showPeerDist = peerSet.filter(p => p !== ticker.toUpperCase()).length >= 2;
+  // Surface the slide once there's ≥1 OTHER company loaded (2 total), so it's
+  // discoverable; the panel itself asks for more if there aren't enough for a
+  // real box (needs ≥3). Below that (single company) we keep it hidden.
+  const showPeerDist = peerSet.filter(p => p !== ticker.toUpperCase()).length >= 1;
 
   const slides: CarouselSlide[] = [
     { key: 'metric', label: 'Metric over time', node: <TrendChart data={trends} /> },
