@@ -1191,6 +1191,22 @@ def search(
             "(min_similarity=%.3f) — threshold may be too high for %r",
             len(results), k, min_similarity, query[:80],
         )
+
+    # Scoped-but-EMPTY breadcrumb. A ticker/form-scoped query returning zero rows
+    # is the exact shape of the "no sources rendered" symptom. It has two very
+    # different causes we must be able to tell apart from logs alone: the scoped
+    # ticker(s) have no chunks in this corpus (a data/ingest gap) vs. chunks exist
+    # but every one scored below min_similarity (a threshold/model mismatch — e.g.
+    # a Gemini-era 0.45→0.75 drift against bge-m3's ~0.60 cosine ceiling). We log
+    # the scope + threshold so an empty scoped answer is diagnosable in one line
+    # instead of surfacing only as a generic "insufficient information" reply.
+    elif scope and not results:
+        logger.warning(
+            "search() returned 0 chunks for scoped query tickers=%s form=%r "
+            "(min_similarity=%.3f) — either these tickers have no indexed chunks "
+            "or every chunk scored below the threshold: %r",
+            scope, form, min_similarity, query[:80],
+        )
     return results
 
 

@@ -432,7 +432,14 @@ _STRUCTURED_KW = re.compile(
 )
 
 _NARRATIVE_KW = re.compile(
-    r"\b(risk factor|summarize|summary|business overview|strategy|management"
+    # Bare risk/uncertainty vocabulary (risks?, concern, headwind, uncertaint…)
+    # sits alongside "risk factor" so a risk-factors question is ALWAYS treated
+    # as narrative — even when it also names a metric ("What risks did X flag
+    # about revenue in FY2024?"). Without the bare terms such a question skips
+    # this branch and hits the has_metric→graph catch-all, sending a prose-only
+    # risk question to SPARQL. This phrasing is advertised on the Help page.
+    r"\b(risks?|risk factor|concerns?|headwinds?|uncertaint(y|ies)"
+    r"|summarize|summary|business overview|strategy|management"
     r"|md&a|management discussion|outlook|guidance|segment|geographic"
     r"|supply chain|competition|competitive|regulatory|cybersecurity|litigation"
     r"|forward.looking|china|international|employee|headcount|product"

@@ -67,6 +67,13 @@ jobs:
       #                           here so the deployed generator matches local; the
       #                           code reads it via os.getenv (embeddings are local
       #                           sentence-transformers, unaffected).
+      #   MIN_SIMILARITY        : vector-search recall floor, pinned to the bge-m3
+      #                           calibrated 0.45. bge-m3 cosines cap ~0.60 on these
+      #                           queries, so any inherited Gemini-era value (0.75)
+      #                           silently filters EVERY chunk -> empty answers with
+      #                           no sources. Pinned explicitly so it can never drift
+      #                           back via inheritance (the code default is also 0.45,
+      #                           but relying on inheritance is what caused the scare).
       # --update-env-vars is additive/overriding: it preserves all OTHER env vars
       # (RAVENDB_URLS, RAVENDB_CERT_PATH, FRONTEND_ORIGIN) and the GEMINI_API_KEY
       # secret mount. ROLLBACK is the pair together: previous image +
@@ -77,7 +84,7 @@ jobs:
           gcloud run services update python-service \
             --image ${{ env.REGISTRY }}/python-service:${{ github.sha }} \
             --memory 4Gi \
-            --update-env-vars RAVENDB_DATABASE=finsight-bge,EMBED_DIM=1024,GEMINI_GEN_MODEL=gemini-3.1-flash-lite \
+            --update-env-vars RAVENDB_DATABASE=finsight-bge,EMBED_DIM=1024,GEMINI_GEN_MODEL=gemini-3.1-flash-lite,MIN_SIMILARITY=0.45 \
             --region ${{ env.REGION }} \
             --project ${{ env.PROJECT }}
 
