@@ -401,18 +401,67 @@ _DIRECT_METRIC_RE = re.compile(
     re.IGNORECASE,
 )
 
+# --- Multi-fact / coverage signals (E-4 router fix) -------------------------
+# The graph path answers from a single SPARQL lookup over XBRL numeric metrics.
+# E-2 showed it collapsing on the multi-hop/aggregation slices (graph multi-hop
+# 0.29 vs naive 0.92) because three kinds of question got routed graph-only:
+#   1. multiple metrics requested — the single-metric SPARQL returns just one;
+#   2. facts the graph does not store — R&D, segment / Products-vs-Services,
+#      dividends/buybacks, cost of revenue (these live in filing prose);
+#   3. cross-entity "who spent more" comparisons needing per-company prose.
+# For all three the vector prose must be in the loop, so they route to `both`
+# (when a graph-backed metric is also present) or `vector`. Only clean single
+# covered-metric lookups (single-hop, single-metric temporal) stay graph-only.
+
+# Concepts NOT in the XBRL metric graph (income_statement, balance_sheet,
+# cash_flow, computed_ratios) — presence forces a prose backstop.
+_UNCOVERED_METRIC_RE = re.compile(
+    r"\b(research and development|r&d|cost of (revenue|goods|sales)"
+    r"|sg&a|selling,? general|depreciation|amortization|inventory|backlog"
+    r"|dividends?|repurchases?|buybacks?|capital return|operating expenses?"
+    r"|products?|services?)\b",
+    re.IGNORECASE,
+)
+
+# Cross-entity comparison cues that need per-company prose, not one table.
+_COMPARISON_RE = re.compile(
+    r"\b(which\s+(company|one|firm)|who\s+(spent|earned|had|has|paid|reported)"
+    r"|each\s+(company|spend|spent|report|reported)|respectively?"
+    r"|comparing\s+their|spent\s+more|more\s+than|higher\s+than|lower\s+than)\b",
+    re.IGNORECASE,
+)
+
+# Derivation cues — the answer combines multiple retrieved facts.
+_IMPLIED_RE = re.compile(
+    r"\b(impl(y|ies|ied)|how\s+far\s+apart|difference\s+between)\b",
+    re.IGNORECASE,
+)
+
 
 def classify_question(question: str) -> str:
     """
     Return one of: 'graph', 'vector', 'both'.
 
-    Decision logic:
-      - Direct factual lookup + metric + year     → graph (overrides narrative signal)
-      - Narrative trigger with no structure/year  → vector (or both if metric mentioned)
-      - Narrative + structured/year               → both
-      - Structured comparison or metric + year    → graph
-      - Metric alone (no narrative)               → graph
-      - No clear signal                           → vector (safer: prose fallback)
+    Graph-only is reserved for questions the single-shot SPARQL path can fully
+    answer: a clean lookup of one graph-backed metric (single-hop) or one metric
+    across years (temporal). Everything needing prose or multiple facts gets the
+    vector backstop. Decision order (first match wins):
+
+      1. Narrative intent (MD&A, risk factors, "according to", segments, …)
+         → never graph-only: `both` if a metric is also asked, else `vector`.
+      2. Multi-fact — >=2 graph-backed metrics, an uncovered metric, a
+         cross-entity comparison, or a derived quantity ("what margin does that
+         imply", "how far apart") → `both` if a graph metric is present, else
+         `vector`.
+      3. Clean single-metric lookup (direct phrasing, or metric + year, or a
+         bare metric, or a structured comparison) → `graph`.
+      4. No structured signal → `vector` (prose fallback).
+
+    Rationale: E-2 graph misroutes sent multi-hop/aggregation questions to the
+    graph-only path, which returned confident partial answers. Gating graph-only
+    to single covered-metric questions keeps its ~2.3x cost/ingest win where it
+    is accurate and routes the rest through the vector path that already scores
+    well there. See .claude/EXPERIMENTS.md (E-4).
     """
     has_metric        = bool(_METRIC_KW.search(question))
     has_structured    = bool(_STRUCTURED_KW.search(question))
@@ -420,21 +469,34 @@ def classify_question(question: str) -> str:
     has_year          = bool(_YEAR_RE.search(question))
     has_direct_lookup = bool(_DIRECT_METRIC_RE.search(question))
 
-    # A time-anchored direct metric question ("What was Apple's product revenue in
-    # FY2024?") should always go to graph even when a narrative keyword fires.
-    # Rationale: 'product', 'segment', 'international', etc. appear in _NARRATIVE_KW
-    # to catch MD&A questions, but they also appear in plain metric questions.
-    # The combination of direct-lookup phrasing + metric keyword + a specific year
-    # is an unambiguous signal for a structured data retrieval.
+    # Multi-fact / coverage signals — see the regex definitions above.
+    n_metrics      = _count_covered_metrics(question)
+    has_uncovered  = bool(_UNCOVERED_METRIC_RE.search(question))
+    has_comparison = bool(_COMPARISON_RE.search(question))
+    has_implied    = bool(_IMPLIED_RE.search(question))
+    multi_fact = (
+        n_metrics >= 2
+        or has_comparison
+        or has_implied
+        or (has_metric and has_uncovered)
+    )
+
+    # 1. Narrative intent always needs filing prose — never route graph-only.
+    #    (Fixes the E-2 bug where the direct-lookup + metric + year override sent
+    #    MD&A/segment questions such as "…drivers of revenue growth across
+    #    segments" to the graph, which has no narrative to answer from.)
+    if has_narrative:
+        return "both" if has_metric else "vector"
+
+    # 2. Multi-fact / uncovered / comparison / derived → add the vector backstop.
+    #    `both` when a graph-backed metric is also present (authoritative XBRL
+    #    number + prose), else pure `vector`.
+    if multi_fact:
+        return "both" if _detect_metric(question) else "vector"
+
+    # 3. Clean single graph-backed-metric lookup — the cheap, accurate path.
     if has_direct_lookup and has_metric and has_year:
         return "graph"
-
-    if has_narrative:
-        if has_structured or has_year:
-            return "both"
-        if has_metric:
-            return "both"
-        return "vector"
 
     if has_structured or (has_metric and has_year):
         return "graph"
@@ -442,6 +504,7 @@ def classify_question(question: str) -> str:
     if has_metric:
         return "graph"
 
+    # 4. No structured signal — prose fallback.
     return "vector"
 
 
@@ -581,6 +644,18 @@ def _detect_metric(question: str) -> Optional[str]:
         if phrase in q_lower:
             return _METRIC_MAP[phrase]
     return None
+
+
+def _count_covered_metrics(question: str) -> int:
+    """Number of DISTINCT graph-backed metrics explicitly named in the question.
+
+    Distinct by canonical metric name, so 'revenue' and 'total revenue' count
+    once. Used by classify_question to spot multi-metric questions (e.g.
+    'total revenue and operating income') that the single-metric SPARQL path
+    would answer only partially.
+    """
+    q_lower = question.lower()
+    return len({canon for phrase, canon in _METRIC_MAP.items() if phrase in q_lower})
 
 
 # ---------------------------------------------------------------------------
