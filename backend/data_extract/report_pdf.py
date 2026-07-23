@@ -18,31 +18,27 @@ independent, and can never re-narrate/hallucinate. Charts are drawn with
 matplotlib's vector PDF backend (crisp in print), text with matplotlib text —
 one dependency, no reportlab.
 
+The theme, typography, page geometry, footer/disclaimer and chart primitives are
+shared with the two-company Comparison report via report_pdf_common — one export
+pipeline, two report shapes. See report_pdf_compare.py for the comparison report.
+
 Conventions carried into print:
   - green/red ONLY for the directional forecast trend (improving/declining);
     everything else is neutral/brand.
   - series are distinguished by dash pattern + marker, never hue alone, so the
     charts stay legible in greyscale / on paper.
 
-Route (prefix /analysis, already on the Node forwarder allowlist):
-  GET /analysis/report/{ticker}  -> application/pdf (attachment)
+Routes (prefix /analysis, already on the Node forwarder allowlist):
+  GET  /analysis/report/{ticker}   -> application/pdf (single-company Analysis)
+  POST /analysis/compare-report    -> application/pdf (two-company Comparison)
 """
 
 from __future__ import annotations
 
 import io
 import logging
-import textwrap
 from datetime import datetime, timezone
 
-import matplotlib
-
-matplotlib.use("Agg")  # headless, thread-safe with the object-oriented API below
-# Dollar amounts ("$391.0B") appear all over the descriptions and axis labels;
-# without this, matplotlib treats "$...$" as LaTeX math mode and raises on the
-# text. We use no intentional mathtext (R²/– are Unicode), so turn it off.
-matplotlib.rcParams["text.parse_math"] = False
-from matplotlib.figure import Figure
 from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.ticker import FuncFormatter
 
@@ -53,104 +49,23 @@ from .analysis_charts import trends as _trends_endpoint
 from .analysis_charts import peer_distribution as _peer_dist_endpoint
 from .prediction import prediction as _forecast_endpoint
 
+# Shared PDF foundation (theme, formatters, page composition, chart primitives).
+from .report_pdf_common import (
+    BRAND, BRAND_LIGHT, AMBER, POS, NEG, PEER, TEXT, TEXT2, MUTED, FAINT,
+    BORDER, GRIDCOL, BRAND_TINT,
+    _fmt_usd, _fmt_pct, _usd_axis, _pct_axis,
+    _series, _style_axes, _draw_line,
+    PAGE_W, PAGE_H, MARGIN_L, CONTENT_W,
+    new_figure, _rule, _masthead, _footer, _wrap, _panel,
+)
+from .report_pdf_compare import build_compare_report, CompareReportRequest
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/analysis", tags=["analysis"])
 
-# --- Theme (mirrors frontend/theme.ts so print matches the UI) --------------
-BRAND = "#2563EB"       # sapphire — primary series / brand
-BRAND_LIGHT = "#60A5FA"
-AMBER = "#D97706"       # seriesB — the second categorical series
-POS = "#16A34A"         # green — DIRECTIONAL only (forecast: improving)
-NEG = "#DC2626"         # red   — DIRECTIONAL only (forecast: declining)
-PEER = "#C3CEDA"        # neutral grey — COGS / non-subject bars
-TEXT = "#16202B"
-TEXT2 = "#33414F"
-MUTED = "#5D6C7C"
-FAINT = "#636F7D"
-BORDER = "#DDE4EB"
-GRIDCOL = "#E8EDF2"
-BRAND_TINT = "#EAF1FC"
 
-DISCLAIMER = "Statistical summary of historical filings — not investment advice."
-
-
-# --- Value formatting (mirrors frontend/utils/format) -----------------------
-
-def _fmt_usd(v: float | None) -> str:
-    if v is None:
-        return "—"
-    a = abs(v)
-    if a >= 1e12:
-        return f"${v / 1e12:.1f}T"
-    if a >= 1e9:
-        return f"${v / 1e9:.1f}B"
-    if a >= 1e6:
-        return f"${v / 1e6:.1f}M"
-    return f"${v:,.0f}"
-
-
-def _fmt_pct(v: float | None) -> str:
-    return "—" if v is None else f"{v:.1f}%"
-
-
-def _usd_axis(v, _pos):
-    a = abs(v)
-    if a >= 1e12:
-        return f"${v / 1e12:.0f}T"
-    if a >= 1e9:
-        return f"${v / 1e9:.0f}B"
-    if a >= 1e6:
-        return f"${v / 1e6:.0f}M"
-    return f"${v:,.0f}"
-
-
-def _pct_axis(v, _pos):
-    return f"{v:.0f}%"
-
-
-# --- Small chart helpers ----------------------------------------------------
-
-def _series(points: list[dict], field: str) -> tuple[list[int], list[float]]:
-    """Return (x-indices, values) skipping missing points."""
-    xs, ys = [], []
-    for i, p in enumerate(points):
-        v = p.get(field)
-        if v is not None:
-            xs.append(i)
-            ys.append(float(v))
-    return xs, ys
-
-
-def _style_axes(ax, years: list[str], usd: bool) -> None:
-    n = len(years)
-    ax.set_xlim(-0.5, n - 0.5)
-    # PDF prints at full width, so label EVERY fiscal year that has data — one
-    # tick per real data point (`years` is already per-data-year, so a missing
-    # filing year is simply absent, never synthesised into a fake tick). Angle
-    # the labels 45° (right-anchored) so ~19 of them don't collide; the compact
-    # 'YY format keeps them short. Web/mobile keep their responsive thinning —
-    # this thinning-removal is the server-rendered PDF path only.
-    ax.set_xticks(list(range(n)))
-    ax.set_xticklabels(
-        [f"'{y[2:]}" for y in years],
-        fontsize=7, color=MUTED, rotation=45, ha="right", rotation_mode="anchor",
-    )
-    ax.yaxis.set_major_formatter(FuncFormatter(_usd_axis if usd else _pct_axis))
-    ax.tick_params(axis="y", labelsize=7, colors=MUTED, length=0)
-    ax.tick_params(axis="x", length=0)
-    ax.grid(axis="y", color=GRIDCOL, lw=0.6)
-    ax.set_axisbelow(True)
-    for spine in ("top", "right", "left"):
-        ax.spines[spine].set_visible(False)
-    ax.spines["bottom"].set_color(BORDER)
-
-
-def _draw_line(ax, points, years, field, usd, color=BRAND):
-    xs, ys = _series(points, field)
-    ax.plot(xs, ys, color=color, lw=1.8, marker="o", ms=3.0, mfc=color, mec=color)
-    _style_axes(ax, years, usd)
-
+# --- Analysis-specific chart drawers ----------------------------------------
 
 def _draw_rev_vs_income(ax, points, years):
     # Revenue (sapphire, solid, circles) on the left; net income (amber, dashed,
@@ -229,40 +144,7 @@ def _draw_forecast(ax, metric: dict):
     ax.legend(loc="upper left", fontsize=6.5, frameon=False)
 
 
-# --- Page composition -------------------------------------------------------
-
-PAGE_W, PAGE_H = 8.5, 11.0
-MARGIN_L = 0.09          # figure-fraction left margin
-CONTENT_W = 0.83
-
-
-def _rule(fig, y: float) -> None:
-    from matplotlib.lines import Line2D
-    ln = Line2D([MARGIN_L, 0.95], [y, y], color=BORDER, lw=0.6)
-    ln.set_transform(fig.transFigure)
-    fig.add_artist(ln)
-
-
-def _footer(fig, page_no: int) -> None:
-    _rule(fig, 0.058)
-    fig.text(MARGIN_L, 0.038, DISCLAIMER, fontsize=7.5, color=MUTED, style="italic")
-    fig.text(0.95, 0.038, f"FinSight · {page_no}", fontsize=7.5, color=FAINT, ha="right")
-
-
-def _wrap(text: str, width: int = 118) -> str:
-    return "\n".join(textwrap.fill(p, width) for p in text.split("\n"))
-
-
-def _panel(fig, top: float, title: str, draw, description: str) -> None:
-    """One chart panel: title, chart axes, and its deterministic description."""
-    fig.text(MARGIN_L, top, title, fontsize=11, color=TEXT, fontweight="bold")
-    ax = fig.add_axes([MARGIN_L, top - 0.235, CONTENT_W, 0.205])
-    draw(ax)
-    desc = _wrap(description)
-    # Extra clearance below the axis for the angled x labels before the caption.
-    fig.text(MARGIN_L, top - 0.263, desc, fontsize=8.3, color=TEXT2, va="top",
-             linespacing=1.35)
-
+# --- Analysis report --------------------------------------------------------
 
 def build_report(ticker: str, peers: list[str] | None = None) -> bytes:
     ticker = ticker.upper()
@@ -284,12 +166,8 @@ def build_report(ticker: str, peers: list[str] | None = None) -> bytes:
     with PdfPages(buf) as pdf:
         # ---- Cover ---------------------------------------------------------
         page += 1
-        fig = Figure(figsize=(PAGE_W, PAGE_H))
-        fig.patch.set_facecolor("white")
-        fig.text(MARGIN_L, 0.93, "Fin", fontsize=22, color=TEXT, fontweight="bold")
-        fig.text(MARGIN_L + 0.052, 0.93, "Sight", fontsize=22, color=BRAND, fontweight="bold")
-        fig.text(MARGIN_L, 0.90, "Analysis Report", fontsize=13, color=MUTED)
-        _rule(fig, 0.885)
+        fig = new_figure()
+        _masthead(fig, "Analysis Report")
         fig.text(MARGIN_L, 0.83, ticker, fontsize=40, color=TEXT, fontweight="bold")
         fig.text(MARGIN_L, 0.795, coverage, fontsize=10, color=TEXT2)
         fig.text(MARGIN_L, 0.775, f"Generated {generated}", fontsize=9, color=FAINT)
@@ -316,8 +194,7 @@ def build_report(ticker: str, peers: list[str] | None = None) -> bytes:
         ]
         for i in range(0, len(panels), 2):
             page += 1
-            fig = Figure(figsize=(PAGE_W, PAGE_H))
-            fig.patch.set_facecolor("white")
+            fig = new_figure()
             fig.text(MARGIN_L, 0.945, f"{ticker} · Trends", fontsize=10, color=MUTED)
             _rule(fig, 0.935)
             tops = [0.86, 0.42]
@@ -330,8 +207,7 @@ def build_report(ticker: str, peers: list[str] | None = None) -> bytes:
         if forecast:
             for i in range(0, len(forecast), 2):
                 page += 1
-                fig = Figure(figsize=(PAGE_W, PAGE_H))
-                fig.patch.set_facecolor("white")
+                fig = new_figure()
                 fig.text(MARGIN_L, 0.945, f"{ticker} · Forecast", fontsize=10, color=MUTED)
                 fig.text(0.95, 0.945, "Denoised weighted-linear-trend · 95% CI", fontsize=8, color=FAINT, ha="right")
                 _rule(fig, 0.935)
@@ -342,8 +218,7 @@ def build_report(ticker: str, peers: list[str] | None = None) -> bytes:
                 pdf.savefig(fig)
         else:
             page += 1
-            fig = Figure(figsize=(PAGE_W, PAGE_H))
-            fig.patch.set_facecolor("white")
+            fig = new_figure()
             fig.text(MARGIN_L, 0.945, f"{ticker} · Forecast", fontsize=10, color=MUTED)
             _rule(fig, 0.935)
             fig.text(MARGIN_L, 0.88, "Not enough historical filing data to forecast this company.",
@@ -469,8 +344,7 @@ def _peer_box_panel(fig, top: float, m: dict) -> None:
 def _peer_dist_page(pdf, ticker: str, page: int, metrics: list[dict]) -> int:
     """One page of loaded-peer box plots. Returns the (incremented) page number."""
     page += 1
-    fig = Figure(figsize=(PAGE_W, PAGE_H))
-    fig.patch.set_facecolor("white")
+    fig = new_figure()
     fig.text(MARGIN_L, 0.945, f"{ticker} · Peer distribution", fontsize=10, color=MUTED)
     fig.text(0.95, 0.945, "vs loaded companies · ◆ = this company · real data",
              fontsize=8, color=FAINT, ha="right")
@@ -483,6 +357,8 @@ def _peer_dist_page(pdf, ticker: str, page: int, metrics: list[dict]) -> int:
     return page
 
 
+# --- Routes -----------------------------------------------------------------
+
 @router.get("/report/{ticker}")
 def report(ticker: str, peers: list[str] = Query(default=[])) -> Response:
     try:
@@ -493,6 +369,31 @@ def report(ticker: str, peers: list[str] = Query(default=[])) -> Response:
         logger.exception("PDF report failed for %s", ticker)
         raise HTTPException(status_code=500, detail=f"Could not build the report: {e}")
     fname = f"FinSight_{ticker.upper()}_Analysis.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
+@router.post("/compare-report")
+def compare_report(req: CompareReportRequest) -> Response:
+    """Two-company Comparison PDF.
+
+    POST (not GET) because the on-screen 'AI-generated analysis' narrative is
+    carried in the body and embedded VERBATIM — the export must match the UI
+    exactly and must never re-run an LLM at export time. Charts + captions are
+    recomputed deterministically server-side (compare_metrics), so they are
+    identical to what the page rendered.
+    """
+    try:
+        pdf_bytes = build_compare_report(req)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Compare PDF failed for %s vs %s", req.a, req.b)
+        raise HTTPException(status_code=500, detail=f"Could not build the comparison: {e}")
+    fname = f"FinSight_{req.a.upper()}_vs_{req.b.upper()}_Comparison.pdf"
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",

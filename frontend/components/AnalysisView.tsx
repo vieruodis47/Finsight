@@ -7,7 +7,7 @@ import { FileText, GitCompare, TrendingUp, BarChart3, Download, FileDown, Loader
 import { Document } from '../types';
 import {
   generateSummary, compareDocuments, fetchCompareMetrics, CompareMetricsResult,
-  fetchForecast, ForecastResult, exportAnalysisReport,
+  fetchForecast, ForecastResult, exportAnalysisReport, exportCompareReport,
 } from '../services/gemini';
 import { c, font, seriesA, seriesB } from '../theme';
 import { fmtM, fmtPct, fmtRatio } from '../utils/format';
@@ -764,6 +764,17 @@ const AnalysisView: React.FC<AnalysisViewProps> = ({ documents }) => {
             <ResultCard
               content={compareResult}
               onExport={() => handleExport(compareResult, 'Comparison_Report')}
+              // PDF is the primary export — the full server-composed comparison
+              // report (every chart + on-screen captions + THIS narrative
+              // verbatim). Only offered when both sides have a ticker (the charts
+              // need XBRL); uploads without a ticker keep the .md fallback only.
+              onExportPdf={docA?.ticker && docB?.ticker
+                ? () => exportCompareReport(docA.ticker!, docB.ticker!, {
+                    companyA: docA.name, companyB: docB.name,
+                    sectorA: docA.sector, sectorB: docB.sector,
+                    analysis: compareResult,
+                  })
+                : undefined}
             />
           )}
         </div>
@@ -775,36 +786,99 @@ const AnalysisView: React.FC<AnalysisViewProps> = ({ documents }) => {
 
 // ── Result card ───────────────────────────────────────────────────────────
 
+// Secondary ".md" export — the plain-text fallback. Kept because it's trivial;
+// no longer the only choice (a reviewer flagged that .md is hard to read).
+const MarkdownExportButton: React.FC<{ onExport: () => void; primary: boolean }> = ({ onExport, primary }) => {
+  const [hovered, setHovered] = useState(false);
+  return (
+    <button
+      onClick={onExport}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      style={{
+        display: 'inline-flex', alignItems: 'center', gap: 5,
+        // Secondary when a PDF primary is present: smaller, quieter, borderless.
+        fontSize: primary ? 12 : 11.5, padding: primary ? '4px 10px' : '4px 8px',
+        borderRadius: 6, border: primary ? `0.5px solid ${c.border}` : 'none',
+        background: hovered ? c.surface : (primary ? c.bg : 'transparent'),
+        color: hovered ? c.brand : c.textMuted,
+        cursor: 'pointer', fontFamily: font.ui, transition: 'background 0.1s, color 0.1s',
+      }}
+    >
+      <Download size={primary ? 13 : 12} /> Export .md
+    </button>
+  );
+};
+
+// Primary PDF export for the AI-analysis card. Server-composed, vector,
+// print-ready: every comparison chart + the SAME on-screen captions + this exact
+// narrative embedded verbatim. Shows progress and surfaces a clear error instead
+// of a silent no-op.
+const AnalysisPdfExportButton: React.FC<{ run: () => Promise<void> }> = ({ run }) => {
+  const [exporting, setExporting] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const go = async () => {
+    setErr(null);
+    setExporting(true);
+    try { await run(); }
+    catch (e) { setErr(e instanceof Error ? e.message : 'Export failed.'); }
+    finally { setExporting(false); }
+  };
+  return (
+    <div style={{ display: 'inline-flex', alignItems: 'center', gap: 10 }}>
+      {err && (
+        <span role="alert" style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12, color: c.neg }}>
+          <AlertCircle size={12} style={{ flexShrink: 0 }} /> {err}
+        </span>
+      )}
+      <button
+        onClick={go}
+        disabled={exporting}
+        aria-label="Export comparison as PDF"
+        style={{
+          display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 14px', borderRadius: 7,
+          fontSize: 12.5, fontWeight: 500, whiteSpace: 'nowrap', fontFamily: font.ui,
+          background: exporting ? c.surfaceAlt : c.brandDeep, color: exporting ? c.textMuted : c.onBrand,
+          border: 'none', cursor: exporting ? 'default' : 'pointer', transition: 'background 0.15s',
+        }}
+        onMouseEnter={e => { if (!exporting) e.currentTarget.style.background = c.brandDeepHover; }}
+        onMouseLeave={e => { if (!exporting) e.currentTarget.style.background = c.brandDeep; }}
+      >
+        {exporting
+          ? <><Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> Preparing PDF…</>
+          : <><FileDown size={14} /> Export PDF</>}
+      </button>
+    </div>
+  );
+};
+
+// The AI-analysis result card. When `onExportPdf` is supplied (Compare mode) the
+// PDF is the PRIMARY export action and ".md" becomes a secondary option; without
+// it (Summary mode) only ".md" is offered.
 const ResultCard: React.FC<{
   content: string;
   onExport: () => void;
-}> = ({ content, onExport }) => {
-  const [exportHovered, setExportHovered] = useState(false);
+  onExportPdf?: () => Promise<void>;
+}> = ({ content, onExport, onExportPdf }) => {
   const rendered = useMemo(() => renderMarkdown(content), [content]);
 
   return (
     <div style={{ background: c.bg, border: `0.5px solid ${c.border}`, borderRadius: 10, padding: '18px 20px', position: 'relative' }}>
 
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 14, flexWrap: 'wrap' }}>
         <p style={{ fontSize: 11, color: c.textFaint, textTransform: 'uppercase', letterSpacing: '0.05em', margin: 0 }}>
           AI-generated analysis <span style={{ marginLeft: 4 }}>· grounded in your filings</span>
         </p>
-        <button
-          onClick={onExport}
-          onMouseEnter={() => setExportHovered(true)}
-          onMouseLeave={() => setExportHovered(false)}
-          style={{
-            display: 'inline-flex', alignItems: 'center', gap: 5,
-            fontSize: 12, padding: '4px 10px', borderRadius: 6,
-            border: `0.5px solid ${c.border}`,
-            background: exportHovered ? c.surface : c.bg,
-            color: exportHovered ? c.brand : c.textMuted,
-            cursor: 'pointer', fontFamily: font.ui,
-            transition: 'background 0.1s, color 0.1s',
-          }}
-        >
-          <Download size={13} /> Export .md
-        </button>
+        <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+          {onExportPdf ? (
+            <>
+              <MarkdownExportButton onExport={onExport} primary={false} />
+              <AnalysisPdfExportButton run={onExportPdf} />
+            </>
+          ) : (
+            <MarkdownExportButton onExport={onExport} primary />
+          )}
+        </div>
       </div>
 
       <div style={{ fontFamily: font.prose, fontSize: 13, lineHeight: 1.75, color: c.text2 }}>
