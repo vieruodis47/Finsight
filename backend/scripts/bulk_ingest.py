@@ -51,6 +51,7 @@ except ImportError:
 # Project imports (after path bootstrap so relative package resolution works)
 # ---------------------------------------------------------------------------
 from backend.data_extract.extractor import run as edgar_run          # EDGAR fetch + parse
+from backend.data_extract import embeddings as _emb                  # RavenDB config + ops
 from backend.data_extract.embeddings import (
     ingest,
     check_already_indexed,
@@ -221,6 +222,37 @@ def _process_ticker(
 
 
 # ---------------------------------------------------------------------------
+# Storage guard + ETA
+# ---------------------------------------------------------------------------
+
+def _db_size_bytes() -> int | None:
+    """
+    Current on-disk size of the target RavenDB database via /stats.
+    Returns bytes, or None if the check fails (never blocks ingest on a
+    transient stats error — the guard just can't act that iteration).
+    """
+    try:
+        import requests
+        base = _emb.RAVENDB_URLS[0].rstrip("/")
+        kw = {"timeout": 30}
+        if _emb.RAVENDB_CERT_PATH:
+            kw["cert"] = _emb.RAVENDB_CERT_PATH
+        r = requests.get(f"{base}/databases/{_emb.RAVENDB_DATABASE}/stats", **kw)
+        r.raise_for_status()
+        return int(r.json()["SizeOnDisk"]["SizeInBytes"])
+    except Exception as e:
+        logger.debug("DB size check failed (proceeding): %s", e)
+        return None
+
+
+def _fmt_eta(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    h, rem = divmod(seconds, 3600)
+    m, _ = divmod(rem, 60)
+    return f"{h}h {m:02d}m" if h else f"{m}m"
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -259,6 +291,12 @@ def main() -> None:
     parser.add_argument(
         "--limit", type=int, default=None, metavar="N",
         help="Process at most N tickers (default: unlimited)",
+    )
+    parser.add_argument(
+        "--max-db-gb", type=float, default=9.5, metavar="GB",
+        help="HALT before the DB grows past this size, checked each ticker "
+             "(free-tier cap is 10GB; default 9.5 leaves headroom for the "
+             "in-flight write). Set higher only on a paid tier.",
     )
     parser.add_argument(
         "--log-file", type=Path, metavar="PATH",
@@ -310,10 +348,30 @@ def main() -> None:
     n_failed   = 0
     failed_list: list[str] = []
     stopped_at: str | None = None
+    max_bytes = args.max_db_gb * 1024 ** 3
+    t_start = time.time()
 
     try:
         for idx, ticker in enumerate(tickers, 1):
             prefix = f"[{idx}/{total}] {ticker}"
+
+            # ── Storage guard — HALT before the free-tier cap, not mid-write ──
+            if not args.dry_run:
+                size = _db_size_bytes()
+                if size is not None and size >= max_bytes:
+                    logger.warning(
+                        "HALT: %s is %.2f GB (>= --max-db-gb %.1f GB). Stopping "
+                        "BEFORE the 10GB free-tier cap so no write fails mid-flight. "
+                        "Re-run after freeing space or upgrading tier; already-indexed "
+                        "tickers skip automatically.",
+                        _emb.RAVENDB_DATABASE, size / 1024 ** 3, args.max_db_gb,
+                    )
+                    stopped_at = ticker
+                    break
+                if size is not None and idx % 25 == 1:
+                    logger.info("   DB size: %.2f GB / cap %.1f GB",
+                                size / 1024 ** 3, args.max_db_gb)
+
             logger.info("%s  →  fetching…", prefix)
 
             outcome = _process_ticker(ticker, args.form, args.delay, args.dry_run, args.verbose)
@@ -321,9 +379,11 @@ def main() -> None:
 
             if status == "indexed":
                 n_indexed += 1
+                elapsed = time.time() - t_start
+                eta = (total - idx) * (elapsed / idx)
                 logger.info(
-                    "%s  INDEXED  (%d chunks stored)",
-                    prefix, outcome["chunks"],
+                    "%s  INDEXED  (%d chunks)  ·  %d/%d done, %d indexed, ETA %s",
+                    prefix, outcome["chunks"], idx, total, n_indexed, _fmt_eta(eta),
                 )
             elif status == "skipped":
                 n_skipped += 1

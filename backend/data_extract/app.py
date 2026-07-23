@@ -72,11 +72,28 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from .extractor import run
+from .sec_client import SecRateLimitError
 from .rag import router as chat_router
 from .market import router as market_router
 from .search import router as search_router
 from .compare_metrics import router as compare_metrics_router
+from .indexed import router as indexed_router
+from .filing_metrics import router as filing_metrics_router
+from .prediction import router as prediction_router
+from .analysis_charts import router as analysis_charts_router
+from .report_pdf import router as report_pdf_router
 from .embeddings import DailyQuotaExceededError, PerMinuteQuotaError
+
+# Wire root logging to stdout at import time so app logger.info() lines (worker
+# start, "Enqueued", "Startup recovery", "chunks stored") reach Cloud Logging.
+# Without this, Python's last-resort handler emits WARNING+ only and every INFO
+# line from this module is silently dropped — making the ingest worker invisible.
+# force=True so we win even if a dependency called basicConfig first.
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+    force=True,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +102,13 @@ UPLOAD_MAX_MB = int(os.getenv("UPLOAD_MAX_MB", "50"))
 
 # Maximum hours to wait before declaring a daily-quota job permanently failed.
 QUOTA_DEADLINE_HOURS = int(os.getenv("QUOTA_DEADLINE_HOURS", "72"))
+
+# Hard wall-clock cap on a single ingest job. The worker is single-threaded, so a
+# job that hangs (e.g. a wedged embed) would block every job behind it forever —
+# head-of-line blocking. If a job exceeds this, we mark it failed and move on so
+# the queue keeps draining. Generous enough that a normal large 10-K (a few
+# hundred chunks, single-thread CPU encode) finishes well within it.
+INGEST_JOB_TIMEOUT = int(os.getenv("INGEST_JOB_TIMEOUT", "900"))  # 15 min
 
 
 # ---------------------------------------------------------------------------
@@ -371,7 +395,28 @@ def _queue_worker() -> None:
         )
         _set_job_status(key, "indexing")
         try:
-            _run_ingest(ticker, form, sections, source, key, accession_number, filing_date)
+            # Run the job in a helper thread and join with a timeout so a single
+            # hung job (wedged embed) can't block the queue behind it. _run_ingest
+            # sets its own terminal status; we only override on timeout.
+            job_thread = threading.Thread(
+                target=_run_ingest,
+                args=(ticker, form, sections, source, key, accession_number, filing_date),
+                daemon=True,
+                name=f"ingest-{key}",
+            )
+            job_thread.start()
+            job_thread.join(INGEST_JOB_TIMEOUT)
+            if job_thread.is_alive():
+                logger.error(
+                    "Ingest for %s %s exceeded %ds — marking failed and moving on "
+                    "(job thread left running)",
+                    ticker, form, INGEST_JOB_TIMEOUT,
+                )
+                _set_job_status(
+                    key, "failed",
+                    error=f"Ingest exceeded {INGEST_JOB_TIMEOUT}s timeout "
+                          f"(possible embed wedge)",
+                )
         finally:
             _ingest_queue.task_done()
 
@@ -501,6 +546,11 @@ app.include_router(chat_router)
 app.include_router(market_router)
 app.include_router(search_router)
 app.include_router(compare_metrics_router)
+app.include_router(indexed_router)
+app.include_router(filing_metrics_router)
+app.include_router(prediction_router)
+app.include_router(analysis_charts_router)
+app.include_router(report_pdf_router)
 
 
 # ---------------------------------------------------------------------------
@@ -545,6 +595,20 @@ def extract(
         result = run(ticker, form)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except SecRateLimitError as e:
+        # SEC EDGAR throttled us even after ret/backoff. This is transient, not a
+        # bug on our side — surface a 503 with a clear, retryable message (and a
+        # Retry-After hint) so the UI can say "try again shortly" rather than a
+        # generic 502.
+        logger.warning("SEC rate-limited extract for %s %s: %s", ticker, form, e)
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "SEC EDGAR is rate-limiting filing downloads right now "
+                "(429 Too Many Requests). This is temporary — please retry in a minute."
+            ),
+            headers={"Retry-After": "30"},
+        )
     except Exception as e:
         logger.exception("Extraction failed for %s %s", ticker, form)
         raise HTTPException(status_code=502, detail=f"Extraction failed: {e}")
@@ -614,6 +678,14 @@ class IngestStatusResponse(BaseModel):
     error: Optional[str] = None
 
 
+# Statuses a persisted IngestJob can legitimately carry; guards the response
+# model against an unexpected value read from RavenDB (which would 500 on
+# validation). Excludes "unknown", which is only ever synthesized here.
+_INGEST_STATUS_VALUES = {
+    "queued", "indexing", "indexed", "failed", "waiting_for_quota",
+}
+
+
 @app.get("/ingest-status/{ticker}", response_model=IngestStatusResponse)
 def ingest_status(
     ticker: str,
@@ -627,15 +699,50 @@ def ingest_status(
     - "failed":           embedding or RavenDB write failed; `error` has details
     - "waiting_for_quota": daily Gemini quota hit; will auto-retry on a schedule
     - "unknown":          no ingest has been triggered (or server was restarted)
+
+    Read authoritatively from RavenDB, NOT the per-process in-memory dict. With
+    more than one instance, the in-memory status reflects only the requests THIS
+    instance handled, so it routinely disagreed with /indexed (e.g. a stale
+    "failed" from a timed-out attempt on one instance while another instance had
+    finished and written the manifest). Resolution order:
+      1. Manifest present (the /indexed truth) -> "indexed" — this wins over any
+         job status, so /ingest-status and /indexed can never disagree.
+      2. Else the shared IngestJob doc — the live lifecycle every instance writes.
+      3. Else the in-memory dict — covers the brief window before the first
+         RavenDB persist; else "unknown".
     """
     key = _ingest_key(ticker, form)
+    tkr = ticker.strip().upper()
+
+    # 1. Manifest = definitive "indexed" (same source and cache as /indexed).
+    try:
+        from .indexed import get_indexed_map
+        indexed_map = get_indexed_map()
+        if tkr in indexed_map:
+            return IngestStatusResponse(status="indexed", chunks=indexed_map[tkr])
+    except Exception as e:
+        logger.warning("ingest-status: indexed-map lookup failed for %s: %s", key, e)
+
+    # 2. Shared IngestJob doc — authoritative in-flight lifecycle across instances.
+    try:
+        from .embeddings import load_ingest_job
+        job = load_ingest_job(key)
+    except Exception as e:
+        logger.warning("ingest-status: job load failed for %s: %s", key, e)
+        job = None
+    if job is not None and job.status in _INGEST_STATUS_VALUES:
+        return IngestStatusResponse(
+            status=job.status, chunks=job.chunks or 0, error=job.last_error,
+        )
+
+    # 3. In-memory fallback (pre-persist window), else unknown.
     with _status_lock:
         info = _ingest_status.get(key)
-    if info is None:
-        return IngestStatusResponse(status="unknown", chunks=0)
-    return IngestStatusResponse(
-        status=info["status"], chunks=info["chunks"], error=info.get("error"),
-    )
+    if info is not None:
+        return IngestStatusResponse(
+            status=info["status"], chunks=info["chunks"], error=info.get("error"),
+        )
+    return IngestStatusResponse(status="unknown", chunks=0)
 
 
 class RetryRequest(BaseModel):

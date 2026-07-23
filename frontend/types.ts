@@ -77,7 +77,16 @@ export interface ChatSource {
   ticker: string;
   form: string;
   chunk_index: number;
-  source: string;
+  source: string;             // section label (back-compat alias of `section`)
+  // --- Deterministic citation fields (built server-side from retrieved chunks) ---
+  number?: number;            // 1-based citation number an inline [n] resolves to
+  company?: string;           // resolved readable name ("Gap Inc."), not the ticker
+  section?: string;           // e.g. "Risk Factors", "MD&A"
+  url?: string;               // SEC source URL — used only as the EDGAR href
+  accession_number?: string;
+  filing_date?: string;
+  preview?: string;           // short snippet for the reference row
+  text?: string;              // full chunk text revealed in the expander
 }
 
 export interface ChatMessage {
@@ -86,7 +95,17 @@ export interface ChatMessage {
   text: string;
   timestamp: Date;
   sources?: ChatSource[];         // filings that grounded an assistant answer
+  validCitations?: number[];      // inline [n] numbers that passed validation (linkify only these)
   retrievalPath?: 'graph' | 'vector' | 'both' | 'none' | 'vector_no_graph'; // which path answered
+  streaming?: boolean;            // assistant reply is still streaming in
+  error?: boolean;                // stream errored mid-flight (partial text kept)
+  // Clarification prompt: FinChat needs to know which company before it can
+  // answer. Carries the original question + the loaded companies to offer as
+  // quick-pick chips; no retrieval/generation happens until one is chosen.
+  clarify?: {
+    question: string;                          // the pending question to resume
+    companies: { ticker: string; label: string }[];
+  };
 }
 
 export interface StockDataPoint {
@@ -108,4 +127,4 @@ export interface CompanyMetrics {
 }
 
 
-export type ViewState = 'dashboard' | 'documents' | 'chat' | 'analysis' | 'help';
+export type ViewState = 'dashboard' | 'documents' | 'chat' | 'analysis' | 'help' | 'settings';

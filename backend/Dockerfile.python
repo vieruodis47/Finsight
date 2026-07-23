@@ -4,15 +4,54 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-ENV PYTHONUNBUFFERED=1
+# HF_HUB_OFFLINE=1 at runtime: a cold container must NEVER fetch weights from
+# HuggingFace (a runtime fetch on a scaled-to-zero instance = catastrophic first-
+# request stall, or a crash if HF egress is blocked). Weights are baked below.
+ENV PYTHONUNBUFFERED=1 \
+    HF_HOME=/opt/hf-cache \
+    HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1
 
 COPY requirements.txt /tmp/requirements.txt
 
-RUN pip install --no-cache-dir -r /tmp/requirements.txt
-
-COPY backend/ ./backend/
+# Install CPU-only torch FIRST from the PyTorch CPU wheel index — the default PyPI
+# wheel bundles ~5GB of CUDA we never use on Cloud Run CPU. The pinned version
+# matches requirements.txt, so the later -r install treats torch as satisfied.
+RUN pip install --no-cache-dir torch==2.13.0 --index-url https://download.pytorch.org/whl/cpu \
+ && pip install --no-cache-dir -r /tmp/requirements.txt
 
 RUN useradd --create-home app
+
+# Bake bge-m3 weights into an image layer at BUILD time, pinned to the parity-
+# validated revision (keep in sync with EMBED_MODEL_REVISION in embeddings.py).
+# HF_HUB_OFFLINE is flipped off for THIS step only so the download can happen;
+# at runtime it stays 1 (see ENV above). Three things happen in ONE layer so the
+# ~2GB of weights are stored exactly once:
+#   1. download the model,
+#   2. prune the redundant safetensors snapshot HF pulls alongside
+#      pytorch_model.bin, plus any now-orphaned blobs (saves ~2.2GB),
+#   3. chown to the app user — chained here, because a separate `chown -R` on the
+#      cache would duplicate the whole tree into a second layer.
+RUN <<'EOF'
+set -e
+HF_HUB_OFFLINE=0 TRANSFORMERS_OFFLINE=0 python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-m3', revision='5617a9f61b028005a4858fdac845db406aefb181')"
+python - <<'PY'
+import os, glob, shutil
+root = "/opt/hf-cache/hub/models--BAAI--bge-m3"
+keep = "5617a9f61b028005a4858fdac845db406aefb181"
+for d in glob.glob(f"{root}/snapshots/*"):
+    if os.path.basename(d) != keep:
+        shutil.rmtree(d)
+refs = {os.path.realpath(p) for p in glob.glob(f"{root}/snapshots/{keep}/**", recursive=True) if os.path.islink(p)}
+for b in glob.glob(f"{root}/blobs/*"):
+    if os.path.realpath(b) not in refs:
+        os.remove(b)
+        print("pruned orphan blob", os.path.basename(b))
+PY
+chown -R app /opt/hf-cache
+EOF
+
+COPY backend/ ./backend/
 
 USER app
 

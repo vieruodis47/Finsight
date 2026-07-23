@@ -113,54 +113,37 @@ const GettingStarted: React.FC<GettingStartedProps> = ({ onAddCompany }) => {
           indexes it, and lets you ask questions, summarize, and compare.
         </p>
 
-        {/* Search row + dropdown — wrapper is the positioning root */}
+        {/* Search box + dropdown — wrapper is the positioning root */}
         <div style={{ position: 'relative', width: '100%', maxWidth: 480, marginBottom: 16 }}>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <div style={{ position: 'relative', flex: 1, minWidth: 200 }}>
-              <Search
-                size={18}
-                color={c.textFaint}
-                style={{ position: 'absolute', left: 13, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none' }}
-              />
-              <input
-                ref={inputRef}
-                type="text"
-                value={query}
-                onChange={e => setQuery(e.target.value)}
-                onKeyDown={handleKeyDown}
-                onFocus={e => {
-                  e.target.style.borderColor = c.brand;
-                  if (suggestions.length > 0) setShowDrop(true);
-                }}
-                onBlur={e => {
-                  e.target.style.borderColor = c.border;
-                  setTimeout(() => setShowDrop(false), 150);
-                }}
-                placeholder="Company name or ticker — try 'Coca-Cola' or 'NVDA'"
-                aria-label="Search for a company"
-                aria-autocomplete="list"
-                aria-expanded={showDrop}
-                style={{
-                  width: '100%', height: 40, padding: '0 12px 0 38px', boxSizing: 'border-box',
-                  border: `1px solid ${c.border}`, borderRadius: 8, fontSize: 14,
-                  fontFamily: font.ui, color: c.text, outline: 'none', background: c.bg,
-                }}
-              />
-            </div>
-            <button
-              onClick={submit}
-              style={{
-                height: 40, padding: '0 18px', background: c.brandDeep, color: c.onBrand,
-                border: 'none', borderRadius: 8, fontSize: 14, fontWeight: 500,
-                fontFamily: font.ui, cursor: 'pointer', whiteSpace: 'nowrap',
-                transition: 'background 0.15s', flexShrink: 0,
-              }}
-              onMouseEnter={e => (e.currentTarget.style.background = c.brandDeepHover)}
-              onMouseLeave={e => (e.currentTarget.style.background = c.brandDeep)}
-            >
-              Add company
-            </button>
-          </div>
+          <Search
+            size={18}
+            color={c.textFaint}
+            style={{ position: 'absolute', left: 13, top: 20, transform: 'translateY(-50%)', pointerEvents: 'none' }}
+          />
+          <input
+            ref={inputRef}
+            type="text"
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            onKeyDown={handleKeyDown}
+            onFocus={e => {
+              e.target.style.borderColor = c.brand;
+              if (suggestions.length > 0) setShowDrop(true);
+            }}
+            onBlur={e => {
+              e.target.style.borderColor = c.border;
+              setTimeout(() => setShowDrop(false), 150);
+            }}
+            placeholder="Company name or ticker — try 'Coca-Cola' or 'NVDA'"
+            aria-label="Search for a company"
+            aria-autocomplete="list"
+            aria-expanded={showDrop}
+            style={{
+              width: '100%', height: 40, padding: '0 12px 0 38px', boxSizing: 'border-box',
+              border: `1px solid ${c.border}`, borderRadius: 8, fontSize: 14,
+              fontFamily: font.ui, color: c.text, outline: 'none', background: c.bg,
+            }}
+          />
 
           {showDrop && (
             <SearchDropdown

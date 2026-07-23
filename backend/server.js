@@ -13,7 +13,7 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { sessionMiddleware } from './services/session.js';
-import { pythonApiForwarder, PY_BACKEND_URL } from './services/pyProxy.js';
+import { pythonApiForwarder, streamingApiForwarder, PY_BACKEND_URL } from './services/pyProxy.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -204,7 +204,12 @@ app.get('/api/session', (req, res) => {
 // Node forwards the FinSight API surface so the browser talks to one origin.
 // NOTE: '/api' does NOT match '/api-proxy' (Express mounts on path boundaries),
 // so the Vertex AI proxy below is unaffected.
-const PY_ROUTES = ['/api', '/extract', '/ingest-status', '/market', '/search', '/compare-metrics', '/health'];
+// Streaming chat must be forwarded UNBUFFERED, so it gets a dedicated handler
+// registered BEFORE the generic forwarder (which buffers the whole body). Order
+// matters: Express matches the first registered handler for this exact path.
+app.post('/api/chat/stream', streamingApiForwarder);
+
+const PY_ROUTES = ['/api', '/extract', '/ingest-status', '/market', '/metrics', '/search', '/compare-metrics', '/indexed', '/analysis', '/health'];
 app.use(PY_ROUTES, pythonApiForwarder);
 
 // --- Proxy Endpoint ---

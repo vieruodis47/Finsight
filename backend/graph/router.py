@@ -30,11 +30,12 @@ import logging
 import os
 import re
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 from rdflib import Graph
 
-from .rdf_graph import build_graph, run_sparql, results_to_markdown, MULTI_METRIC_QUERY
+from .rdf_graph import build_graph, run_sparql, results_to_markdown, MULTI_METRIC_QUERY, _metric_unit
 from ..data_extract.embeddings import DailyQuotaExceededError, PerMinuteQuotaError
 
 logger = logging.getLogger(__name__)
@@ -72,6 +73,58 @@ def register_filing(result: dict, persist: bool = True) -> None:
         _registry[ticker] = result
         _dirty = True
     logger.info("Graph registry: registered %s (%d total)", ticker, len(_registry))
+
+    # Cache invalidation fan-out. register_filing() is the single signal that a
+    # ticker's XBRL/ingest state may have changed, so it must invalidate every
+    # in-process cache derived from that data. THREE caches subscribe here, each
+    # invalidated independently (one failing must not skip the others):
+    #   1. /compare-metrics  -- per-ticker XBRL comparison results
+    #   2. /indexed          -- IngestManifest presence (single cached set)
+    #   3. /metrics          -- per-ticker single-filing dashboard metrics
+    # Each has a 60s TTL as its own backstop, so a missed invalidation self-heals
+    # within a minute; the hook just tightens that window on the common path.
+
+    # 1. /compare-metrics -- fail closed: if the targeted per-ticker invalidation
+    # can't be trusted to have run, drop the whole cache rather than risk serving
+    # a stale comparison.
+    try:
+        from ..data_extract.compare_metrics import invalidate_ticker
+        invalidate_ticker(ticker)
+    except Exception as e:
+        try:
+            from ..data_extract.compare_metrics import clear_cache
+            clear_cache()
+        except Exception:
+            logger.error(
+                "compare-metrics cache invalidation AND fail-safe clear both "
+                "failed for %s -- cache may now be stale: %s", ticker, e,
+            )
+        else:
+            logger.warning(
+                "compare-metrics cache invalidation failed for %s -- cleared "
+                "entire cache as a fail-safe: %s", ticker, e,
+            )
+
+    # 2. /indexed -- single cached set; invalidate() already clears everything,
+    # so on failure the 60s TTL is the only fallback (no redundant second clear).
+    try:
+        from ..data_extract.indexed import invalidate as invalidate_indexed_cache
+        invalidate_indexed_cache()
+    except Exception as e:
+        logger.warning(
+            "indexed-ticker cache invalidation failed for %s -- will self-heal "
+            "within the 60s TTL: %s", ticker, e,
+        )
+
+    # 3. /metrics -- per-ticker; drop just this ticker's entry, TTL backs it up.
+    try:
+        from ..data_extract.filing_metrics import invalidate_ticker as invalidate_metrics_ticker
+        invalidate_metrics_ticker(ticker)
+    except Exception as e:
+        logger.warning(
+            "metrics cache invalidation failed for %s -- will self-heal "
+            "within the 60s TTL: %s", ticker, e,
+        )
 
     if not persist:
         return
@@ -945,31 +998,228 @@ def _partial_data_note(
 # Graph answer generation (ZERO embeddings)
 # ---------------------------------------------------------------------------
 
+# The graph value is authoritative and EXACT. The single biggest hallucination
+# seam on the graph path was the old prompt telling the model to rescale/reformat
+# numbers ("$391,000M = $391B") — i.e. do arithmetic on the figures. Instead we
+# now pre-format every value in the table with its correct unit/scale so the
+# model only has to COPY it verbatim, and the prompt forbids any recomputation,
+# any number not in the table, and any guessing when a figure is absent.
 _GRAPH_SYSTEM = (
-    "You are FinSight, an expert financial analyst. "
-    "Answer concisely and factually using ONLY the data table provided. "
-    "Cite specific numbers. Format percentages to one decimal place; "
-    "dollar amounts in millions as 'M' (e.g. $391,000M = $391B). "
-    "If data is missing from the table, say so explicitly."
+    "You are FinSight, a financial-data assistant. Answer the question using ONLY "
+    "the DATA TABLE provided — it is exact structured data extracted from SEC XBRL "
+    "filings, and every value is already shown with its correct unit and scale.\n"
+    "\n"
+    "Strict rules:\n"
+    "1. Use ONLY numbers that appear in the table. Copy each figure VERBATIM — the "
+    "exact digits, scale, and unit as written (e.g. write \"$391.04B\" if the table "
+    "says \"$391.04B\"). Do NOT recompute, re-scale, convert, or re-round any value.\n"
+    "2. Every number in your answer must be one that appears in the table. Never "
+    "introduce a figure from prior knowledge, memory, or estimation.\n"
+    "3. If the table does not contain a figure the question asks for, say exactly: "
+    "\"That figure is not disclosed in the available filings.\" Do NOT guess, "
+    "approximate, or fill the gap from general knowledge.\n"
+    "4. Fiscal-year labels (e.g. FY2024) are given in the table — use them as-is; "
+    "do not relabel or shift years.\n"
+    "5. Be concise and state the fiscal year for each figure you cite."
 )
 
 
-def _answer_from_graph(question: str) -> tuple[str, bool]:
-    """
-    Run SPARQL against the in-memory graph and generate a grounded NL answer.
-    Returns (answer, had_data). No embedding calls.
-    """
-    from ..data_extract.embeddings import get_genai_client
-    from google.genai import types as genai_types
+# --- Exact, verbatim-ready value formatting (Seam 3: grounded generation) ----
+# Values reach the model already formatted so it never has to do arithmetic.
+_MULTIMETRIC_COLUMN_UNIT = {
+    "revenue": "usd_millions", "netIncome": "usd_millions",
+    "netMargin": "percent", "operatingMargin": "percent", "roe": "percent",
+}
 
+
+def _column_unit(col: str, metric: Optional[str]) -> Optional[str]:
+    if col == "ticker":
+        return "ticker"
+    if col in ("fiscalYear", "fy", "year"):
+        return "year"
+    if col in _MULTIMETRIC_COLUMN_UNIT:
+        return _MULTIMETRIC_COLUMN_UNIT[col]
+    if col == "value" and metric:
+        return _metric_unit(metric)
+    return None
+
+
+def _fmt_cell(unit: Optional[str], v) -> str:
+    if v is None:
+        return "n/a"
+    if unit == "ticker":
+        return str(v)
+    if unit == "year":
+        return f"FY{str(v).split('.')[0]}"
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return str(v)
+    if unit == "usd_millions":
+        # Show both billions (friendly) and exact millions so the model can copy
+        # either verbatim; both are the graph's exact value, not a re-derivation.
+        return f"${x / 1000:,.2f}B (${x:,.0f}M)" if abs(x) >= 1000 else f"${x:,.1f}M"
+    if unit == "percent":
+        return f"{x:.2f}%"
+    if unit == "ratio":
+        return f"{x:.3f}"
+    if unit == "usd_per_share":
+        return f"${x:.2f}"
+    return str(v)
+
+
+def _format_graph_table(rows: list[dict], metric: Optional[str]) -> str:
+    """Markdown table with every metric value pre-formatted to its exact
+    unit/scale, so the model copies figures verbatim instead of rescaling them."""
+    if not rows:
+        return "_No results._"
+    cols = list(rows[0].keys())
+    units = {c: _column_unit(c, metric) for c in cols}
+    lines = [
+        "| " + " | ".join(cols) + " |",
+        "| " + " | ".join("---" for _ in cols) + " |",
+    ]
+    for r in rows:
+        lines.append("| " + " | ".join(_fmt_cell(units[c], r.get(c)) for c in cols) + " |")
+    return "\n".join(lines)
+
+
+# --- Numeric grounding check (Seam 3e) --------------------------------------
+# Extract "financial-looking" numbers (has a decimal, a $/%, or is large) and
+# ignore bare small integers and 4-digit years, which are labels not claims.
+_NUM_RE = re.compile(r"\$?\s?-?\d[\d,]*\.?\d*\s?%?")
+
+
+def _financial_numbers(text: str) -> set[str]:
+    out: set[str] = set()
+    for m in _NUM_RE.finditer(text or ""):
+        raw = m.group()
+        # Normalise first (incl. a trailing period from end-of-sentence, e.g.
+        # "FY2024." -> "2024") so the year/size filters below see a clean number.
+        core = raw.replace("$", "").replace("%", "").replace(",", "").replace(" ", "").strip("-").rstrip(".")
+        if not core or core == ".":
+            continue
+        # Skip 4-digit years (labels) and tiny bare integers (list markers, "one").
+        if re.fullmatch(r"(19|20)\d{2}", core):
+            continue
+        if "." not in core and "%" not in raw and "$" not in raw and len(core) < 3:
+            continue
+        out.add(core)
+    return out
+
+
+def _unsupported_numbers(answer: str, context: str) -> list[str]:
+    """Numbers asserted in `answer` that do not appear in `context`. Prefix
+    matching both ways tolerates a provided value being cited at coarser
+    precision (391 vs 391.04) but still catches an invented figure."""
+    ctx = _financial_numbers(context)
+    bad: list[str] = []
+    for n in _financial_numbers(answer):
+        if any(n == c or c.startswith(n) or n.startswith(c) for c in ctx):
+            continue
+        bad.append(n)
+    return bad
+
+
+# ---------------------------------------------------------------------------
+# Graph citations — the SAME reference cards vector answers use, built from the
+# XBRL facts a graph/structured answer is grounded in (company, form/accession,
+# fiscal period, metric + value). Unifies citations across retrieval paths so a
+# graph answer is never given a lesser "just an italic line" treatment.
+# ---------------------------------------------------------------------------
+
+_GRAPH_COL_LABEL = {
+    "revenue": "Revenue", "netIncome": "Net income", "netMargin": "Net margin",
+    "operatingMargin": "Operating margin", "roe": "ROE",
+}
+
+
+def _edgar_filing_url(ticker: str, accession: str) -> str:
+    """Best-effort EDGAR filing-index URL from the company CIK + accession.
+    Correct for self-filed filings (the extracted large-caps); returns "" when
+    the CIK or accession is unknown so the citation card simply omits the link."""
+    if not accession:
+        return ""
+    try:
+        from ..data_extract.sec_client import cik_for_ticker
+        cik = cik_for_ticker(ticker)
+    except Exception:
+        cik = None
+    if not cik:
+        return ""
+    acc_nodash = accession.replace("-", "")
+    return f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/{acc_nodash}/{accession}-index.htm"
+
+
+def build_graph_references(rows: list[dict], metric: Optional[str], tickers: list[str]) -> list[dict]:
+    """One reference card per company in the SPARQL result, shaped exactly like a
+    vector reference (same fields, same UI). `text` is the per-year XBRL fact(s)
+    the answer copied; `preview` is a one-line summary; `url` links the filing."""
+    try:
+        from ..data_extract.sec_client import company_name_for_ticker
+    except Exception:
+        company_name_for_ticker = lambda _t: None  # noqa: E731
+
+    metric_label = _clean_metric_label(metric) if metric else "financial statements"
+    section = (metric_label[:1].upper() + metric_label[1:]) if metric else "XBRL financial statements"
+
+    refs: list[dict] = []
+    for tk in tickers:
+        with _lock:
+            reg = dict(_registry.get(tk, {}))
+        trows = [r for r in rows if r.get("ticker") == tk]
+
+        lines: list[str] = []
+        for r in trows:
+            fy = str(r.get("fiscalYear", "")).split(".")[0]
+            cells = []
+            for col, val in r.items():
+                if col in ("ticker", "fiscalYear"):
+                    continue
+                label = _GRAPH_COL_LABEL.get(col) or (metric_label if col == "value" else col)
+                cells.append(f"{label}: {_fmt_cell(_column_unit(col, metric), val)}")
+            if cells:
+                lines.append((f"FY{fy} — " if fy else "") + "; ".join(cells))
+
+        text = "\n".join(lines) if lines else metric_label
+        refs.append({
+            "number": 0,
+            "ticker": tk,
+            "company": company_name_for_ticker(tk) or tk,
+            "form": reg.get("form", "10-K"),
+            "section": section,
+            "url": _edgar_filing_url(tk, reg.get("accession_number", "")),
+            "accession_number": reg.get("accession_number", ""),
+            "filing_date": reg.get("filing_date", ""),
+            "chunk_index": 0,
+            "source": "",
+            "preview": (lines[0] if lines else metric_label)[:240],
+            "text": text[:6000],
+        })
+    return refs
+
+
+def _graph_prompt(question: str) -> tuple[Optional[str], str, list[dict]]:
+    """
+    Retrieval-only graph preparation (NO LLM call, no embeddings).
+
+    Runs SPARQL against the in-memory graph and builds the generation prompt plus
+    the deterministic tail (data-gap / period-end notes + source line) that is
+    appended verbatim AFTER the model's answer. Split out from _answer_from_graph
+    so the streaming path can do this retrieval work up front (the "bird" phase)
+    and then stream the generation.
+
+    Returns (prompt, tail): prompt is None when the graph has no usable data for
+    the question (caller falls back to vector). `tail` is templated text — never
+    LLM-generated — so phrasing is identical across calls for the same gap.
+    """
     g = _get_graph()
     if len(g) == 0:
-        return "", False
+        return None, "", []
 
     known = _graph_tickers()
-
     if not known:
-        return "", False
+        return None, "", []
 
     # Pass the known-ticker set so single-letter tickers (e.g. F for Ford) are
     # matched only when they are actually registered in the graph.
@@ -984,7 +1234,7 @@ def _answer_from_graph(question: str) -> tuple[str, bool]:
     # proceed with all companies (available=[]) and let SPARQL return all rows.
     if raw_tickers and not available:
         logger.info("Graph missing tickers %s (have %s) — falling back", raw_tickers, known)
-        return "", False
+        return None, "", []
 
     metric = _detect_metric(question)
     sparql = _build_sparql(question, available)
@@ -992,13 +1242,15 @@ def _answer_from_graph(question: str) -> tuple[str, bool]:
         rows = run_sparql(g, sparql)
     except Exception as exc:
         logger.warning("SPARQL failed: %s", exc)
-        return "", False
+        return None, "", []
 
     if not rows:
         logger.info("SPARQL returned 0 rows for: %s", question[:80])
-        return "", False
+        return None, "", []
 
-    table = results_to_markdown(rows)
+    # Pre-format every value to its exact unit/scale so the model copies figures
+    # verbatim (no rescaling/rounding — the old $391,000M→$391B seam).
+    table = _format_graph_table(rows, metric)
 
     # Tickers present in SPARQL results (order-preserving dedup)
     tickers_with_data = list(dict.fromkeys(
@@ -1016,49 +1268,84 @@ def _answer_from_graph(question: str) -> tuple[str, bool]:
     # Period-end disclosure: only when FY-end months differ across compared companies
     period_note = _period_end_note(tickers_with_data, queried_year)
 
-    gen_model = os.getenv("GEMINI_GEN_MODEL", "gemini-1.5-flash")
-
-    # Schema annotations go BEFORE the table so the model understands column
-    # semantics before it reads the data rows, and the question lands at the end.
-    schema_parts = []
-    if metric and "value" in (rows[0] if rows else {}):
-        schema_parts.append(f"The 'value' column contains the metric: {metric}.")
-    schema_parts.append(
-        "Column naming: '_millions' suffix = USD millions, '_pct' suffix = percentage."
-    )
-    schema_note = " ".join(schema_parts)
+    # A short lead-in names the metric (for the single-'value'-column queries) so
+    # the model knows what the column is; values themselves are pre-formatted.
+    lead = ""
+    if metric and rows and "value" in rows[0]:
+        lead = f"The 'value' column is the metric: {metric}.\n\n"
 
     prompt = (
-        f"{schema_note}\n\n"
-        f"Structured financial data retrieved via SPARQL from an RDF graph of SEC filings:\n\n"
-        f"{table}\n\n"
+        "DATA TABLE — exact figures from SEC XBRL filings, each already shown with "
+        "its correct unit and scale. Use these values verbatim.\n\n"
+        f"{lead}{table}\n\n"
         f"Question: {question}"
     )
-    try:
+
+    tail = ""
+    if partial_note:
+        tail += f"\n\n{partial_note}"
+    if period_note:
+        tail += f"\n\n{period_note}"
+    tail += "\n\n_Source: structured financial data · SEC EDGAR XBRL metrics_"
+    return prompt, tail, build_graph_references(rows, metric, tickers_with_data)
+
+
+def _answer_from_graph(question: str) -> tuple[str, bool, list[dict]]:
+    """
+    Run SPARQL against the in-memory graph and generate a grounded NL answer.
+    Returns (answer, had_data, graph_refs). No embedding calls. Used by the
+    non-streaming /chat path; the streaming path uses _graph_prompt + streaming
+    generation. `graph_refs` are citation cards for the XBRL facts cited.
+    """
+    from ..data_extract.embeddings import get_genai_client
+    from google.genai import types as genai_types
+
+    prompt, tail, graph_refs = _graph_prompt(question)
+    if prompt is None:
+        return "", False, []
+
+    gen_model = os.getenv("GEMINI_GEN_MODEL", "gemini-3.1-flash-lite")
+
+    def _generate(extra: str = "") -> str:
         client = get_genai_client()
         resp = client.models.generate_content(
             model=gen_model,
-            contents=prompt,
+            contents=prompt + extra,
             config=genai_types.GenerateContentConfig(
                 system_instruction=_GRAPH_SYSTEM,
                 temperature=0.1,
             ),
         )
-        text = (resp.text or "").strip()
+        return (resp.text or "").strip()
+
+    try:
+        text = _generate()
         if not text:
-            return "", False
-        # Append deterministic structured notes after the LLM answer.
-        # These are always templated — never LLM-generated — so the phrasing
-        # is identical across repeated calls for the same structural gap.
-        if partial_note:
-            text += f"\n\n{partial_note}"
-        if period_note:
-            text += f"\n\n{period_note}"
-        text += "\n\n_Source: structured financial data · SEC EDGAR XBRL metrics_"
-        return text, True
+            return "", False, []
+        # Numeric grounding check (Seam 3e): every figure asserted must appear in
+        # the table. If one doesn't, the model invented/derived it — regenerate
+        # once with a pointed reminder; if it still can't ground, keep the answer
+        # but log the unsupported figures for visibility.
+        unsupported = _unsupported_numbers(text, prompt)
+        if unsupported:
+            logger.warning("Graph answer had unsupported numbers %s — regenerating once", unsupported)
+            retry = _generate(
+                "\n\nIMPORTANT: your previous answer used a number that is NOT in the "
+                "table. Use ONLY the exact figures shown above, copied verbatim; if a "
+                "figure is absent, say it is not disclosed in the available filings."
+            )
+            if retry and not _unsupported_numbers(retry, prompt):
+                text = retry
+            else:
+                still = _unsupported_numbers(retry or text, prompt)
+                logger.warning("Graph answer STILL unsupported after retry: %s", still)
+                if retry:
+                    text = retry
+        # Deterministic templated tail appended verbatim after the LLM answer.
+        return text + tail, True, graph_refs
     except Exception as exc:
         logger.warning("Graph LLM call failed: %s", exc)
-        return "", False
+        return "", False, []
 
 
 # ---------------------------------------------------------------------------
@@ -1069,15 +1356,17 @@ def route_question(
     question: str,
     k: int = 5,
     ticker: Optional[str] = None,
+    tickers: Optional[list[str]] = None,
     form: Optional[str] = None,
-) -> tuple[str, list, str]:
+) -> tuple[str, list, list, str]:
     """
     Route a chat question through the appropriate retrieval path.
 
-    Returns (answer, source_chunks, path) where:
-      - answer       NL answer string (never empty; may be NO_CONTEXT_MESSAGE)
+    Returns (answer, source_chunks, graph_sources, path) where:
+      - answer        NL answer string (never empty; may be NO_CONTEXT_MESSAGE)
       - source_chunks list[FilingChunk] from vector RAG (empty for graph-only)
-      - path         "graph" | "vector" | "both" | "none" | "vector_no_graph"
+      - graph_sources list[dict] XBRL-fact citation cards (empty for vector-only)
+      - path          "graph" | "vector" | "both" | "none" | "vector_no_graph"
 
     "vector_no_graph" means the classifier chose the graph path but the in-memory
     graph had no data for the asked company (e.g. not yet registered in this
@@ -1087,6 +1376,36 @@ def route_question(
 
     path = classify_question(question)
     logger.info("Router: path=%s | %s", path, question[:80])
+
+    # Vector-scope resolution. Scope the vector search to the companies the
+    # question actually names, so an unscoped question about a company with zero
+    # chunks can't silently retrieve ANOTHER company's filing text (the graph
+    # and vector halves must agree on scope; the graph path already resolves a
+    # specific company from the text, the vector path historically searched
+    # globally). Precedence, highest first:
+    #   1. an explicit caller ticker LIST (e.g. the compare-view FinChat strip,
+    #      which always sends [anchor, peer]) wins outright over anything the
+    #      question does or doesn't name -- "which has better margins?" names no
+    #      company, and this is exactly the case that must NOT fall to global
+    #      scope. Filters to `ticker IN (...)`, an OR over the list, so a chunk
+    #      from a third company can never be retrieved.
+    #   2. else a single caller ticker (e.g. FinChat single-select);
+    #   3. else the companies named in the question that we actually have data
+    #      for (same _extract_tickers resolution the graph path uses, filtered
+    #      to registered tickers so stray uppercase words don't false-scope);
+    #   4. else None -> global search, the correct behavior for a genuinely
+    #      corpus-wide question ("which of my companies flags supply-chain risk?").
+    known = _graph_tickers()
+    mentioned = [t for t in _extract_tickers(question, known_tickers=known) if t in known]
+    explicit = [t.strip().upper() for t in (tickers or []) if t and t.strip()]
+    if explicit:
+        vector_scope: Optional[list[str]] = explicit
+    elif ticker:
+        vector_scope = [ticker.strip().upper()]
+    elif mentioned:
+        vector_scope = mentioned
+    else:
+        vector_scope = None
 
     _QUOTA_MSG = (
         "The daily embedding quota is exhausted — vector search is unavailable until "
@@ -1102,48 +1421,243 @@ def route_question(
 
     def _vector() -> tuple[str, list, str]:
         try:
-            ans, chunks = answer_question(question, k=k, ticker=ticker, form=form)
+            ans, chunks = answer_question(question, k=k, tickers=vector_scope, form=form)
         except DailyQuotaExceededError:
             return _QUOTA_MSG, [], "none"
         except PerMinuteQuotaError:
             return _PER_MINUTE_QUOTA_MSG, [], "none"
+        except Exception as exc:
+            # Any other vector-infra failure (e.g. the vector store is
+            # unreachable) must degrade to an honest "not found" rather than
+            # crash the whole request — especially on the graph-miss fallback,
+            # where a factual question should end in "no data", not a 500.
+            logger.warning("Vector retrieval failed: %s", exc)
+            return NO_CONTEXT_MESSAGE, [], "none"
         if not chunks:
             return NO_CONTEXT_MESSAGE, [], "none"
         return ans, chunks, "vector"
 
     if path == "vector":
-        return _vector()
+        ans, chunks, vpath = _vector()
+        return ans, chunks, [], vpath
 
     if path == "graph":
-        graph_ans, had_data = _answer_from_graph(question)
+        graph_ans, had_data, grefs = _answer_from_graph(question)
         if had_data:
-            return graph_ans, [], "graph"
+            return graph_ans, [], grefs, "graph"
         logger.info("Graph had no data — falling back to vector (will surface as vector_no_graph)")
         ans, chunks, vpath = _vector()
         # Surface the fallback honestly so the frontend can show a distinct indicator.
-        return ans, chunks, "vector_no_graph" if vpath == "vector" else vpath
+        return ans, chunks, [], "vector_no_graph" if vpath == "vector" else vpath
 
-    # path == "both": run both, merge if possible
-    graph_ans, had_graph = _answer_from_graph(question)
-    try:
-        vec_ans, chunks = answer_question(question, k=k, ticker=ticker, form=form)
-    except DailyQuotaExceededError:
-        vec_ans, chunks = _QUOTA_MSG, []
-    except PerMinuteQuotaError:
-        vec_ans, chunks = _PER_MINUTE_QUOTA_MSG, []
+    # path == "both": run both retrieval paths concurrently. Both are read-only
+    # w.r.t. the rdflib graph within a single request — the only writer is
+    # register_filing(), called from /extract, not from either function here.
+    # See _answer_from_graph / answer_question for the read-only trace.
+    def _run_vector() -> tuple[str, list]:
+        try:
+            return answer_question(question, k=k, tickers=vector_scope, form=form)
+        except DailyQuotaExceededError:
+            return _QUOTA_MSG, []
+        except PerMinuteQuotaError:
+            return _PER_MINUTE_QUOTA_MSG, []
+        except Exception as exc:
+            logger.warning("Vector retrieval failed (both path): %s", exc)
+            return "", []
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        fut_graph = pool.submit(_answer_from_graph, question)
+        fut_vector = pool.submit(_run_vector)
+        graph_ans, had_graph, grefs = fut_graph.result()
+        vec_ans, chunks = fut_vector.result()
 
     if had_graph and chunks:
+        # Coverage-qualified filing-text header. The graph half answers on every
+        # company in scope, but the vector half only returns chunks for the
+        # companies that actually have indexed filing text AND surfaced in the
+        # top-k. When the requested scope named more companies than the returned
+        # chunks cover, qualify the header so a "both" answer can't imply filing
+        # text for a company it never read. We name the COVERED companies, NOT a
+        # reason: at this point we can't distinguish "not indexed" from "indexed
+        # but no top-k passages" (a company can be indexed yet absent here), and
+        # asserting "not indexed" would be wrong in exactly the both-indexed case
+        # the compare-view strip runs in. Badge stays "both" -- both paths ran;
+        # the header, not the badge, carries coverage.
+        text_header = "**From SEC filing text:**"
+        if vector_scope:
+            requested = list(dict.fromkeys(vector_scope))  # de-dup, preserve order
+            covered = {c.ticker.upper() for c in chunks}    # always a subset (IN filter)
+            if len(covered) < len(requested):
+                shown = [t for t in requested if t in covered]
+                names = (
+                    f"{shown[0]} only" if len(shown) == 1
+                    else f"{', '.join(shown[:-1])} and {shown[-1]} only"
+                )
+                text_header = f"**From SEC filing text ({names}):**"
         merged = (
-            f"**From structured financial data (XBRL metrics):**\n\n{graph_ans}"
+            f"**From structured financial data (XBRL metrics) — the authoritative exact figures:**\n\n{graph_ans}"
             f"\n\n---\n\n"
-            f"**From SEC filing text:**\n\n{vec_ans}"
+            f"{text_header}\n\n{vec_ans}"
         )
-        return merged, chunks, "both"
+        return merged, chunks, grefs, "both"
 
     if had_graph:
-        return graph_ans, [], "graph"
+        return graph_ans, [], grefs, "graph"
 
     if chunks:
-        return vec_ans, chunks, "vector"
+        return vec_ans, chunks, [], "vector"
 
-    return NO_CONTEXT_MESSAGE, [], "none"
+    return NO_CONTEXT_MESSAGE, [], [], "none"
+
+
+# Quota messages, shared by route_question (non-streaming) and prepare_chat_stream.
+_QUOTA_MSG_TXT = (
+    "The daily embedding quota is exhausted — vector search is unavailable until "
+    "midnight UTC. Try a metrics or comparison question; those use the structured "
+    "data graph and have no embedding quota."
+)
+_PER_MINUTE_QUOTA_MSG_TXT = (
+    "The per-minute embedding rate limit was hit — vector search is temporarily "
+    "unavailable. Please try again in about 60 seconds, or rephrase as a metrics "
+    "question (e.g. 'Apple gross margin FY2024') to use the structured data graph "
+    "instead (zero embedding calls)."
+)
+
+
+def prepare_chat_stream(
+    question: str,
+    k: int = 5,
+    ticker: Optional[str] = None,
+    tickers: Optional[list[str]] = None,
+    form: Optional[str] = None,
+) -> tuple[list[dict], list, list, str]:
+    """
+    Streaming counterpart to route_question. Does ONLY the pre-generation work
+    (classification + retrieval), then returns an ordered list of `segments` to
+    emit, the source chunks, the graph-fact citation cards, and the retrieval path.
+
+    Each segment is one of:
+      {"kind": "llm",  "system": str, "prompt": str, "temperature": float}
+          -> the caller streams generate_content_stream token-by-token
+      {"kind": "text", "text": str}
+          -> emitted verbatim (deterministic headers / notes / "no context")
+
+    Splitting retrieval from generation is what makes real streaming possible:
+    the router's keyword classification + graph/vector retrieval run first (the
+    "bird" phase, nothing to stream yet), then the model output streams. The
+    graph/both deterministic tails and merge headers are plain `text` segments,
+    so the streamed answer is byte-for-byte the same shape as the non-streaming
+    /chat answer.
+    """
+    from ..data_extract.rag import (
+        search, _format_context, SYSTEM_PROMPT, NO_CONTEXT_MESSAGE,
+    )
+
+    def _llm(system: str, prompt: str, temp: float) -> dict:
+        return {"kind": "llm", "system": system, "prompt": prompt, "temperature": temp}
+
+    def _text(text: str) -> dict:
+        return {"kind": "text", "text": text}
+
+    # --- Vector scope resolution (identical precedence to route_question) ------
+    known = _graph_tickers()
+    mentioned = [t for t in _extract_tickers(question, known_tickers=known) if t in known]
+    explicit = [t.strip().upper() for t in (tickers or []) if t and t.strip()]
+    if explicit:
+        vector_scope: Optional[list[str]] = explicit
+    elif ticker:
+        vector_scope = [ticker.strip().upper()]
+    elif mentioned:
+        vector_scope = mentioned
+    else:
+        vector_scope = None
+
+    path = classify_question(question)
+    logger.info("Router(stream): path=%s | %s", path, question[:80])
+
+    def _vector_prep_raw() -> tuple[Optional[str], list, Optional[str]]:
+        """Retrieve chunks + build the prompt. Returns (prompt, chunks, err_text)."""
+        try:
+            chunks = search(question, k=k, tickers=vector_scope, form=form)
+        except DailyQuotaExceededError:
+            return None, [], _QUOTA_MSG_TXT
+        except PerMinuteQuotaError:
+            return None, [], _PER_MINUTE_QUOTA_MSG_TXT
+        except Exception as exc:
+            # Vector store unreachable etc. — degrade to "no data" (None err ->
+            # NO_CONTEXT_MESSAGE) rather than crash the stream.
+            logger.warning("Vector retrieval failed (stream): %s", exc)
+            return None, [], None
+        if not chunks:
+            return None, [], None
+        prompt = f"Context:\n{_format_context(chunks)}\n\nQuestion:\n{question}"
+        return prompt, chunks, None
+
+    def _vector_segments() -> tuple[list[dict], list, str]:
+        prompt, chunks, err = _vector_prep_raw()
+        if err:
+            return [_text(err)], [], "none"
+        if prompt is None:
+            return [_text(NO_CONTEXT_MESSAGE)], [], "none"
+        return [_llm(SYSTEM_PROMPT, prompt, 0.2)], chunks, "vector"
+
+    if path == "vector":
+        segs, chunks, vpath = _vector_segments()
+        return segs, chunks, [], vpath
+
+    if path == "graph":
+        gprompt, gtail, grefs = _graph_prompt(question)
+        if gprompt is not None:
+            segs = [_llm(_GRAPH_SYSTEM, gprompt, 0.1)]
+            if gtail:
+                segs.append(_text(gtail))
+            return segs, [], grefs, "graph"
+        segs, chunks, vpath = _vector_segments()
+        return segs, chunks, [], ("vector_no_graph" if vpath == "vector" else vpath)
+
+    # path == "both": retrieve both halves concurrently (the bird phase), then
+    # stream graph generation followed by vector generation.
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        fut_graph = pool.submit(_graph_prompt, question)
+        fut_vector = pool.submit(_vector_prep_raw)
+        gprompt, gtail, grefs = fut_graph.result()
+        vprompt, chunks, verr = fut_vector.result()
+
+    had_graph = gprompt is not None
+
+    if had_graph and chunks:
+        # Coverage-qualified filing-text header (mirrors route_question's "both").
+        text_header = "**From SEC filing text:**"
+        if vector_scope:
+            requested = list(dict.fromkeys(vector_scope))
+            covered = {c.ticker.upper() for c in chunks}
+            if len(covered) < len(requested):
+                shown = [t for t in requested if t in covered]
+                names = (
+                    f"{shown[0]} only" if len(shown) == 1
+                    else f"{', '.join(shown[:-1])} and {shown[-1]} only"
+                )
+                text_header = f"**From SEC filing text ({names}):**"
+        segs = [
+            _text("**From structured financial data (XBRL metrics) — the authoritative exact figures:**\n\n"),
+            _llm(_GRAPH_SYSTEM, gprompt, 0.1),
+        ]
+        if gtail:
+            segs.append(_text(gtail))
+        segs.append(_text(f"\n\n---\n\n{text_header}\n\n"))
+        segs.append(_llm(SYSTEM_PROMPT, vprompt, 0.2))
+        return segs, chunks, grefs, "both"
+
+    if had_graph:
+        segs = [_llm(_GRAPH_SYSTEM, gprompt, 0.1)]
+        if gtail:
+            segs.append(_text(gtail))
+        return segs, [], grefs, "graph"
+
+    if chunks:
+        return [_llm(SYSTEM_PROMPT, vprompt, 0.2)], chunks, [], "vector"
+
+    if verr:
+        return [_text(verr)], [], [], "none"
+
+    return [_text(NO_CONTEXT_MESSAGE)], [], [], "none"

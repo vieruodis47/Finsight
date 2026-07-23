@@ -17,9 +17,23 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-# SEC requires a descriptive User-Agent string or requests return 403.
-# Set SEC_USER_AGENT in the environment; fall back to a generic placeholder.
-HEADERS = {"User-Agent": os.getenv("SEC_USER_AGENT", "FinSight contact@example.com")}
+# Reuse the app's shared, throttled SEC client (one global throttle + 429 backoff
+# + a single descriptive User-Agent) when imported inside the app package. When
+# run as a standalone analysis script (analysis/ on sys.path, no package), fall
+# back to a direct fetch that uses the SAME institutional (.edu) User-Agent —
+# never the "example.com" placeholder, which SEC rate-limits first.
+try:
+    from backend.data_extract.sec_client import (
+        SEC_USER_AGENT,
+        get_company_facts as _shared_company_facts,
+    )
+except Exception:  # pragma: no cover - standalone script path
+    _shared_company_facts = None
+    SEC_USER_AGENT = os.getenv(
+        "SEC_USER_AGENT", "FinSight (SAIL UW-Madison) rarunachala2@wisc.edu"
+    )
+
+HEADERS = {"User-Agent": SEC_USER_AGENT, "Accept-Encoding": "gzip, deflate"}
 
 # Ticker -> 10-digit CIK. Populated from the generated SEC registry below.
 COMPANIES = {}
@@ -158,67 +172,104 @@ def get_metric_explanation(metric_name):
 
 
 def get_company_facts(cik):
-    """Fetch raw XBRL company facts JSON from SEC EDGAR."""
+    """
+    Fetch raw XBRL company facts JSON from SEC EDGAR.
+
+    Prefers the shared, throttled SEC client so every sec.gov call in the app is
+    coordinated behind one global rate limiter (10 req/s) with 429 backoff.
+    Falls back to a direct fetch (same descriptive User-Agent) for standalone use.
+    """
+    if _shared_company_facts is not None:
+        return _shared_company_facts(cik)
     url = f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
-    response = requests.get(url, headers=HEADERS)
+    response = requests.get(url, headers=HEADERS, timeout=30)
     response.raise_for_status()
     return response.json()
 
 
-def _extract_annual_field(data, field_name):
-    """Extract clean annual (10-K) values for 'flow' fields (Revenue, COGS, etc.)"""
+def _annual_entries_by_end(data, field_name):
+    """Annual (10-K) 'flow' facts for one XBRL tag, keyed by period-end date.
+
+    Returns {end_date: entry}, deduped by end date keeping the most-recently-filed
+    entry (restatements win). Entries carry 'val' and 'filed' so callers can merge
+    across tags. Empty if the tag is absent for this filer.
+    """
     if field_name not in data['facts']['us-gaap']:
         return {}
 
     usd_data = data['facts']['us-gaap'][field_name]['units']['USD']
 
-    annual = []
+    by_end = {}
     for entry in usd_data:
         if entry['form'] != '10-K':
             continue
         start = datetime.strptime(entry['start'], '%Y-%m-%d')
         end = datetime.strptime(entry['end'], '%Y-%m-%d')
         duration_days = (end - start).days
-        if 360 <= duration_days <= 372:
-            annual.append(entry)
-
-    by_end = {}
-    for entry in annual:
+        if not (360 <= duration_days <= 372):
+            continue
         key = entry['end']
         if key not in by_end or entry['filed'] > by_end[key]['filed']:
             by_end[key] = entry
 
-    return {k: v['val'] for k, v in sorted(by_end.items())}
+    return by_end
 
 
-def _extract_instant_field(data, field_name):
-    """Extract clean annual (10-K) values for 'stock' fields (Inventory, Assets, etc.)"""
+def _instant_entries_by_end(data, field_name):
+    """Annual (10-K) 'stock' facts for one XBRL tag, keyed by period-end date.
+
+    Same shape/dedup as _annual_entries_by_end, but for instant (balance-sheet)
+    values, which have no duration to filter on.
+    """
     if field_name not in data['facts']['us-gaap']:
         return {}
 
     usd_data = data['facts']['us-gaap'][field_name]['units']['USD']
 
-    annual = [entry for entry in usd_data if entry['form'] == '10-K']
-
     by_end = {}
-    for entry in annual:
+    for entry in usd_data:
+        if entry['form'] != '10-K':
+            continue
         key = entry['end']
         if key not in by_end or entry['filed'] > by_end[key]['filed']:
             by_end[key] = entry
 
-    return {k: v['val'] for k, v in sorted(by_end.items())}
+    return by_end
 
 
 def extract_metric(data, field_options, instant=False):
-    """Try multiple possible XBRL field names until one returns data."""
+    """Merge annual 10-K values for a metric across ALL its fallback XBRL tags.
+
+    The same economic line is reported under different us-gaap tags over time —
+    e.g. MSFT revenue lives under `Revenues` (FY2008-2010), then `SalesRevenueNet`,
+    then `RevenueFromContractWithCustomerExcludingAssessedTax` (FY2016+). The old
+    "return the first non-empty tag" logic truncated the series to whichever tag
+    led the list (MSFT collapsed to only 2008-2010, so forecasts projected FY2011).
+
+    Instead, union every candidate tag by fiscal period-end date to recover the
+    full history. When a single period-end is reported by more than one tag, the
+    earlier tag in `field_options` wins (the lists are ordered most-canonical
+    first), so exactly one value is taken per year — no summing, no double count.
+
+    Returns ({end_date: val} sorted by date, field_used) where field_used is the
+    tag covering the most-recent year (informational).
+    """
+    collect = _instant_entries_by_end if instant else _annual_entries_by_end
+
+    merged = {}       # end_date -> entry
+    field_by_end = {}  # end_date -> tag that supplied it
     for field_name in field_options:
-        if instant:
-            result = _extract_instant_field(data, field_name)
-        else:
-            result = _extract_annual_field(data, field_name)
-        if result:
-            return result, field_name
-    return {}, None
+        for end, entry in collect(data, field_name).items():
+            if end not in merged:  # earlier (more canonical) tag wins on overlap
+                merged[end] = entry
+                field_by_end[end] = field_name
+
+    if not merged:
+        return {}, None
+
+    ends = sorted(merged)
+    values = {end: merged[end]['val'] for end in ends}
+    return values, field_by_end[ends[-1]]
 
 
 def extract_all_metrics(data):
@@ -339,41 +390,47 @@ def calculate_ratios(metrics):
     return ratios
 
 
-def extract_quarterly_field(data, field_name):
+def extract_quarterly_field(data, field_options):
     """
     Extract quarterly values using actual fiscal year-end groupings,
     derived from each quarter's 'end' date rather than SEC's self-reported fy/fp tags.
+
+    Unions all fallback XBRL tags in `field_options` by period-end date, mirroring
+    the annual tag-merge (PR #53): a filer that reports quarters under `Revenues`
+    early and `RevenueFromContractWithCustomerExcludingAssessedTax` later would
+    otherwise be truncated to whichever tag leads the list (MSFT collapsed to
+    2008-2010). On an end-date reported by more than one tag, the earlier (more
+    canonical) tag wins; within a tag, the most-recently-filed entry wins.
     """
-    if field_name not in data['facts']['us-gaap']:
-        return {}
+    if isinstance(field_options, str):  # tolerate a single tag name
+        field_options = [field_options]
 
-    usd_data = data['facts']['us-gaap'][field_name]['units']['USD']
-
-    quarterly_entries = []
-    annual_entries = []
-
-    for entry in usd_data:
-        start = datetime.strptime(entry['start'], '%Y-%m-%d')
-        end = datetime.strptime(entry['end'], '%Y-%m-%d')
-        duration_days = (end - start).days
-
-        if entry['form'] == '10-Q' and 80 <= duration_days <= 100:
-            quarterly_entries.append(entry)
-        elif entry['form'] == '10-K' and 360 <= duration_days <= 372:
-            annual_entries.append(entry)
-
-    # Dedupe by end date, keep most recently filed
     q_by_end = {}
-    for entry in quarterly_entries:
-        key = entry['end']
-        if key not in q_by_end or entry['filed'] > q_by_end[key]['filed']:
-            q_by_end[key] = entry
-
     a_by_end = {}
-    for entry in annual_entries:
-        key = entry['end']
-        if key not in a_by_end or entry['filed'] > a_by_end[key]['filed']:
-            a_by_end[key] = entry
+    for field_name in field_options:
+        facts = data['facts']['us-gaap'].get(field_name)
+        if not facts:
+            continue
+        for entry in facts['units'].get('USD', []):
+            start = datetime.strptime(entry['start'], '%Y-%m-%d')
+            end = datetime.strptime(entry['end'], '%Y-%m-%d')
+            duration_days = (end - start).days
+            key = entry['end']
+
+            if entry['form'] == '10-Q' and 80 <= duration_days <= 100:
+                target = q_by_end
+            elif entry['form'] == '10-K' and 360 <= duration_days <= 372:
+                target = a_by_end
+            else:
+                continue
+
+            existing = target.get(key)
+            # First (more canonical) tag to supply an end-date wins; within the
+            # same tag, keep the most-recently-filed restatement.
+            if existing is None or (
+                existing.get("_tag") == field_name and entry['filed'] > existing['filed']
+            ):
+                target[key] = {**entry, "_tag": field_name}
 
     # Group quarters under the fiscal year they roll up into
     annual_end_dates = sorted(a_by_end.keys())
@@ -427,12 +484,10 @@ def get_quarterly_metrics(ticker, year=None):
 
     results = {}
     for metric_name, field_options in QUARTERLY_METRIC_FIELDS.items():
-        quarterly_data = {}
-        for field_name in field_options:
-            extracted = extract_quarterly_field(data, field_name)
-            if extracted:
-                quarterly_data = extracted
-                break
+        # Merge across all fallback tags (see extract_quarterly_field) rather than
+        # stopping at the first non-empty one, so recent quarters under a newer
+        # tag are never dropped.
+        quarterly_data = extract_quarterly_field(data, field_options)
 
         if year is not None:
             quarterly_data = {year: quarterly_data[year]} if year in quarterly_data else {}

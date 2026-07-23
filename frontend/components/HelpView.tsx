@@ -5,6 +5,9 @@ import {
   Lightbulb, AlertTriangle,
 } from 'lucide-react';
 import { c, font } from '../theme';
+import { useIsMobile } from '../utils/hooks';
+import { gridCols } from '../utils/chart';
+import { checkSpecificity } from '../utils/questionQuality';
 
 const FF = font.ui;
 
@@ -82,21 +85,18 @@ const FaqItem: React.FC<{ q: string; a: string }> = ({ q, a }) => {
 };
 
 const HelpView: React.FC = () => {
+  const isMobile = useIsMobile();
   const [triedQ, setTriedQ]     = useState('');
   const [feedback, setFeedback] = useState<string | null>(null);
 
   const checkQuestion = () => {
-    const q = triedQ.trim().toLowerCase();
+    const q = triedQ.trim();
     if (!q) return;
-    const issues: string[] = [];
-    const hasCompany = /gap|pvh|aeo|american eagle|inditex|h&m|gps/.test(q);
-    const hasYear    = /fy20|20\d\d|fiscal/.test(q);
-    const hasMetric  = /revenue|margin|income|profit|debt|cash|inventory|turnover|eps|ebitda|guidance|risk|growth/.test(q);
-    if (!hasCompany) issues.push('• Mention a specific company (e.g. Gap, PVH, AEO)');
-    if (!hasYear)    issues.push('• Include a fiscal year (e.g. FY2024)');
-    if (!hasMetric)  issues.push('• Name a specific metric or topic (e.g. gross margin, risk factors)');
+    // Same specificity rule FinChat enforces before retrieving (single source of
+    // truth — see utils/questionQuality).
+    const { ok, issues } = checkSpecificity(q);
     setFeedback(
-      issues.length === 0
+      ok
         ? 'Looks good! This question is specific enough for FinSight to answer well.'
         : 'This question could be more specific:\n' + issues.join('\n')
     );
@@ -177,7 +177,7 @@ const HelpView: React.FC = () => {
       </div>
 
       {/* Good vs bad questions */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 14, marginBottom: 20 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: gridCols(isMobile, 280), gap: 14, marginBottom: 20 }}>
 
         <div style={{ border: `0.5px solid ${c.border}`, borderRadius: 10, overflow: 'hidden' }}>
           <div style={{ padding: '11px 14px', borderBottom: `0.5px solid ${c.border}`, background: c.posSurface, display: 'flex', alignItems: 'center', gap: 7 }}>
@@ -215,7 +215,7 @@ const HelpView: React.FC = () => {
         <div style={{ padding: '11px 14px', borderBottom: `0.5px solid ${c.border}`, background: c.surface }}>
           <p style={{ fontSize: 12, fontWeight: 500, color: c.text2, margin: 0 }}>4 tips for better answers</p>
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: gridCols(isMobile, 240) }}>
           {TIPS.map(({ icon, title, body }, i) => (
             <div
               key={i}

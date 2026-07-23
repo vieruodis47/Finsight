@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>FinSight - Financial Research Assistant</title>
     <script src="https://cdn.tailwindcss.com"></script>
         <style>
@@ -12,6 +12,71 @@
       ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
       ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
       @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+      /* Keyboard-only focus ring for the sidebar logo home link (sapphire brand). */
+      .logo-home { outline: none; }
+      .logo-home:focus-visible { outline: 2px solid #2563EB; outline-offset: 2px; }
+      /* Chart carousel: keyboard-only focus ring (arrow keys navigate when the
+         carousel region has focus). No ring on mouse focus. */
+      .chart-carousel { outline: none; }
+      .chart-carousel:focus-visible { outline: 2px solid #2563EB; outline-offset: 4px; border-radius: 8px; }
+      /* FinChat streaming caret — a thin blinking bar trailing the tokens as
+         they arrive. Colour is set inline (theme brand); motion is disabled
+         under prefers-reduced-motion (falls back to a steady bar). */
+      .stream-caret { display: inline-block; width: 2px; height: 1em; margin-left: 2px; vertical-align: text-bottom; border-radius: 1px; animation: stream-blink 1s steps(2, start) infinite; }
+      @keyframes stream-blink { to { visibility: hidden; } }
+      /* App shell: full dynamic-viewport height. 100dvh accounts for the iOS
+         Safari address bar (100vh does not, and would clip the FinChat
+         composer). The 100vh line is a fallback for engines without dvh. */
+      .app-root { height: 100vh; height: 100dvh; }
+      /* Dashboard KPI cards: 4-col grid -> 2-col below 768px -> 1-col below 480px. */
+      .kpi-grid { grid-template-columns: repeat(4, 1fr); }
+      @media (max-width: 768px) { .kpi-grid { grid-template-columns: repeat(2, 1fr); } }
+      @media (max-width: 480px) { .kpi-grid { grid-template-columns: 1fr; } }
+      /* Prevent horizontal page scroll on small screens regardless of any single
+         wide child; individual scroll containers opt back in locally. */
+      @media (max-width: 768px) { html, body { overflow-x: hidden; } }
+      /* Landing feature badges: single row on desktop, 2×2 below 640px. */
+      .feature-badges { display: flex; flex-wrap: nowrap; gap: 20px; justify-content: center; }
+      @media (max-width: 640px) {
+        .feature-badges { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 20px; justify-items: center; }
+      }
+      /* FinChat suggested questions: 2×2 grid of equal-width cards, 1-col below 640px. */
+      .chat-suggest-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; align-items: stretch; }
+      @media (max-width: 640px) { .chat-suggest-grid { grid-template-columns: 1fr; } }
+      /* FinChat source-citation rows: subtle hover + a soft reveal on expand so
+         the appearing chunk doesn't pop (rows below shift gently, not abruptly). */
+      .cite-row { transition: border-color 0.12s ease, background 0.12s ease; }
+      .cite-row:hover { border-color: #C9D3DE; background: #FCFDFE; }
+      .cite-reveal { animation: cite-reveal 0.18s ease-out; }
+      @keyframes cite-reveal {
+        from { opacity: 0; transform: translateY(-3px); }
+        to   { opacity: 1; transform: translateY(0); }
+      }
+      @media (prefers-reduced-motion: reduce) { .cite-reveal { animation: none; } }
+      /* FinChat "fetching an answer" flying bird.
+         Fly = translate across a ~150px track in a gentle arc (2.6s).
+         Flap = CSS transform on each wing (NOT the SVG `d`, which Firefox can't
+         animate); transform-box:fill-box pins the pivot to each wing's root. */
+      .finch-fly  { animation: finch-fly 2.6s ease-in-out infinite; }
+      .finch-wing { transform-box: fill-box; }
+      .finch-wing--l { transform-origin: 100% 100%; animation: finch-flap-l 0.45s ease-in-out infinite; }
+      .finch-wing--r { transform-origin: 0% 100%;   animation: finch-flap-r 0.45s ease-in-out infinite; }
+      @keyframes finch-fly {
+        0%   { transform: translate(0, 5px);    opacity: 0; }
+        12%  { opacity: 1; }
+        50%  { transform: translate(64px, -6px); }
+        88%  { opacity: 1; }
+        100% { transform: translate(126px, 5px); opacity: 0; }
+      }
+      @keyframes finch-flap-l { 0%, 100% { transform: rotate(14deg); }  50% { transform: rotate(-12deg); } }
+      @keyframes finch-flap-r { 0%, 100% { transform: rotate(-14deg); } 50% { transform: rotate(12deg); } }
+      @media (prefers-reduced-motion: reduce) {
+        /* Static bird (mid-track) + label; no fly, no flap. */
+        .finch-fly { animation: none; transform: translate(56px, 0); opacity: 1; }
+        .finch-wing--l, .finch-wing--r { animation: none; transform: none; }
+        /* Steady (non-blinking) streaming caret. */
+        .stream-caret { animation: none; }
+      }
     </style>
 </head>
 <body class="bg-slate-50 text-slate-900 h-screen overflow-hidden">

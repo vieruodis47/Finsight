@@ -53,10 +53,31 @@ jobs:
           docker push ${{ env.REGISTRY }}/node-service:${{ github.sha }}
           docker push ${{ env.REGISTRY }}/node-service:latest
 
-      - name: Deploy python-service (image only — preserves all env vars and secret mounts)
+      # bge-m3 cutover. `services update` carries forward ALL prior config, so the
+      # three settings that must change for bge-m3 are set EXPLICITLY here — never
+      # left to inheritance from the previous (Gemini/512Mi/finsight) revision:
+      #   --memory 4Gi          : torch + 2.1GB model resident + request headroom.
+      #                           Without this the new revision inherits 512Mi and
+      #                           OOM-kills on the first embed (silent — health
+      #                           checks pass until someone asks FinChat).
+      #   RAVENDB_DATABASE      : finsight -> finsight-bge (the 1024-dim corpus).
+      #   EMBED_DIM             : 1536 -> 1024, or the ingest dimension-assertion
+      #                           fires on every /extract and /upload.
+      #   GEMINI_GEN_MODEL      : the generation model (gemini-3.1-flash-lite). Set
+      #                           here so the deployed generator matches local; the
+      #                           code reads it via os.getenv (embeddings are local
+      #                           sentence-transformers, unaffected).
+      # --update-env-vars is additive/overriding: it preserves all OTHER env vars
+      # (RAVENDB_URLS, RAVENDB_CERT_PATH, FRONTEND_ORIGIN) and the GEMINI_API_KEY
+      # secret mount. ROLLBACK is the pair together: previous image +
+      # RAVENDB_DATABASE=finsight + EMBED_DIM=1536; a half-rollback (new image + old
+      # DB, or vice-versa) is a 1536-vs-1024 mismatch that returns nothing.
+      - name: Deploy python-service (image + 4GiB + finsight-bge/EMBED_DIM cutover)
         run: |
           gcloud run services update python-service \
             --image ${{ env.REGISTRY }}/python-service:${{ github.sha }} \
+            --memory 4Gi \
+            --update-env-vars RAVENDB_DATABASE=finsight-bge,EMBED_DIM=1024,GEMINI_GEN_MODEL=gemini-3.1-flash-lite \
             --region ${{ env.REGION }} \
             --project ${{ env.PROJECT }}
 

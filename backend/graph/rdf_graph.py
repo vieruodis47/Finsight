@@ -31,9 +31,12 @@ Usage
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from rdflib import (
     Graph, Namespace, BNode, Literal,
@@ -175,10 +178,130 @@ def add_company(g: Graph, result: dict) -> None:
         _add_metric_triples(g, filing_uri, result.get("metrics", {}))
 
 
+# ---------------------------------------------------------------------------
+# Build-time fact validation (Seam 1: reject/flag garbage rather than ingest it)
+# ---------------------------------------------------------------------------
+#
+# The graph faithfully stores whatever XBRL parsing produced, so a wrong triple
+# becomes a confident wrong answer on the authoritative-looking graph path. This
+# validator inspects every (ticker, year, metric, value) BEFORE it's asserted and
+# flags anomalies instead of silently ingesting them:
+#   - unknown unit        : a metric name whose unit/scale can't be inferred
+#                           (the whole graph relies on the name suffix to know
+#                           millions vs percent vs ratio).
+#   - impossible value     : e.g. negative revenue/assets, a margin far outside
+#                           any real range, a negative liquidity ratio.
+#   - conflicting duplicate: the same (ticker, year, metric) with two different
+#                           values across the input results.
+# Anomalous facts are still ingested (so the graph isn't silently emptied by one
+# bad field) but every anomaly is logged and returned for reporting.
+
+# Metric names whose unit is unitless (a pure ratio) — no _millions/_pct suffix.
+_UNITLESS_METRICS = frozenset({"debt_to_equity", "current_ratio", "quick_ratio"})
+# Per-share dollar metrics (unit USD/share) — recognised by these exact names.
+_PER_SHARE_METRICS = frozenset({"eps_basic", "eps_diluted"})
+
+
+def _metric_unit(name: str) -> str | None:
+    """Infer a metric's unit from its name, or None if it can't be determined."""
+    if name.endswith("_millions"):
+        return "usd_millions"
+    if name.endswith("_pct"):
+        return "percent"
+    if name in _UNITLESS_METRICS:
+        return "ratio"
+    if name in _PER_SHARE_METRICS:
+        return "usd_per_share"
+    return None
+
+
+# Fields that can never legitimately be negative (a negative here means the wrong
+# tag/period was selected). Net income, cash-flow lines, and equity CAN be
+# negative, so they are deliberately excluded.
+_NON_NEGATIVE_MILLIONS = frozenset({
+    "total_revenue_millions", "cost_of_revenue_millions", "gross_margin_millions",
+    "total_assets_millions", "total_current_assets_millions", "total_liabilities_millions",
+})
+
+
+def _validate_value(ticker: str, year: str, name: str, value) -> str | None:
+    """Return an anomaly message for a single fact, or None if it looks sane."""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return f"{ticker} FY{year} {name}: non-numeric value {value!r}"
+    unit = _metric_unit(name)
+    if unit is None:
+        return f"{ticker} FY{year} {name}={v}: unknown unit (name has no recognised scale suffix)"
+    if unit == "percent" and abs(v) > 1000:
+        return f"{ticker} FY{year} {name}={v}%: implausible percentage (|value| > 1000%)"
+    if unit == "ratio" and name == "current_ratio" and v < 0:
+        return f"{ticker} FY{year} {name}={v}: negative liquidity ratio is impossible"
+    if unit == "usd_millions" and name in _NON_NEGATIVE_MILLIONS and v < 0:
+        return f"{ticker} FY{year} {name}={v}M: negative value is impossible for this concept"
+    return None
+
+
+def validate_facts(results: list[dict]) -> list[str]:
+    """Scan extractor results for anomalous facts. Returns a list of messages.
+
+    Also detects the same (ticker, year, metric) carrying two different values
+    across results — a conflicting duplicate that would return contradictory rows.
+    """
+    anomalies: list[str] = []
+    seen: dict[tuple, float] = {}   # (ticker, year, name) -> value
+
+    def _scan(ticker: str, year: str, metrics: dict) -> None:
+        for category in _METRIC_CATEGORIES:
+            for name, value in (metrics.get(category) or {}).items():
+                if value is None:
+                    continue
+                msg = _validate_value(ticker, year, name, value)
+                if msg:
+                    anomalies.append(msg)
+                try:
+                    fv = float(value)
+                except (TypeError, ValueError):
+                    continue
+                key = (ticker, year, name)
+                if key in seen and abs(seen[key] - fv) > max(1e-6, abs(seen[key]) * 1e-6):
+                    anomalies.append(
+                        f"{ticker} FY{year} {name}: conflicting values "
+                        f"{seen[key]} vs {fv} across filings"
+                    )
+                else:
+                    seen[key] = fv
+
+    for r in results:
+        ticker = (r.get("ticker") or "?").upper()
+        mby = r.get("metrics_by_year") or {}
+        if mby:
+            for year, year_metrics in mby.items():
+                _scan(ticker, str(year), year_metrics)
+        else:
+            year = str(r.get("fiscal_year_end") or (r.get("filing_date", "")[:4]) or "?")
+            _scan(ticker, year, r.get("metrics", {}))
+    return anomalies
+
+
 def build_graph(results: list[dict]) -> Graph:
-    """Build and return a populated in-memory graph from a list of extractor results."""
+    """Build and return a populated in-memory graph from a list of extractor results.
+
+    Facts are validated first; anomalies are logged (not silently dropped) so a
+    wrong triple is visible rather than answered from confidently.
+    """
+    anomalies = validate_facts(results)
+    if anomalies:
+        logger.warning("Graph build: %d fact anomalies flagged:", len(anomalies))
+        for a in anomalies[:50]:
+            logger.warning("  ⚠ %s", a)
     g = Graph()
     build_ontology(g)
+    # Stash the anomaly report on the graph object for optional inspection.
+    try:
+        g.finsight_anomalies = anomalies  # type: ignore[attr-defined]
+    except Exception:
+        pass
     for r in results:
         add_company(g, r)
     return g
@@ -255,28 +378,39 @@ ORDER BY DESC(?netMargin)
 """
 
 
+# Columns that are identifiers/labels, NOT numeric metrics. These must stay
+# strings — float-coercing fiscalYear turned "2025" into 2025.0, which then
+# reached the model as "FY2025.0". Metric-value columns are still coerced so
+# downstream numeric formatting/sorting works.
+_IDENTIFIER_COLUMNS = frozenset({"ticker", "fiscalYear", "fy", "year", "sector", "form"})
+
+
 def run_sparql(g: Graph, query: str) -> list[dict]:
     """
     Execute a SPARQL SELECT and return results as a list of dicts.
 
-    Values are coerced to float when possible.  xsd:decimal Literals have a
-    toPython() that returns decimal.Decimal, which fails isinstance(int, float)
-    — so we always call float(v.toPython()) inside a try/except rather than
-    type-testing the result first.  None is preserved as None.
+    Metric-value columns are coerced to float when possible (xsd:decimal
+    Literals return decimal.Decimal from toPython(), so we always call
+    float(v.toPython()) in a try/except rather than type-testing first).
+    Identifier columns (ticker, fiscalYear, …) are kept as clean strings — never
+    floated — so a fiscal year stays "2025", not "2025.0". None is preserved.
     """
     rows = []
     for row in g.query(query):
         d: dict = {}
         for k, v in row.asdict().items():
+            key = str(k)
             if v is None:
-                d[str(k)] = None
+                d[key] = None
+            elif key in _IDENTIFIER_COLUMNS:
+                d[key] = str(v)
             elif hasattr(v, "toPython"):
                 try:
-                    d[str(k)] = float(v.toPython())
+                    d[key] = float(v.toPython())
                 except (TypeError, ValueError):
-                    d[str(k)] = str(v)
+                    d[key] = str(v)
             else:
-                d[str(k)] = str(v)
+                d[key] = str(v)
         rows.append(d)
     return rows
 
@@ -306,7 +440,7 @@ def sparql_to_llm(question: str, sparql: str, g: Graph) -> str:
     from backend.data_extract.embeddings import get_genai_client
     from google.genai import types as genai_types
 
-    gen_model = os.getenv("GEMINI_GEN_MODEL", "gemini-1.5-flash")
+    gen_model = os.getenv("GEMINI_GEN_MODEL", "gemini-3.1-flash-lite")
 
     rows = run_sparql(g, sparql)
     table = results_to_markdown(rows)

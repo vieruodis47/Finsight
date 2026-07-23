@@ -4,16 +4,61 @@ GET /compare-metrics?a=AAPL&b=MSFT
 Returns Recharts-ready multi-year comparison data for two tickers.
 Inlines the XBRL extraction logic from analysis/metrics.py so no
 cross-package import is needed.
+
+In-process cache, keyed on frozenset({a, b}) so order doesn't matter.
+Primary invalidation is ingest-based: invalidate_ticker() is wired into
+graph.router.register_filing() and fires on every fresh filing ingest through
+that path, with a fail-closed full clear if it can't be trusted to have run.
+Cached response dicts are stored and returned by reference -- safe because
+compare_metrics() is only ever reached through the FastAPI route and consumed
+across the HTTP/JSON boundary; nothing in-process holds or mutates the object
+after return.
 """
 
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, Query
 
+from ..analysis.descriptions import describe_comparison
 from .sec_client import get_cik, get_company_facts
 
 router = APIRouter()
+
+# Belt-and-suspenders TTL on top of ingest-based invalidation -- NOT because
+# the underlying XBRL expires (it's immutable once ingested), but because
+# backend/scripts/bulk_ingest.py ingests filings in a separate OS process that
+# never calls register_filing() and so cannot reach or invalidate this
+# in-process cache. Bounds worst-case staleness to 1h instead of "until this
+# process happens to restart."
+_CACHE_TTL_SECONDS = 3600
+_cache: dict[frozenset[str], tuple[float, dict]] = {}
+_cache_lock = threading.Lock()
+
+
+def invalidate_ticker(ticker: str) -> None:
+    """Drop every cached pair that includes this ticker.
+
+    Called from graph.router.register_filing() whenever a filing is
+    (re-)ingested for a ticker -- that's our signal that fresh XBRL data may
+    now exist upstream, so any cached pair including it is potentially stale.
+    """
+    ticker = ticker.upper()
+    with _cache_lock:
+        stale = [key for key in _cache if ticker in key]
+        for key in stale:
+            del _cache[key]
+
+
+def clear_cache() -> None:
+    """Drop the entire cache. Fail-safe for when invalidate_ticker() can't be
+    trusted to have removed the right entries -- losing the cache is cheap,
+    serving a stale comparison is not."""
+    with _cache_lock:
+        _cache.clear()
+
 
 # ── XBRL field name lists (fallback order) ─────────────────────────────────
 
@@ -34,9 +79,24 @@ _INSTANT: dict[str, list[str]] = {
 }
 
 # ── XBRL extraction helpers ─────────────────────────────────────────────────
+#
+# Both collectors return {period_end: entry} (entry carries 'val' + 'filed') so
+# _merge_tags below can UNION a metric across all of its fallback XBRL tags.
+# Returning bare values here — and stopping at the first non-empty tag, as the
+# old _first() did — is exactly what truncated MSFT to FY2008-2010 and AAPL to
+# FY2016-2018 in the compare view: the same economic line is filed under
+# different us-gaap tags across eras (MSFT revenue: `Revenues` early, then
+# `SalesRevenueNet`, then `RevenueFromContractWithCustomerExcludingAssessedTax`),
+# so "first tag wins" keeps only one era. This mirrors analysis/metrics.py
+# extract_metric (PR #53), which fixed the identical bug in the trends/forecast
+# layer; the fix now lives on both paths.
 
-def _annual(facts: dict, field: str) -> dict[str, float]:
-    """Annual 10-K flow values (360–372 day periods only)."""
+def _annual_entries(facts: dict, field: str) -> dict[str, dict]:
+    """Annual 10-K flow entries for one tag (360–372 day periods), by period-end.
+
+    Deduped per period-end keeping the most-recently-filed entry (restatements
+    win). Empty if the tag is absent for this filer.
+    """
     usgaap = facts.get("facts", {}).get("us-gaap", {})
     if field not in usgaap:
         return {}
@@ -51,11 +111,14 @@ def _annual(facts: dict, field: str) -> dict[str, float]:
         key = e["end"]
         if key not in by_end or e["filed"] > by_end[key]["filed"]:
             by_end[key] = e
-    return {k: v["val"] for k, v in sorted(by_end.items())}
+    return by_end
 
 
-def _instant(facts: dict, field: str) -> dict[str, float]:
-    """Instant (balance-sheet) 10-K values, most-recently-filed per period."""
+def _instant_entries(facts: dict, field: str) -> dict[str, dict]:
+    """Instant (balance-sheet) 10-K entries for one tag, by period-end.
+
+    Same shape/dedup as _annual_entries but with no duration filter.
+    """
     usgaap = facts.get("facts", {}).get("us-gaap", {})
     if field not in usgaap:
         return {}
@@ -66,25 +129,34 @@ def _instant(facts: dict, field: str) -> dict[str, float]:
         key = e["end"]
         if key not in by_end or e["filed"] > by_end[key]["filed"]:
             by_end[key] = e
-    return {k: v["val"] for k, v in sorted(by_end.items())}
+    return by_end
 
 
-def _first(facts: dict, fields: list[str], is_instant: bool) -> dict[str, float]:
-    """Try XBRL field names in order; return first that yields data."""
+def _merge_tags(facts: dict, fields: list[str], is_instant: bool) -> dict[str, float]:
+    """Union a metric across ALL of its fallback XBRL tags, by period-end.
+
+    Every candidate tag contributes its years; when more than one tag reports the
+    same period-end, the earlier (more canonical) tag in `fields` wins — the
+    lists are ordered most-canonical-first — so exactly one value is taken per
+    year (no summing, no double-count). This recovers the full multi-era history
+    a single tag would truncate.
+    """
+    collect = _instant_entries if is_instant else _annual_entries
+    merged: dict[str, dict] = {}
     for name in fields:
-        vals = _instant(facts, name) if is_instant else _annual(facts, name)
-        if vals:
-            return vals
-    return {}
+        for end, entry in collect(facts, name).items():
+            if end not in merged:  # earlier (more canonical) tag wins on overlap
+                merged[end] = entry
+    return {k: merged[k]["val"] for k in sorted(merged)}
 
 
 def _pull(facts: dict) -> dict[str, dict[str, float]]:
-    """Pull all raw metric time-series for one company."""
+    """Pull all raw metric time-series for one company (tag-merged)."""
     out: dict[str, dict[str, float]] = {}
     for key, names in _FLOW.items():
-        out[key] = _first(facts, names, False)
+        out[key] = _merge_tags(facts, names, False)
     for key, names in _INSTANT.items():
-        out[key] = _first(facts, names, True)
+        out[key] = _merge_tags(facts, names, True)
     return out
 
 
@@ -161,6 +233,20 @@ _SERIES_KEYS = [
     "debt_to_equity", "current_ratio",
 ]
 
+# (label, unit) for each series — drives the deterministic chart descriptions.
+# Monetary series are stored in $M by _compute(), hence 'usd_m'.
+_SERIES_META: dict[str, tuple[str, str]] = {
+    "revenue":              ("Revenue", "usd_m"),
+    "net_income":           ("Net income", "usd_m"),
+    "free_cash_flow":       ("Free cash flow", "usd_m"),
+    "gross_margin_pct":     ("Gross margin", "pct"),
+    "operating_margin_pct": ("Operating margin", "pct"),
+    "net_margin_pct":       ("Net margin", "pct"),
+    "revenue_growth_pct":   ("Revenue growth", "pct"),
+    "debt_to_equity":       ("Debt-to-equity", "ratio"),
+    "current_ratio":        ("Current ratio", "ratio"),
+}
+
 
 def _fetch_ticker(ticker: str) -> dict:
     """Resolve ticker → CIK → company facts (blocking I/O)."""
@@ -172,6 +258,20 @@ def _fetch_ticker(ticker: str) -> dict:
 def compare_metrics(a: str = Query(...), b: str = Query(...)):
     """Return Recharts-ready multi-year comparison data for two tickers."""
     a, b = a.upper().strip(), b.upper().strip()
+    cache_key = frozenset({a, b})
+
+    with _cache_lock:
+        cached = _cache.get(cache_key)
+    if cached is not None:
+        cached_at, cached_data = cached
+        if time.monotonic() - cached_at < _CACHE_TTL_SECONDS:
+            # Returned by reference, not copied: this dict is shared with the
+            # cache entry. Safe today because this route has no response_model
+            # (FastAPI's jsonable_encoder builds a new structure, never mutates
+            # the input) and no other code in the repo calls compare_metrics()
+            # directly. If either of those stops being true, mutate a
+            # copy.deepcopy() of this, never the object itself.
+            return cached_data
 
     try:
         with ThreadPoolExecutor(max_workers=2) as pool:
@@ -187,7 +287,31 @@ def compare_metrics(a: str = Query(...), b: str = Query(...)):
     series_a = _compute(_pull(facts_a))
     series_b = _compute(_pull(facts_b))
 
-    return {
-        "tickers": {"a": a, "b": b},
-        **{k: _merge(series_a, series_b, k) for k in _SERIES_KEYS},
+    merged = {k: _merge(series_a, series_b, k) for k in _SERIES_KEYS}
+
+    # Deterministic, templated per-chart descriptions computed from the exact
+    # rows the frontend plots (no LLM, no quota). describe_comparison also spells
+    # out each ticker's covered range + any in-window gaps, so a non-overlapping
+    # comparison is described as such rather than presented as like-for-like.
+    descriptions = {
+        k: describe_comparison(merged[k], _SERIES_META[k][0], a, b, _SERIES_META[k][1])
+        for k in _SERIES_KEYS
     }
+
+    result = {
+        "tickers": {"a": a, "b": b},
+        "descriptions": descriptions,
+        **merged,
+    }
+
+    with _cache_lock:
+        now = time.monotonic()
+        # Single-pass eviction of expired entries on write, same as #3's
+        # /market cache, so the dict doesn't grow unbounded over the process
+        # lifetime.
+        expired = [k for k, (cached_at, _) in _cache.items() if now - cached_at >= _CACHE_TTL_SECONDS]
+        for k in expired:
+            del _cache[k]
+        _cache[cache_key] = (now, result)
+
+    return result
