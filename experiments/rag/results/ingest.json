@@ -1,0 +1,34 @@
+{
+  "form": "10-K",
+  "filings": [
+    {
+      "ticker": "NVDA",
+      "accession": "0001045810-26-000021",
+      "date": "2026-02-25",
+      "status": "indexed",
+      "chunks": 262,
+      "wall_clock_s": 233.0
+    },
+    {
+      "ticker": "NVDA",
+      "accession": "0001045810-25-000023",
+      "date": "2025-02-26",
+      "status": "indexed",
+      "chunks": 272,
+      "wall_clock_s": 172.0
+    }
+  ],
+  "vector": {
+    "wall_clock_s": 405.0,
+    "chunks": 534,
+    "llm_tokens": 0,
+    "note": "embedding-model calls only; no generation tokens"
+  },
+  "graph": {
+    "wall_clock_s": 1.4,
+    "llm_tokens": 0,
+    "note": "XBRL structured fetch; zero LLM/embedding calls"
+  },
+  "started_at": "2026-07-10T07:12:24.474242+00:00",
+  "finished_at": "2026-07-10T07:19:17.538616+00:00"
+}

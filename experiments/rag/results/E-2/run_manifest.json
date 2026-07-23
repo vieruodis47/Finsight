@@ -1,0 +1,61 @@
+{
+  "exp": "E-2",
+  "eval_file": "experiments\\rag\\eval\\questions.v1.jsonl",
+  "eval_digest": "be4dca472b749207",
+  "k": 5,
+  "repeats": 3,
+  "variants": [
+    "naive",
+    "graph",
+    "hyde",
+    "agentic",
+    "modular"
+  ],
+  "configs": {
+    "naive": {
+      "variant": "naive",
+      "architecture": "vector",
+      "gen_model": "gemini-3.1-flash-lite",
+      "temperature": 0.2,
+      "prompt": "production-v1",
+      "notes": "wraps rag.search + rag.generate_answer (production path)"
+    },
+    "graph": {
+      "variant": "graph",
+      "architecture": "xbrl-rdf-graph + vector fallback",
+      "gen_model": "gemini-3.1-flash-lite",
+      "temperature": 0.2,
+      "prompt": "production-v1 (vector path) / graph-system (graph path)",
+      "notes": "wraps backend.graph.router.route_question"
+    },
+    "hyde": {
+      "variant": "hyde",
+      "architecture": "hypothetical-document retrieval + vector",
+      "gen_model": "gemini-3.1-flash-lite",
+      "temperature": 0.2,
+      "prompt": "production-v1 (generation); hyde-v1 (hypothesis)",
+      "notes": "1 extra LLM call to draft the hypothetical passage"
+    },
+    "agentic": {
+      "variant": "agentic",
+      "architecture": "plan -> retrieve -> reflect loop (bounded)",
+      "gen_model": "gemini-3.1-flash-lite",
+      "temperature": 0.2,
+      "prompt": "production-v1 (final answer); agentic-planner-v1 (loop)",
+      "max_subqueries": 3,
+      "max_reflect_rounds": 2
+    },
+    "modular": {
+      "variant": "modular",
+      "architecture": "rewrite/expand -> multi-search -> RRF -> LLM rerank",
+      "gen_model": "gemini-3.1-flash-lite",
+      "temperature": 0.2,
+      "prompt": "production-v1 (generation); modular-ops-v1 (rewrite/rerank)",
+      "rrf_k": 60,
+      "fused_pool": 12
+    }
+  },
+  "config_hash": "45c5a232b15dcd77",
+  "judge_prompt_version": 2,
+  "started_at": "2026-07-11T22:05:51.445337+00:00"
+}

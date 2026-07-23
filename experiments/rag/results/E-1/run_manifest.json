@@ -1,0 +1,23 @@
+{
+  "exp": "E-1",
+  "eval_file": "experiments\\rag\\eval\\questions.v1.jsonl",
+  "eval_digest": "be4dca472b749207",
+  "k": 5,
+  "repeats": 3,
+  "variants": [
+    "naive"
+  ],
+  "configs": {
+    "naive": {
+      "variant": "naive",
+      "architecture": "vector",
+      "gen_model": "gemini-3.1-flash-lite",
+      "temperature": 0.2,
+      "prompt": "production-v1",
+      "notes": "wraps rag.search + rag.generate_answer (production path)"
+    }
+  },
+  "config_hash": "cc7017e5a36e69ac",
+  "judge_prompt_version": 1,
+  "started_at": "2026-07-10T07:19:27.227253+00:00"
+}

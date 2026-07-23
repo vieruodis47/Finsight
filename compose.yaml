@@ -26,4 +26,3 @@ services:
       - "host.docker.internal:host-gateway"  # resolves to host on Linux; macOS Docker Desktop provides this natively
     # no ports: — only node needs to reach it, and that happens on the internal network
     # depends_on ravendb removed — python now uses the standalone host ravendb, not the compose service
-
