@@ -19,7 +19,10 @@ Maintained by the rag-experiment agent. Facts about architectures, eval infrastr
 
 ## Learnings
 
-- (add dated entries after each experiment verdict)
+- **2026-07-11 (E-1):** the production naive pipeline is a strong baseline on filing QA — 0.917 overall, single-hop/temporal at ceiling. Its one bottleneck is aggregation retrieval coverage (recall@5 = 0.50 on that slice). Any future architecture pitch must show an aggregation win first.
+- **2026-07-11 (E-2):** architecture upgrades did NOT deliver their registered gains — verdict refuted. modular gave the only real primary-metric gain (+0.034) at 1.3x tokens but LOWERED recall (LLM rerank evicts gold chunks). agentic: +0.02 at 1.8x tokens / 3.6 calls / lowest faithfulness 1.79 — poor economics. hyde: net negative on this domain (queries already explicit). **graph: 2.3x cheaper and perfect where routed correctly, but multi-hop 0.292 because the keyword router sends narrative questions to the XBRL table.** Fix the ROUTER, not the graph — E-4 candidate: metrics-scoped routing (graph only for pure metric lookups). Never ship the current router for multi-part questions.
+- **2026-07-11 (E-3):** prompts are second-order for correctness on this pipeline (4 arms within 0.05; even a one-line prompt keeps citation validity at 1.00 when it mentions tags). Our suggested quote-first scaffold HURT (-0.11 multi-hop, 1.65x tokens) — structure taxed answers without improving grounding (faithfulness already 2.0). The production prompt's real value is likely behavioral (conflict handling / refusals), untested by happy-path evals — needs an adversarial eval before anyone trims it.
+- **2026-07-11 (meta):** the pre-registration discipline earned its keep — three of four E-2 architecture bets and the E-3 pet-technique bet were refuted as written and are on the record. Ceiling effects (temporal at 1.0) made two predictions unfalsifiable in practice; eval v2 should include harder temporal questions (3+ year trends, cross-company timing) so deltas have room to exist.
 
 ## Infra + substrate state (2026-07-09)
 

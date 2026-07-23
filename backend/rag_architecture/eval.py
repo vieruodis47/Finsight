@@ -1,1 +1,0 @@
-"""Evaluation results of different RAG architectures."""

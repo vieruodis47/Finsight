@@ -1,0 +1,554 @@
+{
+  "exp": "E-3",
+  "baseline": "naive",
+  "judge_model": "gemma-4-31b-it",
+  "pairs": {
+    "prompt_minimal": {
+      "tally": {
+        "tie": 14,
+        "baseline": 1,
+        "challenger": 1
+      },
+      "detail": [
+        {
+          "qid": "q001",
+          "outcome": "tie",
+          "order1": "tie",
+          "order2": "tie",
+          "reason1": "Both answers provide the correct total net sales figure for fiscal 2024.",
+          "reason2": "Both answers provide the correct total net sales figure for fiscal 2024."
+        },
+        {
+          "qid": "q002",
+          "outcome": "tie",
+          "order1": "tie",
+          "order2": "tie",
+          "reason1": "Both answers are identical.",
+          "reason2": "Both answers are identical."
+        },
+        {
+          "qid": "q003",
+          "outcome": "tie",
+          "order1": "tie",
+          "order2": "tie",
+          "reason1": "Both answers provide the exact same figure and citation with negligible differences in wording.",
+          "reason2": "Both answers provide the exact same value and citation with negligible differences in wording."
+        },
+        {
+          "qid": "q004",
+          "outcome": "tie",
+          "order1": "tie",
+          "order2": "tie",
+          "reason1": "Both answers are identical.",
+          "reason2": "Both answers are identical."
+        },
+        {
+          "qid": "q005",
+          "outcome": "baseline",
+          "order1": "A",
+          "order2": "B",
+          "reason1": "Both answers are factually accurate, but Answer A is more complete as it provides both the percentages and the absolute dollar amounts for the comparison.",
+          "reason2": "Both answers are factually accurate and provide the correct percentages. Answer B is more complete as it also provides the absolute dollar amounts for the gross margins."
+        },
+        {
+          "qid": "q006",
+          "outcome": "tie",
+          "order1": "tie",
+          "order2": "tie",
+          "reason1": "Both answers provide the same revenue and operating income figures and correctly calculate the implied operating margin.",
+          "reason2": "Both answers provide the same revenue and operating income figures and correctly calculate the implied operating margin."
+        },
+        {
+          "qid": "q007",
+          "outcome": "tie",
+          "order1": "tie",
+          "order2": "B",
+          "reason1": "Both answers provide the exact same figures and calculations for net income and R&D expenses using the same citations.",
+          "reason2": "Answer B is slightly more complete as it specifies the exact end date of the fiscal year (January 25, 2026)."
+        },
+        {
+          "qid": "q008",
+          "outcome": "tie",
+          "order1": "tie",
+          "order2": "tie",
+          "reason1": "Both answers provide the exact same correct figures and conclusion based on the fiscal 2024 reports.",
+          "reason2": "Both answers provide the exact same correct figures and conclusion."
+        },
+        {
+          "qid": "q009",
+          "outcome": "tie",
+          "order1": "tie",
+          "order2": "B",
+          "reason1": "Both answers accurately identify the major risk categories outlined in the gold facts, including macroeconomic, business/supply chain, and legal/regulatory risks.",
+          "reason2": "Answer B better organizes the risks into 'major categories' as requested, whereas Answer A provides a more fragmented list of specific risks. Both answers accurately cover the gold facts."
+        },
+        {
+          "qid": "q010",
+          "outcome": "challenger",
+          "order1": "B",
+          "order2": "A",
+          "reason1": "Answer B is more complete, providing additional specific details regarding the drivers within the Productivity and Business Processes segment.",
+          "reason2": "Answer A is more complete, providing additional specific details regarding the drivers within the Productivity and Business Processes segment."
+        },
+        {
+          "qid": "q011",
+          "outcome": "tie",
+          "order1": "tie",
+          "order2": "tie",
+          "reason1": "Both answers are nearly identical in content and both fail to mention the critical geopolitical and export-control risks (specifically regarding China) highlighted in the gold facts.",
+          "reason2": "Both answers capture the demand/supply and competition/AI risks but completely omit the critical geopolitical and export-control risks mentioned in the gold facts. They are otherwise nearly identical in content and detail."
+        },
+        {
+          "qid": "q012",
+          "outcome": "tie",
+          "order1": "tie",
+          "order2": "tie",
+          "reason1": "Both answers provide the same correct information and figures regarding Apple's capital return in fiscal 2025.",
+          "reason2": "Both answers provide the exact same factual information and figures."
+        },
+        {
+          "qid": "q013",
+          "outcome": "tie",
+          "order1": "tie",
+          "order2": "tie",
+          "reason1": "Both answers are identical and provide the correct figures and percentage change.",
+          "reason2": "Both answers are identical and provide the correct figures and percentage change."
+        },
+        {
+          "qid": "q014",
+          "outcome": "tie",
+          "order1": "tie",
+          "order2": "tie",
+          "reason1": "Both answers provide the same correct figures for the revenue increase and the total revenue for both fiscal years.",
+          "reason2": "Both answers provide the same correct figures for revenue increase and total revenue for both fiscal years."
+        },
+        {
+          "qid": "q015",
+          "outcome": "tie",
+          "order1": "tie",
+          "order2": "tie",
+          "reason1": "Both answers are identical and provide the correct figures and direction of change.",
+          "reason2": "Both answers are identical and provide the correct figures and direction of change."
+        },
+        {
+          "qid": "q016",
+          "outcome": "tie",
+          "order1": "tie",
+          "order2": "tie",
+          "reason1": "Both answers provide the exact same figures and percentage increase, accurately reflecting the gold facts.",
+          "reason2": "Both answers provide the exact same figures and percentage increase, accurately answering the question with the same level of detail."
+        }
+      ]
+    },
+    "prompt_fewshot": {
+      "tally": {
+        "tie": 13,
+        "baseline": 2,
+        "challenger": 1
+      },
+      "detail": [
+        {
+          "qid": "q001",
+          "outcome": "tie",
+          "order1": "tie",
+          "order2": "tie",
+          "reason1": "Both answers provide the exact same figure and references.",
+          "reason2": "Both answers provide the exact same figure and references."
+        },
+        {
+          "qid": "q002",
+          "outcome": "baseline",
+          "order1": "A",
+          "order2": "B",
+          "reason1": "Answer A provides the precise figure from the source, whereas Answer B rounds the number.",
+          "reason2": "Answer B provides the exact figure from the source, whereas Answer A rounds the value."
+        },
+        {
+          "qid": "q003",
+          "outcome": "tie",
+          "order1": "tie",
+          "order2": "tie",
+          "reason1": "Both answers provide the exact same figure and citation with negligible differences in wording.",
+          "reason2": "Both answers provide the exact same value and citation with negligible differences in wording."
+        },
+        {
+          "qid": "q004",
+          "outcome": "tie",
+          "order1": "tie",
+          "order2": "tie",
+          "reason1": "Both answers are identical.",
+          "reason2": "Both answers are identical."
+        },
+        {
+          "qid": "q005",
+          "outcome": "tie",
+          "order1": "A",
+          "order2": "A",
+          "reason1": "Both answers are factually accurate, but Answer A is more complete as it provides both the percentages and the absolute dollar amounts for the comparison.",
+          "reason2": "Both answers provide the correct total gross margin and the correct Products gross margin percentage, but both incorrectly state the Services gross margin percentage. Answer B is worse because it includes additional absolute dollar amounts that are also factually incorrect."
+        },
+        {
+          "qid": "q006",
+          "outcome": "tie",
+          "order1": "tie",
+          "order2": "tie",
+          "reason1": "Both answers provide the same revenue and operating income figures and correctly calculate the implied operating margin within the specified range.",
+          "reason2": "Both answers provide the same revenue and operating income figures and correctly calculate the implied operating margin."
+        },
+        {
+          "qid": "q007",
+          "outcome": "tie",
+          "order1": "tie",
+          "order2": "tie",
+          "reason1": "Both answers provide the exact same financial figures and calculations for net income and R&D expenses.",
+          "reason2": "Both answers provide the exact same financial figures and calculations based on the same citations."
+        },
+        {
+          "qid": "q008",
+          "outcome": "tie",
+          "order1": "tie",
+          "order2": "tie",
+          "reason1": "Both answers provide the exact same figures and conclusion, with only a negligible difference in phrasing ('fiscal year 2024' vs 'fiscal 2024').",
+          "reason2": "Both answers provide the exact same correct figures and conclusion."
+        },
+        {
+          "qid": "q009",
+          "outcome": "tie",
+          "order1": "tie",
+          "order2": "B",
+          "reason1": "Both answers are nearly identical in content, structure, and accuracy, covering all the major risk categories mentioned in the gold facts.",
+          "reason2": "Both answers are very similar and cover the gold facts. Answer B is slightly better as its heading 'Product and Market Competition' more directly aligns with the 'competition' aspect of the business risks mentioned in the gold facts."
+        },
+        {
+          "qid": "q010",
+          "outcome": "tie",
+          "order1": "tie",
+          "order2": "tie",
+          "reason1": "Both answers provide identical factual information and drivers for each business segment.",
+          "reason2": "Both answers are identical in their factual content and provide the same drivers for each business segment."
+        },
+        {
+          "qid": "q011",
+          "outcome": "tie",
+          "order1": "tie",
+          "order2": "tie",
+          "reason1": "Both answers fail to mention the critical geopolitical and export-control risks (Gold Fact 2) and neither mentions third-party foundries. They both cover the other gold facts similarly and include the same extraneous information.",
+          "reason2": "Both answers fail to mention the critical geopolitical and export-control risks (specifically regarding China) highlighted in the gold facts. They both cover the other risk categories with similar levels of detail."
+        },
+        {
+          "qid": "q012",
+          "outcome": "tie",
+          "order1": "tie",
+          "order2": "tie",
+          "reason1": "Both answers are identical in content and wording.",
+          "reason2": "Both answers are identical in content and wording."
+        },
+        {
+          "qid": "q013",
+          "outcome": "tie",
+          "order1": "tie",
+          "order2": "tie",
+          "reason1": "Both answers are identical and provide the correct figures and percentage change.",
+          "reason2": "Both answers are identical and provide the correct figures and percentage change."
+        },
+        {
+          "qid": "q014",
+          "outcome": "baseline",
+          "order1": "A",
+          "order2": "B",
+          "reason1": "Answer A provides more precise figures for the total revenue in both fiscal years compared to Answer B.",
+          "reason2": "Both answers are factually accurate and consistent with the gold facts, but Answer B provides more precise revenue figures."
+        },
+        {
+          "qid": "q015",
+          "outcome": "challenger",
+          "order1": "B",
+          "order2": "A",
+          "reason1": "Answer B is more complete, providing both the absolute increase and the percentage change, which aligns with the gold facts.",
+          "reason2": "Answer A is more complete as it provides the absolute and percentage change in net income, which aligns with the gold facts."
+        },
+        {
+          "qid": "q016",
+          "outcome": "tie",
+          "order1": "tie",
+          "order2": "tie",
+          "reason1": "Both answers provide the exact same correct figures and percentage increase based on the gold facts.",
+          "reason2": "Both answers provide the exact same correct figures and percentage increase, accurately reflecting the gold facts."
+        }
+      ]
+    },
+    "ctx_metadata": {
+      "tally": {
+        "tie": 15,
+        "baseline": 1
+      },
+      "detail": [
+        {
+          "qid": "q001",
+          "outcome": "tie",
+          "order1": "tie",
+          "order2": "tie",
+          "reason1": "Both answers provide the correct total net sales figure for fiscal 2024.",
+          "reason2": "Both answers provide the correct total net sales figure for fiscal 2024."
+        },
+        {
+          "qid": "q002",
+          "outcome": "tie",
+          "order1": "tie",
+          "order2": "tie",
+          "reason1": "Both answers provide the exact same revenue figure and fiscal period; the only difference is the number of citations provided.",
+          "reason2": "Both answers provide the exact same revenue figure. The difference in citations is negligible without the source text to verify if the additional citation in Answer A is necessary or redundant."
+        },
+        {
+          "qid": "q003",
+          "outcome": "tie",
+          "order1": "tie",
+          "order2": "tie",
+          "reason1": "Both answers are identical in content and citation.",
+          "reason2": "Both answers are identical in content and citation."
+        },
+        {
+          "qid": "q004",
+          "outcome": "tie",
+          "order1": "tie",
+          "order2": "tie",
+          "reason1": "Both answers are identical.",
+          "reason2": "Both answers are identical."
+        },
+        {
+          "qid": "q005",
+          "outcome": "tie",
+          "order1": "tie",
+          "order2": "tie",
+          "reason1": "Both answers provide the correct total gross margin percentage and the specific percentages for Products and Services, accurately showing the comparison.",
+          "reason2": "Both answers provide the correct total gross margin percentage and the specific percentages for Products and Services, accurately reflecting the comparison requested."
+        },
+        {
+          "qid": "q006",
+          "outcome": "tie",
+          "order1": "tie",
+          "order2": "tie",
+          "reason1": "Both answers provide the exact same figures and calculations, which align with the gold facts.",
+          "reason2": "Both answers provide the exact same financial figures and the correct implied operating margin calculation."
+        },
+        {
+          "qid": "q007",
+          "outcome": "tie",
+          "order1": "tie",
+          "order2": "tie",
+          "reason1": "Both answers provide the exact same figures and calculations for net income and R&D expenses.",
+          "reason2": "Both answers provide the exact same figures and calculations for net income and R&D expenses."
+        },
+        {
+          "qid": "q008",
+          "outcome": "tie",
+          "order1": "tie",
+          "order2": "tie",
+          "reason1": "Both answers provide the correct R&D expenditure figures for Apple and Microsoft for fiscal year 2024 and correctly identify that Apple spent more.",
+          "reason2": "Both answers provide the exact same correct figures and conclusion based on the fiscal 2024 reports."
+        },
+        {
+          "qid": "q009",
+          "outcome": "tie",
+          "order1": "tie",
+          "order2": "tie",
+          "reason1": "Both answers accurately identify the major risk categories outlined in the gold facts, including macroeconomic, business/supply chain, and legal/regulatory risks.",
+          "reason2": "Both answers accurately identify the major risk categories outlined in the gold facts and provide similar supporting details from the 10-K."
+        },
+        {
+          "qid": "q010",
+          "outcome": "baseline",
+          "order1": "A",
+          "order2": "B",
+          "reason1": "Answer A is more complete as it provides the overall revenue increase and percentage growth in addition to the segment-specific drivers.",
+          "reason2": "Both answers accurately identify the drivers from the gold facts, but Answer B is more complete as it provides the overall revenue increase and percentage."
+        },
+        {
+          "qid": "q011",
+          "outcome": "tie",
+          "order1": "tie",
+          "order2": "tie",
+          "reason1": "Both answers fail to mention the critical geopolitical and export-control risks (specifically regarding China) listed in the gold facts. They are otherwise nearly identical in the information they provide regarding supply chain and AI competition risks.",
+          "reason2": "Both answers fail to mention the critical 'Geopolitical and export-control risks' (specifically regarding China) listed in the gold facts. They both cover the other two categories similarly, with Answer B providing slightly more detail."
+        },
+        {
+          "qid": "q012",
+          "outcome": "tie",
+          "order1": "tie",
+          "order2": "tie",
+          "reason1": "Both answers provide identical information and figures.",
+          "reason2": "Both answers provide identical information and figures."
+        },
+        {
+          "qid": "q013",
+          "outcome": "tie",
+          "order1": "tie",
+          "order2": "tie",
+          "reason1": "Both answers are identical and provide the correct figures and percentage change.",
+          "reason2": "Both answers are identical and provide the correct figures and percentage change."
+        },
+        {
+          "qid": "q014",
+          "outcome": "tie",
+          "order1": "tie",
+          "order2": "tie",
+          "reason1": "Both answers provide identical factual information and calculations that align with the gold facts.",
+          "reason2": "Both answers provide identical figures and percentages that align with the gold facts."
+        },
+        {
+          "qid": "q015",
+          "outcome": "tie",
+          "order1": "tie",
+          "order2": "tie",
+          "reason1": "Both answers provide the exact same figures and source, and are factually identical.",
+          "reason2": "Both answers provide the exact same figures and correctly identify the increase in net income between the two fiscal years."
+        },
+        {
+          "qid": "q016",
+          "outcome": "tie",
+          "order1": "tie",
+          "order2": "tie",
+          "reason1": "Both answers provide the exact same factual data and percentage increase, differing only in the number of citations provided.",
+          "reason2": "Both answers provide identical factual information and calculations that align with the gold facts."
+        }
+      ]
+    },
+    "prompt_quote_first": {
+      "tally": {
+        "tie": 10,
+        "challenger": 2,
+        "baseline": 4
+      },
+      "detail": [
+        {
+          "qid": "q001",
+          "outcome": "tie",
+          "order1": "tie",
+          "order2": "A",
+          "reason1": "Both answers provide the correct total net sales figure of $391,035 million for fiscal 2024.",
+          "reason2": "Answer A provides the supporting evidence for its claim, whereas Answer B provides the answer without the evidence section."
+        },
+        {
+          "qid": "q002",
+          "outcome": "challenger",
+          "order1": "B",
+          "order2": "A",
+          "reason1": "Both answers provide the same figure, but Answer B is more complete as it cites multiple sources for the evidence.",
+          "reason2": "Answer A provides the same correct value as Answer B but includes a detailed evidence section and additional citations."
+        },
+        {
+          "qid": "q003",
+          "outcome": "tie",
+          "order1": "A",
+          "order2": "tie",
+          "reason1": "Both answers provide the same correct information from the source, but Answer A is more concise and direct.",
+          "reason2": "Both answers provide the same correct value and source based on the provided evidence."
+        },
+        {
+          "qid": "q004",
+          "outcome": "tie",
+          "order1": "tie",
+          "order2": "tie",
+          "reason1": "Both answers provide the exact same factual information and citation.",
+          "reason2": "Both answers provide the exact same figure and citation."
+        },
+        {
+          "qid": "q005",
+          "outcome": "baseline",
+          "order1": "A",
+          "order2": "B",
+          "reason1": "Both answers provide the correct percentages, but Answer A is more complete by providing the absolute dollar amounts in addition to the percentages.",
+          "reason2": "Both answers are factually accurate according to the gold facts. Answer B is more complete as it provides both the percentage and the absolute dollar amounts for the comparison."
+        },
+        {
+          "qid": "q006",
+          "outcome": "tie",
+          "order1": "tie",
+          "order2": "tie",
+          "reason1": "Both answers provide the correct revenue, operating income, and implied operating margin for fiscal year 2025.",
+          "reason2": "Both answers provide the correct revenue and operating income figures and accurately compute the implied operating margin."
+        },
+        {
+          "qid": "q007",
+          "outcome": "baseline",
+          "order1": "A",
+          "order2": "B",
+          "reason1": "Answer A calculates the actual dollar amount for research and development expenses, whereas Answer B only provides the percentage and the revenue figure.",
+          "reason2": "Answer B is more complete because it calculates the actual dollar amount for research and development expenses, whereas Answer A only provides the percentage."
+        },
+        {
+          "qid": "q008",
+          "outcome": "tie",
+          "order1": "A",
+          "order2": "tie",
+          "reason1": "Both answers are factually accurate and complete. Answer A is clearer and more concise as it avoids the unnecessary 'Stage' formatting found in Answer B.",
+          "reason2": "Both answers provide the correct R&D expenditure figures for Apple and Microsoft for fiscal year 2024 and correctly identify that Apple spent more."
+        },
+        {
+          "qid": "q009",
+          "outcome": "baseline",
+          "order1": "A",
+          "order2": "B",
+          "reason1": "Answer A provides a cleaner, more professional presentation without the internal 'Stage 1' evidence block found in Answer B, while covering all the major risk categories identified in the gold facts.",
+          "reason2": "Answer B provides a more comprehensive breakdown of the risk categories, better aligning with the gold facts by separating supply chain risks from geopolitical risks."
+        },
+        {
+          "qid": "q010",
+          "outcome": "baseline",
+          "order1": "A",
+          "order2": "B",
+          "reason1": "Both answers provide identical information based on the source text, but Answer A is slightly more complete by including the specific dollar amount of the revenue increase.",
+          "reason2": "Answer B is slightly more complete as it includes the specific dollar amount of the revenue increase mentioned in the evidence."
+        },
+        {
+          "qid": "q011",
+          "outcome": "tie",
+          "order1": "tie",
+          "order2": "tie",
+          "reason1": "Both answers fail to mention the critical geopolitical and export-control risks (specifically regarding China) highlighted in the gold facts. They both cover demand/supply and competition/AI risks similarly, with Answer A being slightly better formatted and Answer B providing raw evidence.",
+          "reason2": "Both answers fail to mention the critical 'Geopolitical and export-control risks' (specifically regarding China) highlighted in the gold facts. They both cover the other two categories (demand/supply and technological change) with similar levels of detail."
+        },
+        {
+          "qid": "q012",
+          "outcome": "challenger",
+          "order1": "B",
+          "order2": "A",
+          "reason1": "Answer B is more complete, providing the specific quarterly dividend amount and the announcement of a new share repurchase program in addition to the requested totals.",
+          "reason2": "Answer A is more complete, providing additional details about the new share repurchase program and the specific quarterly dividend amount."
+        },
+        {
+          "qid": "q013",
+          "outcome": "tie",
+          "order1": "A",
+          "order2": "tie",
+          "reason1": "Both answers provide the same correct data, but Answer A is a direct response without the unnecessary 'Stage 1/Stage 2' formatting found in Answer B.",
+          "reason2": "Both answers provide the exact same figures and percentage, correctly identifying the change from fiscal 2024 to 2025."
+        },
+        {
+          "qid": "q014",
+          "outcome": "tie",
+          "order1": "tie",
+          "order2": "tie",
+          "reason1": "Both answers provide the exact same correct figures for the revenue increase and the total revenue for both fiscal years.",
+          "reason2": "Both answers provide the correct dollar increase, percentage increase, and total revenue figures for both fiscal years."
+        },
+        {
+          "qid": "q015",
+          "outcome": "tie",
+          "order1": "tie",
+          "order2": "tie",
+          "reason1": "Both answers provide the exact same correct figures for fiscal years 2025 and 2026 and correctly identify the increase.",
+          "reason2": "Both answers provide the correct net income figures for fiscal years 2025 and 2026 and correctly identify the increase."
+        },
+        {
+          "qid": "q016",
+          "outcome": "tie",
+          "order1": "A",
+          "order2": "tie",
+          "reason1": "Both answers are factually accurate and complete. Answer A is clearer as it provides the answer directly without including the internal evidence-gathering stages.",
+          "reason2": "Both answers provide the exact same figures and percentage increase, correctly identifying the fiscal years and the total net sales."
+        }
+      ]
+    }
+  }
+}

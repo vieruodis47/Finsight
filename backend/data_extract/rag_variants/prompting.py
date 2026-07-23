@@ -18,7 +18,7 @@ Variants:
                       manifest listing what was retrieved. Tests the
                       production "_format_context" bookend heuristic against
                       transparent structure.
-  prompt_quote_first- suggested technique (ours): two-stage scaffold in one
+  prompt_quote_first- suggested technique: two-stage scaffold in one
                       call — extract verbatim evidence quotes per sub-fact
                       first, then compose the answer only from the quotes,
                       stating the fiscal period next to every figure.
