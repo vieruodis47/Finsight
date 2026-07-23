@@ -168,6 +168,51 @@ export async function exportAnalysisReport(ticker: string, peers: string[] = [])
   URL.revokeObjectURL(url);
 }
 
+// Download the server-composed two-company Comparison PDF (every comparison
+// chart + the SAME deterministic captions shown on screen + the on-screen
+// AI-generated analysis carried VERBATIM — the server never re-runs an LLM, so
+// the PDF matches the UI exactly). POST because the narrative + display context
+// ride in the body. Triggers a browser download; throws the backend's detail on
+// failure so the caller can surface it (never a silent no-op).
+export interface CompareReportContext {
+  companyA?: string;
+  companyB?: string;
+  sectorA?: string;
+  sectorB?: string;
+  analysis?: string;   // the exact on-screen AI-generated markdown
+}
+
+export async function exportCompareReport(
+  a: string,
+  b: string,
+  ctx: CompareReportContext = {},
+): Promise<void> {
+  const res = await fetch(`${API_BASE}/analysis/compare-report`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      a, b,
+      company_a: ctx.companyA, company_b: ctx.companyB,
+      sector_a: ctx.sectorA, sector_b: ctx.sectorB,
+      analysis: ctx.analysis,
+    }),
+  });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try { const j = await res.json(); detail = j.detail || detail; } catch { /* non-JSON error body */ }
+    throw new Error(`Export failed (${res.status}): ${detail}`);
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const el = document.createElement('a');
+  el.href = url;
+  el.download = `FinSight_${a.toUpperCase()}_vs_${b.toUpperCase()}_Comparison.pdf`;
+  document.body.appendChild(el);
+  el.click();
+  el.remove();
+  URL.revokeObjectURL(url);
+}
+
 export async function generateSummary(content: string): Promise<string> {
   const res = await fetch(`${API_BASE}/api/summary`, {
     method: 'POST',
