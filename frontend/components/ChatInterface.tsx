@@ -1,14 +1,11 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useLayoutEffect } from 'react';
 import { Send, Bot, User, AlertTriangle } from 'lucide-react';
-import { Document, ChatMessage } from '../types';
-import { askFinSightStream } from '../services/gemini';
+import { Document } from '../types';
 import { c, font } from '../theme';
 import { companyLabel } from '../utils/company';
 import { useIsMobile } from '../utils/hooks';
 import { GroundedAnswer } from '../utils/chatRender';
-import {
-  resolveCompaniesInQuestion, looksLikeComparison, isCompanySpecific,
-} from '../utils/questionQuality';
+import { useChat, uniqueCompanies } from '../context/ChatContext';
 import BirdLoader from './BirdLoader';
 
 interface ChatInterfaceProps {
@@ -37,56 +34,6 @@ const clarifyChip: React.CSSProperties = {
 const clarifyChipAlt: React.CSSProperties = {
   ...clarifyChip, fontWeight: 500,
   background: c.bg, color: c.textMuted, border: `1px solid ${c.border}`,
-};
-
-// ── Ticker → company name map ─────────────────────────────────────────────────
-// Covers common S&P 500 names. Falls back to the ticker if not found.
-
-
-// Returns "Name (TICKER)" when we have a proper name, plain ticker otherwise.
-const companyDisplay = (doc: Document): string => {
-  const ticker  = doc.ticker?.toUpperCase() || doc.name;
-  const name    = companyLabel(doc);
-  return name !== ticker ? `${name} (${ticker})` : ticker;
-};
-
-// Deduplicates documents by ticker (or name when no ticker).
-const uniqueCompanies = (docs: Document[]): Document[] => {
-  const seen = new Set<string>();
-  return docs.filter(doc => {
-    const key = (doc.ticker || doc.name).toUpperCase();
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-};
-
-// Formats a list of names naturally: "A", "A and B", "A, B, and C", "A, B, C, and 2 more".
-const formatList = (names: string[]): string => {
-  if (names.length === 1) return names[0];
-  if (names.length === 2) return `${names[0]} and ${names[1]}`;
-  if (names.length <= 4)  return `${names.slice(0, -1).join(', ')}, and ${names[names.length - 1]}`;
-  const shown = names.slice(0, 3).join(', ');
-  return `${shown}, and ${names.length - 3} more`;
-};
-
-// Builds the context-aware greeting shown as Finch's first message.
-const buildGreeting = (docs: Document[]): string => {
-  const intro = "Hi, I'm Finch — FinSight's chat assistant.";
-  const companies = uniqueCompanies(docs);
-
-  if (companies.length === 0) {
-    return `${intro} You don't have any filings loaded yet. Add a company from the Documents page and I'll help you dig into its SEC filings.`;
-  }
-
-  if (companies.length === 1) {
-    const display = companyDisplay(companies[0]);
-    const name    = companyLabel(companies[0]);
-    return `${intro} I see you have ${display} loaded. Want to load another company to compare, or shall we start with a question about ${name}?`;
-  }
-
-  const list = formatList(companies.map(companyDisplay));
-  return `${intro} I've got ${list} loaded. Ask me about any of them, or compare them head to head.`;
 };
 
 // ── Finch avatar ─────────────────────────────────────────────────────────────
@@ -143,55 +90,60 @@ const FinchAvatar: React.FC = () => {
 // reused per-widget on the Dashboard.
 
 // ── component ────────────────────────────────────────────────────────────────
+//
+// A pure CONSUMER of ChatContext. All conversation state (messages + sources,
+// streaming status, company filter, pending-clarify) and the streaming engine
+// live in the provider (mounted above the router in App), so a trip to another
+// route no longer destroys the conversation or a mid-flight answer. This
+// component owns only ephemeral, view-local UI: the draft input, focus, and hover.
 
 const ChatInterface: React.FC<ChatInterfaceProps> = ({ documents }) => {
   const isMobile = useIsMobile();
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    {
-      id: 'welcome',
-      role: 'assistant',
-      text: buildGreeting(documents),
-      timestamp: new Date(),
-    },
-  ]);
-  const [input, setInput]                   = useState('');
-  const [isLoading, setIsLoading]           = useState(false);
-  const [selectedDocIds, setSelectedDocIds] = useState<string[]>([]);
-  const [inputFocused, setInputFocused]     = useState(false);
-  const [hoveredChip, setHoveredChip]       = useState<number | null>(null);
-  // Active company in the conversation — the last company a query resolved to.
-  // Drives context carry-over so a follow-up ("and its FCF?") isn't re-asked.
-  const [contextCompany, setContextCompany] = useState<string | null>(null);
-  // Set while FinChat is waiting for the user to say which company; carries the
-  // original question forward so a chip/reply resumes it without retyping.
-  const [pendingClarify, setPendingClarify] = useState<string | null>(null);
-  // A11y: the streaming bubble is NOT a live region (that would announce every
-  // token). Instead we push the COMPLETED answer here once, so a screen reader
-  // announces the finished reply a single time.
-  const [announcement, setAnnouncement]     = useState('');
+  const {
+    messages, isLoading, selectedDocIds, announcement,
+    sendMessage, pickClarifyCompany, pickClarifyCompare,
+    setAllFilter, toggleDoc,
+    stickToBottomRef, lastScrollTopRef,
+  } = useChat();
+
+  const [input, setInput]               = useState('');
+  const [inputFocused, setInputFocused] = useState(false);
+  const [hoveredChip, setHoveredChip]   = useState<number | null>(null);
 
   const scrollRef   = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // Whether the thread is pinned to the bottom. Starts true; scrolling away from
-  // the bottom disables auto-stick (so the user can read history while a reply
-  // arrives), and scrolling back to the bottom re-enables it.
-  const stickToBottomRef = useRef(true);
-
+  // Whether the thread is pinned to the bottom. The flag (and last scroll
+  // position) live in the provider so they SURVIVE navigation: if the user had
+  // scrolled up to read history before leaving, returning restores that spot
+  // rather than yanking them to the bottom.
   const handleScroll = () => {
     const el = scrollRef.current;
     if (!el) return;
     stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    lastScrollTopRef.current = el.scrollTop;
   };
 
-  // Auto-scroll to the newest message/loader — but only when pinned to bottom.
+  // On (re)mount, restore scroll BEFORE paint so there's no jump/flash: pinned →
+  // snap to newest; scrolled-up → restore the exact prior position.
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    if (stickToBottomRef.current) el.scrollTop = el.scrollHeight;
+    else el.scrollTop = lastScrollTopRef.current;
+    // Mount-only restore; ongoing autoscroll is handled by the effect below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Auto-scroll to the newest message/loader — but only when pinned to bottom
+  // (so the user can read history while a reply streams in).
   useEffect(() => {
     if (!stickToBottomRef.current) return;
     const el = scrollRef.current;
     if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
-  }, [messages, isLoading]);
+  }, [messages, isLoading, stickToBottomRef]);
 
-  // Derive single-company context for contextual chips
+  // Derive single-company context for contextual starter chips.
   const singleCompany = (() => {
     const companies = uniqueCompanies(documents);
     return companies.length === 1 ? companies[0] : null;
@@ -221,165 +173,6 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ documents }) => {
         'What was free cash flow last year?',
       ];
 
-  // The companies in play for the clarify gate: the explicitly-selected subset if
-  // the user picked one/some ("All" = empty selection), else every loaded doc.
-  const gateCompanies = (): Document[] => {
-    const selected = documents.filter(d => selectedDocIds.includes(d.id));
-    return uniqueCompanies(selected.length > 0 ? selected : documents);
-  };
-
-  const tk = (d: Document): string => (d.ticker || d.name || '').toUpperCase();
-
-  // Make the resolved company explicit in the text sent to the backend, so the
-  // GRAPH path (which resolves the company from the question, not the ticker
-  // scope) also confines to it. Skips injection when the company is already named.
-  const withCompany = (text: string, d: Document): string => {
-    const ticker = tk(d);
-    const label = companyLabel(d);
-    const already = new RegExp(`\\b(${ticker}|${label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})\\b`, 'i').test(text);
-    return already ? text : `${text} (${ticker})`;
-  };
-
-  // Form filter for a resolved scope (all filings are 10-K today, but keep it
-  // derived rather than hardcoded).
-  const formFor = (scope: string[]): '10-K' | undefined => {
-    const forms = Array.from(new Set(
-      documents.filter(d => scope.includes(tk(d))).map(d => d.form).filter((f): f is '10-K' => Boolean(f))
-    ));
-    return forms.length === 1 ? forms[0] : undefined;
-  };
-
-  // The actual retrieval + streaming call. `displayText` is the user's bubble;
-  // `sentText` is what the backend sees (company-injected); `scope` is the ticker
-  // filter; `newContext` becomes the active company for follow-ups.
-  const runQuery = async (
-    displayText: string, sentText: string, scope: string[], newContext: string | null,
-  ) => {
-    if (isLoading) return;
-    setPendingClarify(null);
-    setContextCompany(newContext);
-
-    setMessages(prev => [...prev, {
-      id: Date.now().toString(), role: 'user', text: displayText, timestamp: new Date(),
-    }]);
-    // Bird = pre-generation phase (keyword routing + graph/vector retrieval).
-    setIsLoading(true);
-
-    const assistantId = `a-${Date.now()}`;
-    let started = false;
-    let acc = '';
-
-    const ensureStarted = () => {
-      if (started) return;
-      started = true;
-      setIsLoading(false);
-      setMessages(prev => [...prev, {
-        id: assistantId, role: 'assistant', text: '', streaming: true, timestamp: new Date(),
-      }]);
-    };
-    const patch = (updates: Partial<ChatMessage>) =>
-      setMessages(prev => prev.map(m => (m.id === assistantId ? { ...m, ...updates } : m)));
-
-    await askFinSightStream(
-      sentText,
-      { tickers: scope.length ? scope : undefined, form: formFor(scope), k: 6 },
-      {
-        onToken: (delta) => { ensureStarted(); acc += delta; patch({ text: acc }); },
-        onDone: ({ sources, validCitations, retrievalPath }) => {
-          ensureStarted();
-          patch({ text: acc, sources, validCitations, retrievalPath, streaming: false });
-          setAnnouncement(acc);
-        },
-        onError: (message) => {
-          if (!started) {
-            started = true;
-            setIsLoading(false);
-            setMessages(prev => [...prev, {
-              id: assistantId, role: 'assistant', text: acc || `Error: ${message}`,
-              streaming: false, error: true, timestamp: new Date(),
-            }]);
-          } else {
-            patch({ text: acc, streaming: false, error: true });
-          }
-        },
-      },
-    );
-    if (!started) setIsLoading(false);
-  };
-
-  // Resume a pending/typed question scoped to ONE resolved company.
-  const resolveToCompany = (question: string, d: Document) =>
-    runQuery(withCompany(question, d), withCompany(question, d), [tk(d)], tk(d));
-
-  // Resume a pending/typed question as a head-to-head across companies.
-  const resolveToCompare = (question: string, docs: Document[]) => {
-    const tickers = docs.map(tk);
-    const already = /\b(compare|versus|vs\.?|both|between)\b/i.test(question);
-    const sent = already ? question : `${question} — compare ${tickers.join(' and ')}`;
-    runQuery(sent, sent, tickers, null);
-  };
-
-  // Ask which company, offering the loaded options as quick-pick chips. No
-  // retrieval or Gemini call happens here — the question is parked until answered.
-  const askClarify = (question: string, companies: Document[]) => {
-    setPendingClarify(question);
-    const tickers = companies.map(tk);
-    const compareHint = tickers.length === 2 ? 'Or want both compared?' : 'Or compare them?';
-    setMessages(prev => [...prev, {
-      id: `clarify-${Date.now()}`,
-      role: 'assistant',
-      text: `Which company do you mean — ${tickers.join(', ')}? ${compareHint}`,
-      timestamp: new Date(),
-      clarify: { question, companies: companies.map(d => ({ ticker: tk(d), label: companyLabel(d) })) },
-    }]);
-  };
-
-  // ── Pre-retrieval clarify gate ──────────────────────────────────────────────
-  // Deterministically decide whether the query is answerable as-is or needs a
-  // "which company?" question, BEFORE any retrieval/generation. Mirrors the Help
-  // page's "name the company + year + metric" rule (shared questionQuality util).
-  const sendMessage = (raw: string) => {
-    const text = raw.trim();
-    if (!text || isLoading) return;
-    const companies = gateCompanies();
-
-    // If we're awaiting a clarification, interpret this reply as its answer and
-    // resume the ORIGINAL question — don't make the user retype it.
-    if (pendingClarify) {
-      const picked = resolveCompaniesInQuestion(text, companies);
-      const wantsAll = looksLikeComparison(text) || /\b(both|all|either|every)\b/i.test(text);
-      if (picked.length >= 1 || wantsAll) {
-        const q = pendingClarify;
-        setPendingClarify(null);
-        if (picked.length === 1 && !wantsAll) return resolveToCompany(q, picked[0]);
-        return resolveToCompare(q, picked.length >= 2 ? picked : companies);
-      }
-      // Not an answer to the clarify — fall through and treat as a new question.
-      setPendingClarify(null);
-    }
-
-    const matches = resolveCompaniesInQuestion(text, companies);
-    if (matches.length >= 2) return resolveToCompare(text, matches);   // named several → compare
-    if (matches.length === 1) {                                        // named one → proceed
-      const d = matches[0];
-      return runQuery(text, text, [tk(d)], tk(d));
-    }
-
-    // No company named:
-    if (looksLikeComparison(text)) return runQuery(text, text, companies.map(tk), null); // corpus-wide compare
-    if (contextCompany && isCompanySpecific(text)) {                                      // follow-up carry-over
-      const d = companies.find(x => tk(x) === contextCompany);
-      if (d) return runQuery(text, withCompany(text, d), [contextCompany], contextCompany);
-    }
-    if (companies.length <= 1) {                                                          // 0/1 loaded → assume
-      const d = companies[0];
-      return runQuery(text, d ? withCompany(text, d) : text, d ? [tk(d)] : [], d ? tk(d) : null);
-    }
-    if (isCompanySpecific(text)) return askClarify(text, companies);                      // ambiguous → ASK
-
-    return runQuery(text, text, companies.map(tk), null);                                 // non-specific → proceed
-  };
-
   const handleSend = () => {
     const text = input.trim();
     if (!text || isLoading) return;
@@ -387,19 +180,9 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ documents }) => {
     sendMessage(text);
   };
 
-  // Resolve a clarify via a tapped chip: resume the parked question.
-  const pickClarifyCompany = (question: string, ticker: string) => {
-    const d = gateCompanies().find(x => tk(x) === ticker.toUpperCase());
-    if (d) resolveToCompany(question, d);
-  };
-  const pickClarifyCompare = (question: string) => resolveToCompare(question, gateCompanies());
-
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }
   };
-
-  const toggleDoc = (id: string) =>
-    setSelectedDocIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
 
   const AVATAR_GAP = 8;
 
@@ -423,14 +206,16 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ documents }) => {
         <div style={{ borderBottom: `0.5px solid ${c.border}`, padding: '10px 20px', flexShrink: 0 }}>
           <div style={{ maxWidth: 700, margin: '0 auto', display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
             <button
+              aria-pressed={selectedDocIds.length === 0}
               style={selectedDocIds.length === 0 ? pillActive : pillInactive}
-              onClick={() => setSelectedDocIds([])}
+              onClick={setAllFilter}
             >
               All
             </button>
             {documents.map(doc => (
               <button
                 key={doc.id}
+                aria-pressed={selectedDocIds.includes(doc.id)}
                 style={selectedDocIds.includes(doc.id) ? pillActive : pillInactive}
                 onClick={() => toggleDoc(doc.id)}
                 title={doc.name}
@@ -452,13 +237,20 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ documents }) => {
         <div
           ref={scrollRef}
           onScroll={handleScroll}
+          data-testid="chat-scroll"
           style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '20px 20px 8px' }}
         >
           <div style={{ maxWidth: 700, margin: '0 auto', width: '100%', display: 'flex', flexDirection: 'column', gap: 12 }}>
           {messages.map(msg => {
             const isUser = msg.role === 'user';
             return (
-              <div key={msg.id} style={{ display: 'flex', justifyContent: isUser ? 'flex-end' : 'flex-start' }}>
+              <div
+                key={msg.id}
+                data-testid="chat-message"
+                data-role={msg.role}
+                data-streaming={msg.streaming ? 'true' : 'false'}
+                style={{ display: 'flex', justifyContent: isUser ? 'flex-end' : 'flex-start' }}
+              >
                 {/*
                   alignItems: flex-start — avatars and bubble tops align.
                   The FinchAvatar also sets alignSelf: flex-start as defence-in-depth
