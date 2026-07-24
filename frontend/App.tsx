@@ -26,6 +26,7 @@ import {
   fetchMetrics,
 } from './services/gemini';
 import { companyKey } from './utils/company';
+import { ChatProvider } from './context/ChatContext';
 import { useIsTablet, useIsMobile, useRoute, useOnClickOutside } from './utils/hooks';
 
 const NAV_ITEMS: { view: ViewState; label: string; icon: React.ReactNode }[] = [
@@ -380,8 +381,17 @@ const App: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [route, documents]);
 
+  // ChatProvider wraps EVERY return path (splash, getting-started, main shell)
+  // and is the top-level element each time, so React keeps the single provider
+  // instance mounted across all of these transitions and across in-app
+  // navigation — that is what makes the FinChat conversation (and any in-flight
+  // stream) survive leaving and returning to the chat route.
   if (showSplash) {
-    return <SplashScreen onGetStarted={() => setShowSplash(false)} />;
+    return (
+      <ChatProvider documents={documents}>
+        <SplashScreen onGetStarted={() => setShowSplash(false)} />
+      </ChatProvider>
+    );
   }
 
   // A route that names a ticker (/company/:ticker or /compare/:anchor/:peer)
@@ -392,7 +402,11 @@ const App: React.FC = () => {
   // swallowed by the empty-documents gate. `notfound` falls through to the app
   // shell below, which renders the 404 page (with nav still available).
   if (documents.length === 0 && route.name === 'home') {
-    return <GettingStarted onAddCompany={handleAddCompany} />;
+    return (
+      <ChatProvider documents={documents}>
+        <GettingStarted onAddCompany={handleAddCompany} />
+      </ChatProvider>
+    );
   }
 
   const renderView = () => {
@@ -459,6 +473,7 @@ const App: React.FC = () => {
       };
 
   return (
+    <ChatProvider documents={documents}>
     <div className="app-root" style={{ display: 'flex', overflow: 'hidden', fontFamily: FF }}>
 
       {/* Backdrop behind the mobile drawer (click to dismiss). */}
@@ -749,6 +764,7 @@ const App: React.FC = () => {
         </div>
       </main>
     </div>
+    </ChatProvider>
   );
 };
 
