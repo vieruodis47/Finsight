@@ -89,6 +89,24 @@ export interface ChatSource {
   text?: string;              // full chunk text revealed in the expander
 }
 
+// Inline chart payload built server-side from the SAME XBRL rows that grounded
+// the answer (see backend build_graph_chart). The client only renders it — it
+// never recomputes a value — so the chart and the answer text always agree.
+export interface ChatChartBar { label: string; value: number | null }
+export interface ChatChartLinePoint { year: string; value: number | null }
+export interface ChatChartSeries { ticker: string; points: ChatChartLinePoint[] }
+export interface ChatChart {
+  kind: 'bar' | 'line';
+  metric: string;
+  label: string;
+  unit: 'ratio' | 'pct' | 'usd_m' | 'per_share' | 'num';
+  caption: string;
+  year?: string | null;              // bar: the fiscal year compared
+  bars?: ChatChartBar[];             // bar: one entry per company (null = gap)
+  years?: string[];                  // line: x-axis fiscal years
+  series?: ChatChartSeries[];        // line: one series per company
+}
+
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant';
@@ -99,6 +117,7 @@ export interface ChatMessage {
   retrievalPath?: 'graph' | 'vector' | 'both' | 'none' | 'vector_no_graph'; // which path answered
   streaming?: boolean;            // assistant reply is still streaming in
   error?: boolean;                // stream errored mid-flight (partial text kept)
+  chart?: ChatChart;              // optional inline comparison / over-time chart
   // Clarification prompt: FinChat needs to know which company before it can
   // answer. Carries the original question + the loaded companies to offer as
   // quick-pick chips; no retrieval/generation happens until one is chosen.

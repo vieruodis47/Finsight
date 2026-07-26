@@ -1,4 +1,6 @@
-import { ChatSource, FilingMetrics } from '../types';
+import { ChatSource, FilingMetrics, ChatChart } from '../types';
+// Re-exported so chart consumers can import the type from the service layer.
+export type { ChatChart } from '../types';
 
 // Same-origin by default: all API calls go through the Node server (:5000),
 // which owns sessions/auth and forwards FinSight routes to Python (:8000).
@@ -11,6 +13,7 @@ export interface ChatResult {
   sources: ChatSource[];
   validCitations?: number[];
   retrievalPath?: 'graph' | 'vector' | 'both' | 'none' | 'vector_no_graph';
+  chart?: ChatChart;
 }
 
 export interface AskOptions {
@@ -49,7 +52,7 @@ export interface ChatStreamHandlers {
   // Called once when the stream completes, carrying the reference list, the
   // validated inline-citation numbers, and the retrieval path. Citations resolve
   // here (at completion), never per-token.
-  onDone: (meta: { sources: ChatSource[]; validCitations: number[]; retrievalPath?: ChatResult['retrievalPath'] }) => void;
+  onDone: (meta: { sources: ChatSource[]; validCitations: number[]; retrievalPath?: ChatResult['retrievalPath']; chart?: ChatChart }) => void;
   // Called on a mid-stream failure; any text already delivered via onToken stays.
   onError: (message: string) => void;
 }
@@ -91,7 +94,7 @@ export async function askFinSightStream(
   const handleLine = (line: string) => {
     const trimmed = line.trim();
     if (!trimmed) return;
-    let evt: { type: string; text?: string; sources?: ChatSource[]; valid_citations?: number[]; retrieval_path?: string; message?: string };
+    let evt: { type: string; text?: string; sources?: ChatSource[]; valid_citations?: number[]; retrieval_path?: string; message?: string; chart?: ChatChart };
     try {
       evt = JSON.parse(trimmed);
     } catch {
@@ -105,6 +108,7 @@ export async function askFinSightStream(
         sources: evt.sources ?? [],
         validCitations: evt.valid_citations ?? [],
         retrievalPath: evt.retrieval_path as ChatResult['retrievalPath'],
+        chart: evt.chart,
       });
     } else if (evt.type === 'error') {
       erroredOrDone = true;

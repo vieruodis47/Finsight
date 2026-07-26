@@ -73,6 +73,7 @@ _FLOW: dict[str, list[str]] = {
 
 _INSTANT: dict[str, list[str]] = {
     "total_debt":           ["LongTermDebtNoncurrent", "LongTermDebt"],
+    "total_liabilities":    ["Liabilities"],
     "equity":               ["StockholdersEquity"],
     "current_assets":       ["AssetsCurrent"],
     "current_liabilities":  ["LiabilitiesCurrent"],
@@ -178,7 +179,7 @@ def _compute(raw: dict[str, dict[str, float]]) -> dict[str, dict]:
         ni  = raw["net_income"].get(yr)
         ocf = raw["operating_cash_flow"].get(yr)
         cap = raw["capex"].get(yr)
-        debt = raw["total_debt"].get(yr) or 0
+        tl   = raw["total_liabilities"].get(yr)   # D/E numerator (see below)
         eq   = raw["equity"].get(yr)
         ca   = raw["current_assets"].get(yr)
         cl   = raw["current_liabilities"].get(yr)
@@ -203,8 +204,12 @@ def _compute(raw: dict[str, dict[str, float]]) -> dict[str, dict]:
             if rev is not None and prev_rev:
                 r["revenue_growth_pct"] = round((rev - prev_rev) / prev_rev * 100, 2)
 
-        # Balance-sheet ratios
-        if eq: r["debt_to_equity"] = round(debt / eq, 2)
+        # Balance-sheet ratios. Debt-to-equity = TOTAL LIABILITIES ÷ equity (the
+        # balance-sheet definition, matching data_extract/ratios.py and
+        # analysis/metrics.py). Only emitted when total liabilities is present —
+        # a missing value is a genuine data gap (left absent so the chart shows a
+        # gap), never coerced to 0 (which would imply an unlevered balance sheet).
+        if eq and tl is not None: r["debt_to_equity"] = round(tl / eq, 2)
         if ca and cl: r["current_ratio"] = round(ca / cl, 2)
 
         # Use YYYY as the label; last entry wins if two filings share a year
