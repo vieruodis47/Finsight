@@ -272,9 +272,11 @@ export const ChatProvider: React.FC<{ documents: Document[]; children: React.Rea
       { tickers: scope.length ? scope : undefined, form: formFor(scope, documentsRef.current), k: 6 },
       {
         onToken: (delta) => { ensureStarted(); acc += delta; patch({ text: acc }); },
-        onDone: ({ sources, validCitations, retrievalPath }) => {
+        onDone: ({ sources, validCitations, retrievalPath, chart }) => {
           ensureStarted();
-          patch({ text: acc, sources, validCitations, retrievalPath, streaming: false });
+          // `chart` (if present) resolves only at completion, so it appears after
+          // the text, in the streaming flow — never mid-stream.
+          patch({ text: acc, sources, validCitations, retrievalPath, chart, streaming: false });
           dispatch({ type: 'SET_ANNOUNCEMENT', text: acc });
         },
         onError: (message) => {

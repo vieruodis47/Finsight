@@ -42,6 +42,11 @@ SYSTEM_PROMPT = (
     "net income, operating cash flow, gross margin, EPS, free cash flow, assets, liabilities, or cash flow), "
     "provided the explanation does NOT introduce any company-specific facts or assumptions.\n"
     "\n"
+    "When computing debt-to-equity (D/E), use TOTAL LIABILITIES ÷ shareholders' equity — the "
+    "balance-sheet definition (e.g. total liabilities $285,508M ÷ equity $73,733M = 3.87). Do NOT use "
+    "only interest-bearing/long-term debt; that yields a different, smaller number and would contradict "
+    "the structured figure shown elsewhere in FinSight.\n"
+    "\n"
     "If the provided context contains conflicting or inconsistent information:\n"
     "- Do NOT choose one value over another.\n"
     "- Clearly state that the context contains conflicting information.\n"
@@ -425,9 +430,10 @@ def _chat_event_stream(
 
     # --- Pre-generation: route + retrieve (the "bird" phase) -----------------
     graph_sources: list[dict] = []
+    chart: Optional[dict] = None   # inline comparison/over-time chart (graph path)
     try:
         from backend.graph.router import prepare_chat_stream
-        segments, chunks, graph_sources, path = prepare_chat_stream(
+        segments, chunks, graph_sources, path, chart = prepare_chat_stream(
             question, k=k, ticker=ticker, tickers=tickers, form=form
         )
     except Exception as exc:
@@ -470,15 +476,21 @@ def _chat_event_stream(
         # A refusal ("I can't find/identify this") must not show a citation list —
         # dangling passages under a non-answer read as misleading evidence.
         if _looks_like_refusal(full_answer):
-            references, valid = [], []
+            references, valid, chart = [], [], None
         else:
             valid = validate_citations(full_answer, chunks)
-        yield _line({
+        done_evt = {
             "type": "done",
             "sources": references,
             "valid_citations": valid,
             "retrieval_path": path,
-        })
+        }
+        # Inline chart built from the SAME structured rows that grounded the
+        # answer (never a separately computed number). Only present for chartable
+        # comparison / over-time questions on the graph path.
+        if chart:
+            done_evt["chart"] = chart
+        yield _line(done_evt)
     except Exception as exc:
         # Mid-stream failure: emit an error event. The client keeps whatever
         # partial text already arrived (it never blanks the bubble).

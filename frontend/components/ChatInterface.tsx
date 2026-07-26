@@ -6,6 +6,7 @@ import { companyLabel } from '../utils/company';
 import { useIsMobile } from '../utils/hooks';
 import { GroundedAnswer } from '../utils/chatRender';
 import { useChat, uniqueCompanies } from '../context/ChatContext';
+import ChatMetricChart from './ChatMetricChart';
 import BirdLoader from './BirdLoader';
 
 interface ChatInterfaceProps {
@@ -349,6 +350,13 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ documents }) => {
                             />
                           )
                     }
+
+                    {/* Inline comparison / over-time chart — rendered below the
+                        text, only once values have resolved (never mid-stream),
+                        from the SAME structured figures cited in the answer. */}
+                    {!isUser && !msg.clarify && msg.chart && !msg.streaming && (
+                      <ChatMetricChart chart={msg.chart} />
+                    )}
 
                     {/* Mid-stream failure — keep the partial text above, flag it. */}
                     {!isUser && msg.error && (

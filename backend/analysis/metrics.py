@@ -87,6 +87,7 @@ METRIC_FIELDS = {
     "inventory": (["InventoryNet", "InventoryFinishedGoodsNetOfReserves", "InventoryFinishedGoods"], True),
     "total_assets": (["Assets"], True),
     "total_debt": (["LongTermDebtNoncurrent", "LongTermDebt"], True),
+    "total_liabilities": (["Liabilities"], True),
     "equity": (["StockholdersEquity"], True),
     "capex": (["PaymentsToAcquirePropertyPlantAndEquipment", "PaymentsForCapitalImprovements"], False),
     "current_assets": (["AssetsCurrent"], True),
@@ -141,7 +142,7 @@ METRIC_EXPLANATIONS = {
     },
     "debt_to_equity": {
         "label": "Debt-to-Equity",
-        "explanation": "Total long-term debt divided by shareholder equity. Measures reliance on borrowed money vs. the company's own capital. Lower is generally a safer balance sheet.",
+        "explanation": "Total liabilities divided by shareholder equity — the ratio as derived from the balance sheet. Measures reliance on borrowed money and other obligations vs. the company's own capital. Lower is generally a safer balance sheet.",
         "category": "Financial Health"
     },
     "operating_cash_flow": {
@@ -314,7 +315,7 @@ def calculate_ratios(metrics):
     operating_income = metrics["operating_income"]["values"]
     net_income = metrics["net_income"]["values"]
     inventory = metrics["inventory"]["values"]
-    total_debt = metrics["total_debt"]["values"]
+    total_liabilities = metrics["total_liabilities"]["values"]
     equity = metrics["equity"]["values"]
     operating_cash_flow = metrics["operating_cash_flow"]["values"]
     capex = metrics["capex"]["values"]
@@ -332,7 +333,7 @@ def calculate_ratios(metrics):
         ni = net_income.get(year)
         cg = cogs.get(year)
         inv = inventory.get(year)
-        debt = total_debt.get(year, 0)  # treat missing long-term debt as 0
+        tl = total_liabilities.get(year)  # total liabilities = D/E numerator
         cap = capex.get(year)
         ca = current_assets.get(year)
         cl = current_liabilities.get(year)
@@ -370,9 +371,11 @@ def calculate_ratios(metrics):
             if gp is not None and prev_gp:
                 r["gross_profit_growth_pct"] = round((gp - prev_gp) / prev_gp * 100, 2)
 
-        # Financial health
-        if eq:
-            r["debt_to_equity"] = round(debt / eq, 2)
+        # Financial health — debt-to-equity = total liabilities ÷ equity (the
+        # balance-sheet definition; kept in lock-step with data_extract/ratios.py
+        # and compare_metrics.py). A missing numerator is a genuine gap, not 0.
+        if eq and tl is not None:
+            r["debt_to_equity"] = round(tl / eq, 2)
 
         if ocf is not None:
             r["operating_cash_flow"] = ocf

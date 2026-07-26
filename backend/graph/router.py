@@ -219,6 +219,34 @@ def _combine_multiyear(
     return result
 
 
+def _refresh_computed_ratios(metrics_by_year: dict) -> dict:
+    """Recompute `computed_ratios` for each year from the stored income / balance /
+    cash-flow dicts using the CURRENT ratios.py definitions, overriding any ratios
+    that were persisted under an older definition.
+
+    This is what lets a ratio-definition fix (e.g. debt-to-equity switching from
+    long-term-debt/equity to total-liabilities/equity) take effect on the live
+    in-memory graph WITHOUT re-ingesting every filing: the graph derives ratios
+    from the stored balance-sheet facts at load time rather than trusting a
+    possibly-stale stored number. The underlying facts (Liabilities, equity, …)
+    are already persisted, so this is a pure recompute — no network, no embeddings.
+    """
+    from ..data_extract.ratios import compute_ratios
+    if not isinstance(metrics_by_year, dict):
+        return metrics_by_year
+    for _year, ym in metrics_by_year.items():
+        if not isinstance(ym, dict):
+            continue
+        income  = ym.get("income_statement") or {}
+        balance = ym.get("balance_sheet") or {}
+        cf      = ym.get("cash_flow") or {}
+        if income or balance:
+            fresh = compute_ratios(income, balance, cf)
+            if fresh:
+                ym["computed_ratios"] = {**(ym.get("computed_ratios") or {}), **fresh}
+    return metrics_by_year
+
+
 def rebuild_graph_from_ravendb() -> int:
     """
     Reload the in-memory RDF graph from persisted FilingMetrics documents.
@@ -254,6 +282,11 @@ def rebuild_graph_from_ravendb() -> int:
     loaded = 0
     for doc in docs:
         by_year = getattr(doc, "metrics_by_year", None) or {}
+        # Re-derive ratios from the stored balance-sheet facts so the graph always
+        # reflects the CURRENT ratio definitions (e.g. the corrected D/E), even for
+        # filings persisted under an older definition — no re-ingest required.
+        if isinstance(by_year, dict):
+            by_year = _refresh_computed_ratios(by_year)
         try:
             result = {
                 "ticker":           doc.ticker,
@@ -736,7 +769,16 @@ ORDER BY DESC(?value)
 """
 
 
-def _sparql_two_company_single_metric(t1: str, t2: str, metric: str) -> str:
+def _ticker_in(tickers: list[str]) -> str:
+    """SPARQL `?ticker IN ("A", "B", ...)` over ALL requested companies, so every
+    company mentioned in a comparison is looked up independently — not just the
+    first two. (The old two-company templates hard-coded t1/t2 and silently
+    dropped a 3rd+ company, which surfaced as a peer reading "not disclosed".)"""
+    inner = ", ".join(f'"{t}"' for t in tickers)
+    return f"FILTER(?ticker IN ({inner}))"
+
+
+def _sparql_multi_company_single_metric(tickers: list[str], metric: str) -> str:
     return f"""
 PREFIX fs:  <http://finsight.io/ontology#>
 PREFIX fsd: <http://finsight.io/data/>
@@ -745,13 +787,13 @@ WHERE {{
     ?co  a fs:Company ; fs:hasTicker ?ticker ; fs:filedFiling ?f .
     ?f   fs:fiscalYear ?fiscalYear ; fs:reportsMetric ?m .
     ?m   fs:metricName "{metric}" ; fs:metricValue ?value .
-    FILTER(?ticker IN ("{t1}", "{t2}"))
+    {_ticker_in(tickers)}
 }}
 ORDER BY ?ticker ?fiscalYear
 """
 
 
-def _sparql_two_company_multi_metric(t1: str, t2: str) -> str:
+def _sparql_multi_company_multi_metric(tickers: list[str]) -> str:
     return f"""
 PREFIX fs:  <http://finsight.io/ontology#>
 PREFIX fsd: <http://finsight.io/data/>
@@ -779,7 +821,7 @@ WHERE {{
         ?f fs:reportsMetric ?m5 .
         ?m5 fs:metricName "return_on_equity_pct" ; fs:metricValue ?roe .
     }}
-    FILTER(?ticker IN ("{t1}", "{t2}"))
+    {_ticker_in(tickers)}
 }}
 ORDER BY ?ticker ?fiscalYear
 """
@@ -865,11 +907,13 @@ def _build_sparql(question: str, tickers: list[str]) -> str:
     is_multiyear = len(all_years) > 1
 
     if len(tickers) >= 2:
-        t1, t2 = tickers[0], tickers[1]
+        # ALL mentioned companies are looked up independently (not just the first
+        # two), so a 3-way comparison — e.g. "AAPL vs NVDA vs MSFT" — returns every
+        # company's figure rather than dropping the rest as "not disclosed".
         return (
-            _sparql_two_company_single_metric(t1, t2, metric)
+            _sparql_multi_company_single_metric(tickers, metric)
             if metric
-            else _sparql_two_company_multi_metric(t1, t2)
+            else _sparql_multi_company_multi_metric(tickers)
         )
 
     if tickers:
@@ -1206,7 +1250,121 @@ def build_graph_references(rows: list[dict], metric: Optional[str], tickers: lis
     return refs
 
 
-def _graph_prompt(question: str) -> tuple[Optional[str], str, list[dict]]:
+# ---------------------------------------------------------------------------
+# Inline chat chart — built from the SAME SPARQL rows that ground the answer, so
+# the chart and the text can never disagree (never a separately computed number).
+# Only produced for chartable structured data: >=2 companies for a metric, or one
+# metric over >=2 years. A genuine per-company/per-year gap is carried as a null
+# value (rendered as a labeled gap client-side), never a 0 and never dropped.
+# ---------------------------------------------------------------------------
+
+def _chart_unit(metric: str) -> str:
+    if metric.endswith("_pct"):
+        return "pct"
+    if metric.endswith("_millions"):
+        return "usd_m"
+    if metric in ("eps_basic", "eps_diluted"):
+        return "per_share"
+    if metric in ("debt_to_equity", "current_ratio", "quick_ratio"):
+        return "ratio"
+    return "num"
+
+
+def _chart_fmt(value, unit: str) -> str:
+    if value is None:
+        return "not disclosed"
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if unit == "pct":
+        return f"{v:.1f}%"
+    if unit == "ratio":
+        return f"{v:.2f}"
+    if unit == "per_share":
+        return f"${v:.2f}"
+    if unit == "usd_m":
+        a = abs(v)
+        if a >= 1e6:
+            return f"${v / 1e6:.1f}T"
+        if a >= 1e3:
+            return f"${v / 1e3:.1f}B"
+        return f"${v:.0f}M"
+    return f"{v:g}"
+
+
+def build_graph_chart(rows: list[dict], metric: Optional[str], question: str) -> Optional[dict]:
+    """Build a compact inline-chart spec from SPARQL rows, or None when the data
+    isn't chartable. Shape (JSON-serialisable, mirrored by the frontend):
+
+      {kind:"bar",  metric, label, unit, year, bars:[{label, value|None}], caption}
+      {kind:"line", metric, label, unit, years:[...],
+                    series:[{ticker, points:[{year, value|None}]}], caption}
+    """
+    if not metric or not rows or "value" not in rows[0]:
+        return None
+
+    by_ticker: dict[str, dict[str, float]] = {}
+    for r in rows:
+        t = (r.get("ticker") or "").upper()
+        y = str(r.get("fiscalYear") or "").split(".")[0][:4]
+        if not t or not y:
+            continue
+        try:
+            by_ticker.setdefault(t, {})[y] = float(r["value"])
+        except (TypeError, ValueError):
+            continue
+
+    tickers = [t for t in by_ticker if by_ticker[t]]
+    if not tickers:
+        return None
+
+    unit = _chart_unit(metric)
+    label = (_clean_metric_label(metric) or metric).strip()
+    label = label[:1].upper() + label[1:]
+
+    wants_time = len(re.findall(r"20\d{2}", question)) > 1 or bool(
+        re.search(r"\b(over time|trend|history|by year|year[- ]over[- ]year|yoy|each year|since)\b",
+                  question, re.IGNORECASE)
+    )
+
+    # LINE — one company across >=2 years, or an explicit over-time question.
+    single_multiyear = len(tickers) == 1 and len(by_ticker[tickers[0]]) >= 2
+    if single_multiyear or (wants_time and any(len(by_ticker[t]) >= 2 for t in tickers)):
+        years = sorted({y for t in tickers for y in by_ticker[t]})
+        series = [
+            {"ticker": t, "points": [{"year": y, "value": by_ticker[t].get(y)} for y in years]}
+            for t in tickers
+        ]
+        latest = years[-1]
+        summary = ", ".join(f"{t} {_chart_fmt(by_ticker[t].get(latest), unit)}" for t in tickers)
+        caption = f"{label} by fiscal year — FY{latest}: {summary}."
+        return {"kind": "line", "metric": metric, "label": label, "unit": unit,
+                "years": years, "series": series, "caption": caption}
+
+    # BAR — >=2 companies compared at the latest fiscal year they share (falls
+    # back to each company's own latest year when there is no shared year).
+    if len(tickers) >= 2:
+        shared = set.intersection(*(set(by_ticker[t]) for t in tickers))
+        year = max(shared) if shared else None
+        bars = []
+        for t in tickers:
+            if year is not None:
+                val = by_ticker[t].get(year)
+            else:
+                ys = sorted(by_ticker[t])
+                val = by_ticker[t][ys[-1]] if ys else None
+            bars.append({"label": t, "value": val})
+        yr_txt = f"FY{year}" if year else "latest reported year"
+        summary = ", ".join(f"{b['label']} {_chart_fmt(b['value'], unit)}" for b in bars)
+        caption = f"{label} by company ({yr_txt}): {summary}."
+        return {"kind": "bar", "metric": metric, "label": label, "unit": unit,
+                "year": year, "bars": bars, "caption": caption}
+
+    return None
+
+
+def _graph_prompt(question: str) -> tuple[Optional[str], str, list[dict], Optional[dict]]:
     """
     Retrieval-only graph preparation (NO LLM call, no embeddings).
 
@@ -1294,7 +1452,8 @@ def _graph_prompt(question: str) -> tuple[Optional[str], str, list[dict]]:
     if period_note:
         tail += f"\n\n{period_note}"
     tail += "\n\n_Source: structured financial data · SEC EDGAR XBRL metrics_"
-    return prompt, tail, build_graph_references(rows, metric, tickers_with_data)
+    chart = build_graph_chart(rows, metric, question)
+    return prompt, tail, build_graph_references(rows, metric, tickers_with_data), chart
 
 
 def _answer_from_graph(question: str) -> tuple[str, bool, list[dict]]:
@@ -1307,7 +1466,7 @@ def _answer_from_graph(question: str) -> tuple[str, bool, list[dict]]:
     from ..data_extract.embeddings import get_genai_client
     from google.genai import types as genai_types
 
-    prompt, tail, graph_refs = _graph_prompt(question)
+    prompt, tail, graph_refs, _chart = _graph_prompt(question)
     if prompt is None:
         return "", False, []
 
@@ -1537,7 +1696,7 @@ def prepare_chat_stream(
     ticker: Optional[str] = None,
     tickers: Optional[list[str]] = None,
     form: Optional[str] = None,
-) -> tuple[list[dict], list, list, str]:
+) -> tuple[list[dict], list, list, str, Optional[dict]]:
     """
     Streaming counterpart to route_question. Does ONLY the pre-generation work
     (classification + retrieval), then returns an ordered list of `segments` to
@@ -1610,24 +1769,24 @@ def prepare_chat_stream(
 
     if path == "vector":
         segs, chunks, vpath = _vector_segments()
-        return segs, chunks, [], vpath
+        return segs, chunks, [], vpath, None
 
     if path == "graph":
-        gprompt, gtail, grefs = _graph_prompt(question)
+        gprompt, gtail, grefs, gchart = _graph_prompt(question)
         if gprompt is not None:
             segs = [_llm(_GRAPH_SYSTEM, gprompt, 0.1)]
             if gtail:
                 segs.append(_text(gtail))
-            return segs, [], grefs, "graph"
+            return segs, [], grefs, "graph", gchart
         segs, chunks, vpath = _vector_segments()
-        return segs, chunks, [], ("vector_no_graph" if vpath == "vector" else vpath)
+        return segs, chunks, [], ("vector_no_graph" if vpath == "vector" else vpath), None
 
     # path == "both": retrieve both halves concurrently (the bird phase), then
     # stream graph generation followed by vector generation.
     with ThreadPoolExecutor(max_workers=2) as pool:
         fut_graph = pool.submit(_graph_prompt, question)
         fut_vector = pool.submit(_vector_prep_raw)
-        gprompt, gtail, grefs = fut_graph.result()
+        gprompt, gtail, grefs, gchart = fut_graph.result()
         vprompt, chunks, verr = fut_vector.result()
 
     had_graph = gprompt is not None
@@ -1653,18 +1812,18 @@ def prepare_chat_stream(
             segs.append(_text(gtail))
         segs.append(_text(f"\n\n---\n\n{text_header}\n\n"))
         segs.append(_llm(SYSTEM_PROMPT, vprompt, 0.2))
-        return segs, chunks, grefs, "both"
+        return segs, chunks, grefs, "both", gchart
 
     if had_graph:
         segs = [_llm(_GRAPH_SYSTEM, gprompt, 0.1)]
         if gtail:
             segs.append(_text(gtail))
-        return segs, [], grefs, "graph"
+        return segs, [], grefs, "graph", gchart
 
     if chunks:
-        return [_llm(SYSTEM_PROMPT, vprompt, 0.2)], chunks, [], "vector"
+        return [_llm(SYSTEM_PROMPT, vprompt, 0.2)], chunks, [], "vector", None
 
     if verr:
-        return [_text(verr)], [], [], "none"
+        return [_text(verr)], [], [], "none", None
 
-    return [_text(NO_CONTEXT_MESSAGE)], [], [], "none"
+    return [_text(NO_CONTEXT_MESSAGE)], [], [], "none", None

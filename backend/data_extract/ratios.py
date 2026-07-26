@@ -10,11 +10,22 @@ def compute_ratios(income: dict, balance: dict, cash_flow: dict) -> dict:
     try:
         ratios = {}
 
-        debt   = balance.get("long_term_debt_millions")
+        # Debt-to-equity = TOTAL LIABILITIES ÷ shareholders' equity — the ratio a
+        # reader derives from the balance sheet and the one filings label
+        # "debt-to-equity". We deliberately do NOT use interest-bearing long-term
+        # debt here: (1) it contradicts the filing's own balance sheet (Apple
+        # FY2025: 78,328/73,733 = 1.06 vs the correct 285,508/73,733 = 3.87), and
+        # (2) LongTermDebt is inconsistently tagged year-to-year, so a debt-based
+        # ratio silently goes missing for some company-years — which surfaced as a
+        # peer showing "not disclosed" in comparisons. Total liabilities (the
+        # `Liabilities` XBRL concept) is near-universally tagged, so the ratio is
+        # both correct and consistently available. Keep this definition in lock-
+        # step with analysis/metrics.py and compare_metrics.py.
+        total_liabilities = balance.get("total_liabilities_millions")
         equity = balance.get("shareholders_equity_millions")
 
-        if debt is not None and equity is not None and equity != 0:
-            ratios["debt_to_equity"] = round(debt / equity, 3)
+        if total_liabilities is not None and equity is not None and equity != 0:
+            ratios["debt_to_equity"] = round(total_liabilities / equity, 3)
 
         net_income = income.get("net_income_millions")
         if net_income is not None and equity is not None and equity != 0:
