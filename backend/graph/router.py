@@ -675,7 +675,15 @@ def _extract_tickers(question: str, known_tickers: set[str] | None = None) -> li
     # Single-letter tickers — only accept if the letter is actually a registered ticker.
     # Without this gate, \b[A-Z]\b matches sentence-initial capitals, "I", "A", etc.
     if known_tickers:
-        for word in re.findall(r"\b([A-Z])\b", question.upper()):
+        upper = question.upper()
+        for m in re.finditer(r"\b([A-Z])\b", upper):
+            word = m.group(1)
+            # Skip a letter glued to an apostrophe — the "S" in "Apple's" is a
+            # possessive, not a ticker mention (it otherwise resolves to a real
+            # single-letter ticker like S and corrupts the scope/answer/chart).
+            start = m.start(1)
+            if start > 0 and upper[start - 1] in "'’":
+                continue
             if word in known_tickers and word not in seen:
                 seen.add(word)
                 result.append(word)
@@ -1293,13 +1301,21 @@ def _chart_fmt(value, unit: str) -> str:
     return f"{v:g}"
 
 
-def build_graph_chart(rows: list[dict], metric: Optional[str], question: str) -> Optional[dict]:
+def build_graph_chart(
+    rows: list[dict], metric: Optional[str], question: str,
+    requested: Optional[list[str]] = None,
+) -> Optional[dict]:
     """Build a compact inline-chart spec from SPARQL rows, or None when the data
     isn't chartable. Shape (JSON-serialisable, mirrored by the frontend):
 
       {kind:"bar",  metric, label, unit, year, bars:[{label, value|None}], caption}
       {kind:"line", metric, label, unit, years:[...],
                     series:[{ticker, points:[{year, value|None}]}], caption}
+
+    `requested` names the companies the question explicitly asked about. A
+    requested company with NO data for the metric is carried as an explicit gap
+    (value None) rather than silently dropped, so the chart discloses the gap the
+    same way the text does.
     """
     if not metric or not rows or "value" not in rows[0]:
         return None
@@ -1315,9 +1331,15 @@ def build_graph_chart(rows: list[dict], metric: Optional[str], question: str) ->
         except (TypeError, ValueError):
             continue
 
-    tickers = [t for t in by_ticker if by_ticker[t]]
-    if not tickers:
+    data_tickers = [t for t in by_ticker if by_ticker[t]]
+    if not data_tickers:
         return None
+
+    # Companies to display: the explicitly-requested set (in mention order) when
+    # the question named companies — so a data-less requested company shows as a
+    # gap — otherwise just the companies that have data (e.g. "which company…").
+    req = [t.upper() for t in (requested or []) if t]
+    tickers = req if req else data_tickers
 
     unit = _chart_unit(metric)
     label = (_clean_metric_label(metric) or metric).strip()
@@ -1327,34 +1349,38 @@ def build_graph_chart(rows: list[dict], metric: Optional[str], question: str) ->
         re.search(r"\b(over time|trend|history|by year|year[- ]over[- ]year|yoy|each year|since)\b",
                   question, re.IGNORECASE)
     )
+    # A single specific fiscal year in the question (e.g. "FY2025") pins the
+    # answer to one value per company → a snapshot (bar), never a trend line.
+    pinned_year = len(set(re.findall(r"20\d{2}", question))) == 1
+    max_years = max((len(v) for v in by_ticker.values()), default=0)
 
-    # LINE — one company across >=2 years, or an explicit over-time question.
-    single_multiyear = len(tickers) == 1 and len(by_ticker[tickers[0]]) >= 2
-    if single_multiyear or (wants_time and any(len(by_ticker[t]) >= 2 for t in tickers)):
-        years = sorted({y for t in tickers for y in by_ticker[t]})
+    # LINE — a metric over >=3 fiscal years (single or multi company), when the
+    # question isn't pinned to one specific fiscal year. Two-point or single-year
+    # data never becomes a line; a one-year multi-company ask is a bar (below).
+    # A requested company with no data becomes an all-null (gap) series.
+    if max_years >= 3 and not pinned_year and (len(tickers) == 1 or wants_time):
+        years = sorted({y for v in by_ticker.values() for y in v})
         series = [
-            {"ticker": t, "points": [{"year": y, "value": by_ticker[t].get(y)} for y in years]}
+            {"ticker": t, "points": [{"year": y, "value": by_ticker.get(t, {}).get(y)} for y in years]}
             for t in tickers
         ]
         latest = years[-1]
-        summary = ", ".join(f"{t} {_chart_fmt(by_ticker[t].get(latest), unit)}" for t in tickers)
+        summary = ", ".join(f"{t} {_chart_fmt(by_ticker.get(t, {}).get(latest), unit)}" for t in tickers)
         caption = f"{label} by fiscal year — FY{latest}: {summary}."
         return {"kind": "line", "metric": metric, "label": label, "unit": unit,
                 "years": years, "series": series, "caption": caption}
 
-    # BAR — >=2 companies compared at the latest fiscal year they share (falls
-    # back to each company's own latest year when there is no shared year).
+    # BAR — >=2 companies compared at a single fiscal year (the latest the
+    # companies-with-data share, else the latest reported overall). A requested
+    # company with no data for that metric is carried as an explicit gap (None).
     if len(tickers) >= 2:
-        shared = set.intersection(*(set(by_ticker[t]) for t in tickers))
-        year = max(shared) if shared else None
-        bars = []
-        for t in tickers:
-            if year is not None:
-                val = by_ticker[t].get(year)
-            else:
-                ys = sorted(by_ticker[t])
-                val = by_ticker[t][ys[-1]] if ys else None
-            bars.append({"label": t, "value": val})
+        display_with_data = [t for t in tickers if by_ticker.get(t)]
+        if display_with_data:
+            shared = set.intersection(*(set(by_ticker[t]) for t in display_with_data))
+            year = max(shared) if shared else max({y for t in display_with_data for y in by_ticker[t]})
+        else:
+            year = None
+        bars = [{"label": t, "value": (by_ticker.get(t, {}).get(year) if year else None)} for t in tickers]
         yr_txt = f"FY{year}" if year else "latest reported year"
         summary = ", ".join(f"{b['label']} {_chart_fmt(b['value'], unit)}" for b in bars)
         caption = f"{label} by company ({yr_txt}): {summary}."
@@ -1452,7 +1478,10 @@ def _graph_prompt(question: str) -> tuple[Optional[str], str, list[dict], Option
     if period_note:
         tail += f"\n\n{period_note}"
     tail += "\n\n_Source: structured financial data · SEC EDGAR XBRL metrics_"
-    chart = build_graph_chart(rows, metric, question)
+    # `available` = the companies the question explicitly named that exist in the
+    # graph. Passing it lets the chart show a genuinely data-less requested
+    # company as an explicit gap (not silently omit it).
+    chart = build_graph_chart(rows, metric, question, requested=available)
     return prompt, tail, build_graph_references(rows, metric, tickers_with_data), chart
 
 

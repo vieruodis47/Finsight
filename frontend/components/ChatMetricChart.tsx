@@ -18,9 +18,22 @@ import type { ChatChart } from '../services/gemini';
 // primitives + theme (sapphire series palette; hue + dash so lines separate in
 // greyscale). Green/red are reserved for directional signals and are not used.
 
+// prefers-reduced-motion → turn off Recharts' enter animations.
+const usePrefersReducedMotion = (): boolean => {
+  const [reduced, setReduced] = React.useState(false);
+  React.useEffect(() => {
+    const mq = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const sync = () => setReduced(mq.matches);
+    sync();
+    mq.addEventListener?.('change', sync);
+    return () => mq.removeEventListener?.('change', sync);
+  }, []);
+  return reduced;
+};
+
 // Per-unit value formatting (matches the backend caption formatting).
 const fmtValue = (unit: ChatChart['unit'], v: number | null | undefined): string => {
-  if (v == null) return 'n/a';
+  if (v == null) return 'no data';
   switch (unit) {
     case 'pct':       return `${v.toFixed(1)}%`;
     case 'ratio':     return v.toFixed(2);
@@ -38,13 +51,19 @@ const axisTick = (unit: ChatChart['unit']) => (v: number): string => {
 };
 
 const ChatMetricChart: React.FC<{ chart: ChatChart }> = ({ chart }) => {
+  const reduced = usePrefersReducedMotion();
   const unit = chart.unit;
-  // Companies with no value are a genuine data gap — name them explicitly so the
-  // gap is labeled, never silently zero/omitted.
-  const gaps: string[] =
-    chart.kind === 'bar'
-      ? (chart.bars ?? []).filter(b => b.value == null).map(b => b.label)
-      : (chart.series ?? []).filter(s => s.points.every(p => p.value == null)).map(s => s.ticker);
+  const animate = !reduced;
+
+  // Companies that are a genuine data gap — named explicitly so the gap is
+  // labeled (never silently zero/omitted).
+  const barGaps = chart.kind === 'bar'
+    ? (chart.bars ?? []).filter(b => b.value == null).map(b => b.label)
+    : [];
+  const lineGaps = chart.kind === 'line'
+    ? (chart.series ?? []).filter(s => s.points.every(p => p.value == null)).map(s => s.ticker)
+    : [];
+  const gaps = [...barGaps, ...lineGaps];
 
   return (
     <figure
@@ -70,7 +89,7 @@ const ChatMetricChart: React.FC<{ chart: ChatChart }> = ({ chart }) => {
             />
             {/* Single categorical series (companies on the x-axis) → sapphire.
                 A null value renders as a gap (no bar); labels sit above bars. */}
-            <Bar dataKey="value" fill={series.fill[0]} radius={[3, 3, 0, 0]} maxBarSize={54}>
+            <Bar dataKey="value" fill={series.fill[0]} radius={[3, 3, 0, 0]} maxBarSize={54} isAnimationActive={animate}>
               <LabelList dataKey="value" position="top"
                          formatter={((v: number) => fmtValue(unit, v)) as never}
                          style={{ fontSize: 11, fill: c.textMuted, fontFamily: font.ui }} />
@@ -106,6 +125,7 @@ const ChatMetricChart: React.FC<{ chart: ChatChart }> = ({ chart }) => {
                 strokeWidth={2}
                 strokeDasharray={series.dash[i % series.dash.length] || undefined}
                 dot={{ r: 2 }}
+                isAnimationActive={animate}
                 // Gaps must READ as gaps, not be bridged with an interpolated line.
                 connectNulls={false}
               />
@@ -114,11 +134,19 @@ const ChatMetricChart: React.FC<{ chart: ChatChart }> = ({ chart }) => {
         )}
       </ResponsiveChart>
 
-      {/* Numeric summary — keeps the figures present as text (not chart-only) and
-          names any data gaps explicitly. */}
+      {/* Explicit labeled-gap annotation: a genuine data gap keeps its x-axis
+          slot (not omitted) and draws no bar (not a zero) — this line names it as
+          "no data", consistent with how the answer text discloses the gap. */}
+      {gaps.length > 0 && (
+        <p style={{ fontSize: 11, color: c.textFaint, margin: '6px 0 0', lineHeight: 1.5, fontFamily: font.ui }}>
+          <span aria-hidden="true" style={{ marginRight: 5 }}>▫</span>
+          No data for {gaps.join(', ')} — not disclosed in the filings.
+        </p>
+      )}
+
+      {/* Numeric summary — keeps the figures present as text (not chart-only). */}
       <p style={{ fontSize: 11, color: c.textFaint, margin: '6px 0 0', lineHeight: 1.5, fontFamily: font.ui }}>
         {chart.caption}
-        {gaps.length > 0 && ` (${gaps.join(', ')}: not disclosed)`}
       </p>
     </figure>
   );

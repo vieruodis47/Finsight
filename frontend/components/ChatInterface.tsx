@@ -257,7 +257,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ documents }) => {
                   The FinchAvatar also sets alignSelf: flex-start as defence-in-depth
                   so no ancestor's alignItems can override the fixed circle size.
                 */}
-                <div style={{ display: 'flex', flexDirection: isUser ? 'row-reverse' : 'row', alignItems: 'flex-start', gap: AVATAR_GAP, maxWidth: '85%' }}>
+                <div style={{ display: 'flex', flexDirection: isUser ? 'row-reverse' : 'row', alignItems: 'flex-start', gap: AVATAR_GAP, maxWidth: '85%', minWidth: 0 }}>
 
                   {/* Avatar */}
                   {isUser ? (
@@ -281,6 +281,11 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ documents }) => {
                   {/* Bubble */}
                   <div
                     style={{
+                      // minWidth:0 lets the bubble shrink below its content's
+                      // intrinsic width so a wide child (e.g. an inline chart's
+                      // ResponsiveContainer) can't blow the bubble past the row's
+                      // 85% cap and overflow/clip on narrow (mobile) viewports.
+                      minWidth: 0,
                       padding: isUser ? '9px 13px' : '11px 15px',
                       borderRadius: 11,
                       ...(isUser
