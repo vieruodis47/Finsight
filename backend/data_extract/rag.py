@@ -475,7 +475,16 @@ def _chat_event_stream(
         full_answer = "".join(parts)
         # A refusal ("I can't find/identify this") must not show a citation list —
         # dangling passages under a non-answer read as misleading evidence.
-        if _looks_like_refusal(full_answer):
+        #
+        # BUT this only applies to a genuinely empty answer. In a dual-path
+        # ("both") answer the GRAPH half can fully answer (producing graph
+        # citation cards AND a chart) while the vector half emits its own
+        # "could not find sufficient information" for a company whose filing text
+        # wasn't retrieved. That refusal phrase is a sub-section note, not the
+        # verdict on the whole answer — so gate on graph_sources: when the graph
+        # answered, keep its citations and its chart; only zero things for a pure
+        # (graph-less) refusal.
+        if not graph_sources and _looks_like_refusal(full_answer):
             references, valid, chart = [], [], None
         else:
             valid = validate_citations(full_answer, chunks)
