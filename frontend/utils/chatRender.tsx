@@ -331,7 +331,11 @@ export const GroundedAnswer: React.FC<{
   retrievalPath?: string;
   sources?: ChatSource[];
   validCitations?: number[];
-}> = ({ text, streaming, retrievalPath, sources, validCitations }) => {
+  // The inline metric chart, rendered BETWEEN the answer text and the sources so
+  // the message reads text → chart → citations. Passed as a node (kept out of
+  // this util's imports) and only shown once streaming completes.
+  chartSlot?: React.ReactNode;
+}> = ({ text, streaming, retrievalPath, sources, validCitations, chartSlot }) => {
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const rowRefs = useRef<Map<number, HTMLLIElement>>(new Map());
 
@@ -370,6 +374,11 @@ export const GroundedAnswer: React.FC<{
       {streaming && (
         <span className="stream-caret" aria-hidden="true" style={{ background: c.brand }} />
       )}
+
+      {/* Chart sits between the text and the citation cards; it resolves at
+          completion (same gate as citations), so both appear together in the new
+          order with no intermediate layout jump. */}
+      {!streaming && chartSlot}
 
       {showMeta && (
         <div style={{ marginTop: 10, paddingTop: 8, borderTop: `0.5px solid ${c.border}` }}>

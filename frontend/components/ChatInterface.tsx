@@ -346,22 +346,25 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ documents }) => {
                             </>
                           )
                         : (
+                            // Message order is text → chart → citations: the
+                            // inline chart is passed INTO GroundedAnswer so it
+                            // renders between the answer text and the SOURCES
+                            // cards (which stay at the bottom). Chart + citations
+                            // both resolve at completion — no layout jump.
                             <GroundedAnswer
                               text={msg.text}
                               streaming={msg.streaming}
                               retrievalPath={msg.retrievalPath}
                               sources={msg.sources}
                               validCitations={msg.validCitations}
+                              chartSlot={
+                                !msg.clarify && msg.chart
+                                  ? <ChatMetricChart chart={msg.chart} />
+                                  : undefined
+                              }
                             />
                           )
                     }
-
-                    {/* Inline comparison / over-time chart — rendered below the
-                        text, only once values have resolved (never mid-stream),
-                        from the SAME structured figures cited in the answer. */}
-                    {!isUser && !msg.clarify && msg.chart && !msg.streaming && (
-                      <ChatMetricChart chart={msg.chart} />
-                    )}
 
                     {/* Mid-stream failure — keep the partial text above, flag it. */}
                     {!isUser && msg.error && (

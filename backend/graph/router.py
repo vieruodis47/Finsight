@@ -1345,20 +1345,26 @@ def build_graph_chart(
     label = (_clean_metric_label(metric) or metric).strip()
     label = label[:1].upper() + label[1:]
 
-    wants_time = len(re.findall(r"20\d{2}", question)) > 1 or bool(
+    named_years = sorted({int(y) for y in re.findall(r"20\d{2}", question)})
+    wants_time = len(named_years) > 1 or bool(
         re.search(r"\b(over time|trend|history|by year|year[- ]over[- ]year|yoy|each year|since)\b",
                   question, re.IGNORECASE)
     )
     # A single specific fiscal year in the question (e.g. "FY2025") pins the
     # answer to one value per company → a snapshot (bar), never a trend line.
-    pinned_year = len(set(re.findall(r"20\d{2}", question))) == 1
+    pinned_year = len(named_years) == 1 and not _OPEN_RANGE_RE.search(question)
     max_years = max((len(v) for v in by_ticker.values()), default=0)
 
-    # LINE — a metric over >=3 fiscal years (single or multi company), when the
-    # question isn't pinned to one specific fiscal year. Two-point or single-year
-    # data never becomes a line; a one-year multi-company ask is a bar (below).
-    # A requested company with no data becomes an all-null (gap) series.
-    if max_years >= 3 and not pinned_year and (len(tickers) == 1 or wants_time):
+    # LINE — a time series. An EXPLICIT time intent (a named range like "FY2023 to
+    # FY2024", or a trend/"over time"/"since" phrasing) needs only >=2 fiscal years
+    # to be worth a line — including a two-point from→to change; an UNSCOPED single
+    # metric ("what is Apple's D/E") needs >=3 years before it's plotted as a line.
+    # A single pinned year is never a line. A requested company with no data
+    # becomes an all-null (gap) series.
+    if not pinned_year and (
+        (wants_time and max_years >= 2) or
+        (not wants_time and len(tickers) == 1 and max_years >= 3)
+    ):
         years = sorted({y for v in by_ticker.values() for y in v})
         series = [
             {"ticker": t, "points": [{"year": y, "value": by_ticker.get(t, {}).get(y)} for y in years]}
@@ -1388,6 +1394,41 @@ def build_graph_chart(
                 "year": year, "bars": bars, "caption": caption}
 
     return None
+
+
+# Cues that a single named year is an OPEN-ENDED lower bound ("since 2021",
+# "trend since 2020") rather than one specific year ("in FY2024").
+_OPEN_RANGE_RE = re.compile(
+    r"\b(since|over|last|past|trend|history|each year|by year|onwards?|through|recent)\b",
+    re.IGNORECASE,
+)
+
+
+def _row_fy(r: dict) -> Optional[int]:
+    """The 4-digit fiscal year of a SPARQL row, or None."""
+    try:
+        return int(str(r.get("fiscalYear") or "").split(".")[0][:4])
+    except (TypeError, ValueError):
+        return None
+
+
+def _asked_year_range(question: str) -> Optional[tuple[int, Optional[int]]]:
+    """The fiscal-year window the question asks about, as (lo, hi) — hi None means
+    open-ended — or None when no explicit year is named (use the full series).
+
+      "from FY2023 to FY2024" / "2023 and 2024" -> (2023, 2024)   bounded range
+      "operating income in FY2024"              -> (2024, 2024)   one specific year
+      "revenue since 2021" / "trend since 2020" -> (2021, None)   open-ended start
+      "revenue over the last 5 years" (no year) -> None           full series
+    """
+    years = sorted({int(y) for y in re.findall(r"20\d{2}", question)})
+    if not years:
+        return None
+    if len(years) >= 2:
+        return years[0], years[-1]
+    if _OPEN_RANGE_RE.search(question):
+        return years[0], None
+    return years[0], years[0]
 
 
 def _graph_prompt(question: str) -> tuple[Optional[str], str, list[dict], Optional[dict]]:
@@ -1438,6 +1479,22 @@ def _graph_prompt(question: str) -> tuple[Optional[str], str, list[dict], Option
     if not rows:
         logger.info("SPARQL returned 0 rows for: %s", question[:80])
         return None, "", []
+
+    # Scope the rows to the fiscal-year window the question actually asks about.
+    # A multi-year SPARQL deliberately returns the FULL series (so the model can
+    # compute a year-over-year change), but that series must not leak into the
+    # chart (over-reaching x-range, e.g. plotting FY2021–FY2026 for a
+    # "FY2023 → FY2024" question) or the citation cards (which would otherwise
+    # preview the EARLIEST year instead of the year the claim is about). Clipping
+    # here — before the table, references and chart are built — keeps prose,
+    # chart and citations on the same asked scope.
+    yr_range = _asked_year_range(question)
+    if yr_range:
+        lo, hi = yr_range
+        scoped = [r for r in rows if _row_fy(r) is not None
+                  and lo <= _row_fy(r) <= (hi if hi is not None else 9999)]
+        if scoped:  # never clip away everything (asked year may be unavailable)
+            rows = scoped
 
     # Pre-format every value to its exact unit/scale so the model copies figures
     # verbatim (no rescaling/rounding — the old $391,000M→$391B seam).
