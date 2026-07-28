@@ -209,7 +209,16 @@ app.get('/api/session', (req, res) => {
 // matters: Express matches the first registered handler for this exact path.
 app.post('/api/chat/stream', streamingApiForwarder);
 
-const PY_ROUTES = ['/api', '/extract', '/ingest-status', '/market', '/metrics', '/search', '/compare-metrics', '/indexed', '/analysis', '/health'];
+// '/analysis' is BOTH a Python API namespace (/analysis/report, /analysis/trends,
+// /analysis/prediction, /analysis/quarterly, /analysis/compare-report, …) AND a
+// client-side route (the Analysis screen). Forward only SUBPATHS to Python; let a
+// bare "/analysis" navigation fall through to the SPA catch-all below, so a hard
+// refresh / deep link on the Analysis screen serves index.html (the app boots and
+// client-routes to Analysis) instead of the API's JSON 404. Mounted at /analysis,
+// req.path is the remainder ("/" for a bare hit, "/trends/NVDA" for an API call).
+app.use('/analysis', (req, res, next) => (req.path === '/' ? next() : pythonApiForwarder(req, res)));
+
+const PY_ROUTES = ['/api', '/extract', '/ingest-status', '/market', '/metrics', '/search', '/compare-metrics', '/indexed', '/health'];
 app.use(PY_ROUTES, pythonApiForwarder);
 
 // --- Proxy Endpoint ---

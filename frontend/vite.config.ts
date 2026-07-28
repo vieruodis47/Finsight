@@ -19,6 +19,16 @@ export default defineConfig(({ mode }) => {
           // Use 127.0.0.1 (not localhost) — macOS AirPlay Receiver owns *:5000
           // on IPv6, so 'localhost' resolves to ::1 and hits AirPlay instead of Node.
           '/api': 'http://127.0.0.1:5000',
+          // '/analysis' is both a Python API namespace and the client Analysis
+          // route. Proxy only /analysis/<subpath> API calls; a bare "/analysis"
+          // navigation (hard refresh / deep link) serves the SPA shell instead.
+          '/analysis': {
+            target: 'http://127.0.0.1:5000',
+            bypass: (req: { url?: string }) => {
+              const p = (req.url || '').split('?')[0];
+              if (p === '/analysis' || p === '/analysis/') return '/index.html';
+            },
+          },
           '/extract': 'http://127.0.0.1:5000',
           '/ingest-status': 'http://127.0.0.1:5000',
           '/market': 'http://127.0.0.1:5000',

@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, RefObject } from 'react';
 import { breakpoint } from '../theme';
+import type { ViewState } from '../types';
 
 /**
  * Returns a debounced copy of `value` that only updates after `delay` ms of
@@ -113,34 +114,63 @@ export function useOnClickOutside(
 }
 
 // ---------------------------------------------------------------------------
-// Minimal client-side router. Ticker-bearing URLs (/company/:t, /compare/:a/:p)
-// are real, shareable, deep-linkable routes; the top-level screens
-// (dashboard/documents/chat/analysis/help/settings) are still useState-driven
-// views in App.tsx (they are NOT URL-addressable — see the nav audit).
+// Minimal client-side router. Every screen is now URL-addressable so a hard
+// refresh / deep link lands on the right view:
+//   - top-level screens: "/" (dashboard), /documents, /chat, /analysis, /help,
+//     /settings  → { name: 'view', view }
+//   - ticker-bearing:    /company/:t, /compare/:a/:p (shareable, deep-linkable)
+// App.tsx DERIVES its current view from this route (no separate useState), so
+// the URL is the single source of truth and the two can't drift.
 //
 // No history library: pushState + a popstate listener cover back/forward and
 // shareable URLs. Both server.js (production, behind Cloud Run) and Vite's dev
 // server fall back to index.html for unknown paths, so a hard refresh on
-// /compare/AAPL/DELL loads the SPA shell and this hook parses the URL from there.
-//
-// `home` is exactly "/" (the app root); anything else that isn't a company /
-// compare URL is `notfound`, so a mistyped or stale deep link renders a real
-// 404 page instead of silently showing the dashboard.
+// /analysis or /compare/AAPL/DELL loads the SPA shell and this hook parses the
+// URL from there. Anything that matches no pattern is `notfound`, so a mistyped
+// or stale link renders a real 404 page instead of silently showing a screen.
 // ---------------------------------------------------------------------------
 
+// Top-level screen ↔ path. "/" is the canonical dashboard path; "/dashboard" is
+// accepted as an alias (both parse to the dashboard view).
+const VIEW_TO_PATH: Record<ViewState, string> = {
+  dashboard: '/',
+  documents: '/documents',
+  chat:      '/chat',
+  analysis:  '/analysis',
+  help:      '/help',
+  settings:  '/settings',
+};
+const PATH_TO_VIEW: Record<string, ViewState> = {
+  '/':          'dashboard',
+  '/dashboard': 'dashboard',
+  '/documents': 'documents',
+  '/chat':      'chat',
+  '/analysis':  'analysis',
+  '/help':      'help',
+  '/settings':  'settings',
+};
+
+// The URL for a top-level screen, used by App's nav so the two directions
+// (click → URL, URL → view) share one mapping and never disagree.
+export const viewPath = (view: ViewState): string => VIEW_TO_PATH[view];
+
 export type Route =
-  | { name: 'home' }
+  | { name: 'view'; view: ViewState }
   | { name: 'company'; ticker: string }
   | { name: 'compare'; anchor: string; peer: string }
   | { name: 'notfound'; path: string };
 
 function parseRoute(pathname: string): Route {
-  if (pathname === '/' || pathname === '') return { name: 'home' };
+  // Normalise a trailing slash (except the root) so "/analysis/" == "/analysis".
+  const path = pathname !== '/' && pathname.endsWith('/') ? pathname.slice(0, -1) : (pathname || '/');
 
-  const company = pathname.match(/^\/company\/([^/]+)\/?$/);
+  const view = PATH_TO_VIEW[path];
+  if (view) return { name: 'view', view };
+
+  const company = path.match(/^\/company\/([^/]+)$/);
   if (company) return { name: 'company', ticker: decodeURIComponent(company[1]) };
 
-  const compare = pathname.match(/^\/compare\/([^/]+)\/([^/]+)\/?$/);
+  const compare = path.match(/^\/compare\/([^/]+)\/([^/]+)$/);
   if (compare) {
     return {
       name: 'compare',

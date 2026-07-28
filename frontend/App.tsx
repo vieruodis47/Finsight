@@ -27,7 +27,7 @@ import {
 } from './services/gemini';
 import { companyKey } from './utils/company';
 import { ChatProvider } from './context/ChatContext';
-import { useIsTablet, useIsMobile, useRoute, useOnClickOutside } from './utils/hooks';
+import { useIsTablet, useIsMobile, useRoute, useOnClickOutside, viewPath } from './utils/hooks';
 
 const NAV_ITEMS: { view: ViewState; label: string; icon: React.ReactNode }[] = [
   { view: 'dashboard', label: 'Dashboard', icon: <LayoutDashboard size={17} /> },
@@ -53,7 +53,11 @@ const App: React.FC = () => {
   const isMobile = useIsMobile();          // <= 768px: sidebar becomes an off-canvas drawer
   const { route, navigate }                 = useRoute();
   const [showSplash, setShowSplash]         = useState(true);
-  const [currentView, setCurrentView]       = useState<ViewState>('dashboard');
+  // The active top-level screen is DERIVED from the URL (single source of truth),
+  // so a hard refresh / deep link on /analysis, /documents, … lands on the right
+  // screen and browser back/forward Just Works. A /company URL shows the
+  // dashboard; /compare and /notfound render their own branch below.
+  const currentView: ViewState = route.name === 'view' ? route.view : 'dashboard';
   const [documents, setDocuments]           = useState<Document[]>([]);
   const [collapsed, setCollapsed]           = useState(false);
   const [selectedTicker, setSelectedTicker] = useState<string | null>(null);
@@ -71,7 +75,7 @@ const App: React.FC = () => {
   // Close the drawer whenever we leave the mobile range (so it can't be stuck
   // open behind a now-fixed sidebar) or navigate to a different view/route.
   React.useEffect(() => { if (!isMobile) setDrawerOpen(false); }, [isMobile]);
-  React.useEffect(() => { setDrawerOpen(false); }, [currentView, route]);
+  React.useEffect(() => { setDrawerOpen(false); }, [route]);
 
   const closeDrawer = React.useCallback(() => {
     setDrawerOpen(false);
@@ -127,16 +131,11 @@ const App: React.FC = () => {
     navigate(`/compare/${encodeURIComponent(anchor)}/${encodeURIComponent(peer)}`);
   };
 
-  // Switch to a top-level nav view. Top-level views render only at the app root
-  // ("/"). If we're on any other URL — /compare and /notfound take precedence
-  // over renderView(), and /company puts a ticker in the URL — navigate back to
-  // "/" so the selected view actually renders AND the URL reflects it. Without
-  // this, clicking a sidebar item from the compare view or a 404 would silently
-  // do nothing (the route still wins).
-  const selectView = (view: ViewState) => {
-    setCurrentView(view);
-    if (route.name !== 'home') navigate('/');
-  };
+  // Switch to a top-level nav screen by navigating to its URL. Because
+  // currentView is derived from the route, this one call updates the URL, the
+  // rendered screen, the active-nav highlight, and browser history together —
+  // and works identically from the compare view, a /company URL, or a 404.
+  const selectView = (view: ViewState) => navigate(viewPath(view));
 
   const [hoveredCompany, setHoveredCompany] = useState<string | null>(null);
 
@@ -341,7 +340,8 @@ const App: React.FC = () => {
   React.useEffect(() => {
     if (route.name !== 'company') return;
     setSelectedTicker(route.ticker.toUpperCase());
-    setCurrentView('dashboard');
+    // currentView is derived from the route ('company' → dashboard), so no view
+    // state to set here.
   }, [route]);
 
   // Deep-link render WITHOUT ingest. For a /company/:ticker with no local
@@ -401,7 +401,7 @@ const App: React.FC = () => {
   // ticker (compare-metrics/market work for any SEC ticker). Neither should be
   // swallowed by the empty-documents gate. `notfound` falls through to the app
   // shell below, which renders the 404 page (with nav still available).
-  if (documents.length === 0 && route.name === 'home') {
+  if (documents.length === 0 && route.name === 'view' && route.view === 'dashboard') {
     return (
       <ChatProvider documents={documents}>
         <GettingStarted onAddCompany={handleAddCompany} />
@@ -412,7 +412,7 @@ const App: React.FC = () => {
   const renderView = () => {
     switch (currentView) {
       case 'dashboard': return <Dashboard documents={documents} selectedTicker={selectedTicker} />;
-      case 'documents': return <DocumentManager documents={documents} onAddDocument={handleAddDocument} onRemoveDocument={handleRemoveDocument} onFetched={() => setCurrentView('dashboard')} onRetry={handleRetry} />;
+      case 'documents': return <DocumentManager documents={documents} onAddDocument={handleAddDocument} onRemoveDocument={handleRemoveDocument} onFetched={() => navigate(viewPath('dashboard'))} onRetry={handleRetry} />;
       case 'chat':      return <ChatInterface documents={documents} />;
       case 'analysis':  return <AnalysisView documents={documents} />;
       case 'help':      return <HelpView />;
