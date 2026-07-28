@@ -21,11 +21,18 @@ interface ResponsiveChartProps {
 
 export const ResponsiveChart: React.FC<ResponsiveChartProps> = ({ height, children }) => {
   const [ref, width] = useElementWidth<HTMLDivElement>();
+  // Mount Recharts' ResponsiveContainer only ONCE we've measured a real width.
+  // The wrapper div is always laid out at the bounded `height`, so this reserves
+  // the space (no layout shift) but defers the chart until the container has a
+  // size — which avoids Recharts' transient "width(-1)/height(-1)" console
+  // warning for a chart that first renders inside an off-screen carousel slide.
   return (
     <div ref={ref} style={{ width: '100%', height }}>
-      <ResponsiveContainer width="100%" height="100%">
-        {children(width)}
-      </ResponsiveContainer>
+      {width > 0 && (
+        <ResponsiveContainer width={width} height={height}>
+          {children(width)}
+        </ResponsiveContainer>
+      )}
     </div>
   );
 };

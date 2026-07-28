@@ -227,9 +227,14 @@ const MarginBars: React.FC<{ data: CompareMetricsResult; year: string }> = ({ da
 // comparison is a pure XBRL read (fetchCompareMetrics) — works for any SEC pair,
 // spends zero embedding quota. The normalized price chart lands in the next diff.
 const CompareView: React.FC<CompareViewProps> = ({ anchor, peer, peers, onBack, onSelectPeer }) => {
+  const isMobile = useIsMobile();
   const [pickerOpen, setPickerOpen] = useState(false);
   const pickerWrapRef = useRef<HTMLDivElement>(null);
   useOnClickOutside(pickerWrapRef, () => setPickerOpen(false), pickerOpen);
+
+  // On touch widths every nav control meets the 44px minimum tap target
+  // (WCAG 2.5.5); desktop keeps its compact sizing unchanged.
+  const ctrlH = isMobile ? 44 : 30;
 
   const [data, setData]       = useState<CompareMetricsResult | null>(null);
   const [loading, setLoading] = useState(true);
@@ -254,7 +259,8 @@ const CompareView: React.FC<CompareViewProps> = ({ anchor, peer, peers, onBack, 
   const nextPeer = n > 0 ? peers[(idx + 1) % n] : peer;
 
   const chevronBtn: React.CSSProperties = {
-    width: 26, height: 26, display: 'flex', alignItems: 'center', justifyContent: 'center',
+    width: isMobile ? 44 : 26, height: isMobile ? 44 : 26,
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
     borderRadius: 6, border: `0.5px solid ${c.border}`, background: c.bg,
     cursor: 'pointer', color: c.textMuted, padding: 0,
   };
@@ -269,7 +275,7 @@ const CompareView: React.FC<CompareViewProps> = ({ anchor, peer, peers, onBack, 
         <button
           onClick={onBack}
           style={{
-            display: 'flex', alignItems: 'center', gap: 6, height: 30, padding: '0 12px 0 9px',
+            display: 'flex', alignItems: 'center', gap: 6, height: ctrlH, padding: '0 12px 0 9px',
             borderRadius: 7, border: `0.5px solid ${c.border}`, background: c.bg,
             fontSize: 13, fontWeight: 500, color: c.text, cursor: 'pointer', fontFamily: font.ui,
           }}
@@ -318,7 +324,7 @@ const CompareView: React.FC<CompareViewProps> = ({ anchor, peer, peers, onBack, 
             aria-haspopup="listbox"
             aria-expanded={pickerOpen}
             style={{
-              display: 'flex', alignItems: 'center', gap: 6, height: 30, padding: '0 12px',
+              display: 'flex', alignItems: 'center', gap: 6, height: ctrlH, padding: '0 12px',
               borderRadius: 7, border: `0.5px solid ${c.border}`, background: pickerOpen ? c.hover : c.bg,
               fontSize: 13, color: c.textMuted, cursor: 'pointer', fontFamily: font.ui,
             }}
