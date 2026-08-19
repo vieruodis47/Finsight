@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import re
+import time
 from typing import Iterator, Literal, Optional
 
 from fastapi import APIRouter
@@ -27,6 +28,7 @@ from pydantic import BaseModel, Field
 from google.genai import types
 
 from .embeddings import search, get_genai_client, FilingChunk
+from backend.obs import collect
 
 logger = logging.getLogger(__name__)
 
@@ -428,6 +430,13 @@ def _chat_event_stream(
     def _line(obj: dict) -> str:
         return json.dumps(obj, ensure_ascii=False) + "\n"
 
+    # Per-request stage timing (obs.collect binds a contextvar the deep retrieval
+    # stages record into). Additive only: the numbers ride along in the terminal
+    # `done` event under `timings` and never touch answer/citation content.
+    _timings_cm = collect()
+    timings = _timings_cm.__enter__()
+    t0 = time.perf_counter()
+
     # --- Pre-generation: route + retrieve (the "bird" phase) -----------------
     graph_sources: list[dict] = []
     chart: Optional[dict] = None   # inline comparison/over-time chart (graph path)
@@ -451,6 +460,12 @@ def _chat_event_stream(
             chunks = []
             path = "none"
 
+    # Wall-clock of the whole pre-generation "bird" phase (classify + retrieval).
+    # The individual classify/embed/vector_search/graph stages were recorded by
+    # obs.stage() inside the router/search; this is their combined latency
+    # (max of the parallel branches on the "both" path), i.e. the floor on TTFT.
+    timings.add("retrieval_total", (time.perf_counter() - t0) * 1000.0)
+
     # One reference list across paths: vector passages (numbered, inline-cited) +
     # graph/XBRL fact cards, same shape → one consistent citation UI.
     references = _assemble_sources(chunks, graph_sources)
@@ -461,15 +476,22 @@ def _chat_event_stream(
     # to the client for live rendering; the reference list + validated marker set
     # are attached only in the terminal `done` event.
     parts: list[str] = []
+    first_token_at: Optional[float] = None
     try:
         for seg in segments:
             if seg["kind"] == "text":
                 if seg["text"]:
+                    if first_token_at is None:
+                        first_token_at = time.perf_counter()
+                        timings.add("ttft", (first_token_at - t0) * 1000.0)
                     parts.append(seg["text"])
                     yield _line({"type": "token", "text": seg["text"]})
             else:
                 for delta in generate_stream(seg["system"], seg["prompt"], seg["temperature"]):
                     if delta:
+                        if first_token_at is None:
+                            first_token_at = time.perf_counter()
+                            timings.add("ttft", (first_token_at - t0) * 1000.0)
                         parts.append(delta)
                         yield _line({"type": "token", "text": delta})
         full_answer = "".join(parts)
@@ -488,11 +510,21 @@ def _chat_event_stream(
             references, valid, chart = [], [], None
         else:
             valid = validate_citations(full_answer, chunks)
+        # Finalize timing: total request wall-clock and pure generation time.
+        now = time.perf_counter()
+        timings.add("total", (now - t0) * 1000.0)
+        if first_token_at is not None:
+            timings.add("generation", (now - first_token_at) * 1000.0)
+        stage_ms = timings.as_dict()
+        logger.info("chat timings (path=%s): %s", path, stage_ms)
         done_evt = {
             "type": "done",
             "sources": references,
             "valid_citations": valid,
             "retrieval_path": path,
+            # Additive per-stage latency (ms). Existing clients ignore this key;
+            # the Phase 1 benchmark harness reads it straight off the wire.
+            "timings": stage_ms,
         }
         # Inline chart built from the SAME structured rows that grounded the
         # answer (never a separately computed number). Only present for chartable
@@ -505,6 +537,10 @@ def _chat_event_stream(
         # partial text already arrived (it never blanks the bubble).
         logger.warning("Stream generation error: %s", exc)
         yield _line({"type": "error", "message": "The response was interrupted. Please try again."})
+    finally:
+        # Always unbind the per-request timings collector (reset the contextvar),
+        # even if the client disconnects mid-stream and the generator is closed.
+        _timings_cm.__exit__(None, None, None)
 
 
 @router.post("/chat/stream")

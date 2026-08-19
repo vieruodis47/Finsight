@@ -1824,7 +1824,10 @@ def prepare_chat_stream(
     else:
         vector_scope = None
 
-    path = classify_question(question)
+    from ..obs import stage, bind_context
+
+    with stage("classify"):
+        path = classify_question(question)
     logger.info("Router(stream): path=%s | %s", path, question[:80])
 
     def _vector_prep_raw() -> tuple[Optional[str], list, Optional[str]]:
@@ -1857,8 +1860,12 @@ def prepare_chat_stream(
         segs, chunks, vpath = _vector_segments()
         return segs, chunks, [], vpath, None
 
+    def _timed_graph_prompt(q: str):
+        with stage("graph"):
+            return _graph_prompt(q)
+
     if path == "graph":
-        gprompt, gtail, grefs, gchart = _graph_prompt(question)
+        gprompt, gtail, grefs, gchart = _timed_graph_prompt(question)
         if gprompt is not None:
             segs = [_llm(_GRAPH_SYSTEM, gprompt, 0.1)]
             if gtail:
@@ -1869,9 +1876,12 @@ def prepare_chat_stream(
 
     # path == "both": retrieve both halves concurrently (the bird phase), then
     # stream graph generation followed by vector generation.
+    # bind_context() copies the active timings collector into each worker thread
+    # so the embed / vector_search / graph stage timers still record (contextvars
+    # do not auto-propagate across ThreadPoolExecutor submissions).
     with ThreadPoolExecutor(max_workers=2) as pool:
-        fut_graph = pool.submit(_graph_prompt, question)
-        fut_vector = pool.submit(_vector_prep_raw)
+        fut_graph = pool.submit(bind_context().run, _timed_graph_prompt, question)
+        fut_vector = pool.submit(bind_context().run, _vector_prep_raw)
         gprompt, gtail, grefs, gchart = fut_graph.result()
         vprompt, chunks, verr = fut_vector.result()
 

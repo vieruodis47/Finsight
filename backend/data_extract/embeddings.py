@@ -1142,7 +1142,10 @@ def search(
     company's filing text. When both are given, `tickers` wins. When neither is
     given, the search is global (a legitimate corpus-wide question).
     """
-    qvec = embed_texts([query], task_type="RETRIEVAL_QUERY")[0]
+    from backend.obs import stage
+
+    with stage("embed"):
+        qvec = embed_texts([query], task_type="RETRIEVAL_QUERY")[0]
 
     # Normalize the ticker scope: prefer the multi-ticker list, fall back to the
     # single ticker. Empty/whitespace entries are dropped.
@@ -1177,7 +1180,8 @@ def search(
             q = q.add_parameter(f"tk{i}", t)
         if form:
             q = q.add_parameter("form", form)
-        results = list(q)
+        with stage("vector_search"):
+            results = list(q)
 
     # Silent-truncation breadcrumb. A GLOBAL (unfiltered) query returning fewer
     # than k chunks almost always means min_similarity is too high for the
