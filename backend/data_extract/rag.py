@@ -308,6 +308,137 @@ def generate_stream(system: str, prompt: str, temperature: float) -> Iterator[st
             yield delta
 
 
+# --- B2: hedged LLM streaming for a genuine LATENCY tail ----------------------
+# A hedge fires a SECOND identical request if the first hasn't produced a token
+# within a delay; the FIRST attempt to yield a token wins and becomes the SOLE
+# source for the whole segment (one coherent generation). All other attempts are
+# abandoned and their output is DISCARDED BY CONSTRUCTION — the orchestrator only
+# ever yields tokens tagged with the winner's attempt id, independent of whether
+# the loser stops promptly (proved in tests/.../test_llm_hedge.py). When the tail
+# is genuine first-token LATENCY, two independent draws rarely both hit it, so
+# p95/p99 collapses; cost is capped at max_attempts and only on the hedged
+# fraction (measured multiplier via get_hedge_stats()).
+#
+# DEFAULT OFF — and it MUST stay off wherever the tail is RATE-LIMIT driven.
+# Measured 2026-08-20: this deploy is on the Gemini FREE TIER (15 req/min for
+# gemini-3.1-flash-lite); the observed ~10s "tail" was HTTP 429 RESOURCE_EXHAUSTED
+# (retryDelay ~15s), not latency. Hedging fires a 2nd request that consumes MORE
+# of the 15/min budget → MORE 429s: a vector A/B measured hedge-ON 29 errors vs
+# hedge-OFF 18. So hedging is COUNTERPRODUCTIVE under a quota tail. The correct
+# fix there is a higher tier / client-side rate limiter — not hedging. Enable this
+# (FINSIGHT_LLM_HEDGE=on) ONLY once the tail is confirmed latency-bound, not quota.
+_HEDGE_ENABLED = os.getenv("FINSIGHT_LLM_HEDGE", "off").strip().lower() in ("on", "1", "true")
+_HEDGE_DELAY_S = float(os.getenv("FINSIGHT_LLM_HEDGE_MS", "1500")) / 1000.0
+_HEDGE_MAX_ATTEMPTS = int(os.getenv("FINSIGHT_LLM_HEDGE_ATTEMPTS", "2"))
+
+_HEDGE_STATS: dict[str, int] = {"segments": 0, "attempts": 0, "hedged_segments": 0}
+
+
+def get_hedge_stats() -> dict[str, float]:
+    s = dict(_HEDGE_STATS)
+    s["cost_multiplier"] = round(s["attempts"] / s["segments"], 3) if s["segments"] else 1.0
+    return s
+
+
+def _hedged_stream(make_stream, hedge_delay_s: float, max_attempts: int = 2,
+                   on_attempt=None) -> Iterator[str]:
+    """Race up to `max_attempts` copies of a token stream, launched `hedge_delay_s`
+    apart, until one yields its first token. That attempt wins and is the SOLE
+    source; every other attempt is signalled to stop and its tokens are discarded.
+
+    `make_stream(attempt_id) -> Iterator[str]` builds one independent attempt.
+    Injectable so the guardrail test can race deterministic fakes with no network.
+    """
+    import queue
+    import threading
+
+    q: "queue.Queue" = queue.Queue()
+    stops: dict[int, threading.Event] = {}
+    live: set[int] = set()      # started, not yet ended/errored/cancelled
+    last_err = [None]
+
+    def _run(aid: int) -> None:
+        stop = stops[aid]
+        try:
+            for delta in make_stream(aid):
+                if stop.is_set():
+                    break
+                if delta:
+                    q.put((aid, "tok", delta))
+            q.put((aid, "end", None))
+        except Exception as exc:  # noqa: BLE001 — surfaced via the queue
+            q.put((aid, "err", exc))
+
+    def _launch(aid: int) -> None:
+        stops[aid] = threading.Event()
+        live.add(aid)
+        if on_attempt:
+            on_attempt(aid)
+        threading.Thread(target=_run, args=(aid,), daemon=True).start()
+
+    _launch(0)
+    winner = None
+    while True:
+        # Before a winner exists, wait only up to the hedge delay so we can launch
+        # the next attempt on a stall; after, block for the winner's next token.
+        timeout = hedge_delay_s if (winner is None and len(stops) < max_attempts) else None
+        try:
+            aid, kind, val = q.get(timeout=timeout)
+        except queue.Empty:
+            _launch(len(stops))          # stall: hedge in the next attempt
+            continue
+
+        if winner is None:
+            if kind == "tok":
+                winner = aid
+                for other, ev in stops.items():   # cancel every other attempt
+                    if other != winner:
+                        ev.set()
+                yield val
+            else:  # this attempt produced no token
+                live.discard(aid)
+                if kind == "err":
+                    last_err[0] = val
+                if not live:
+                    if len(stops) < max_attempts:
+                        _launch(len(stops))       # try the next attempt now
+                    elif last_err[0] is not None:
+                        raise last_err[0]         # all attempts failed
+                    else:
+                        return                    # all ended empty
+        else:
+            if aid != winner:
+                continue                          # DISCARD loser output (guardrail b)
+            if kind == "tok":
+                yield val
+            elif kind == "err":
+                raise val                         # winner failed mid-stream
+            else:  # "end"
+                return
+
+
+def _llm_stream(system: str, prompt: str, temperature: float) -> Iterator[str]:
+    """Segment-level LLM stream: hedged when enabled, else a single attempt."""
+    if not _HEDGE_ENABLED:
+        yield from generate_stream(system, prompt, temperature)
+        return
+    _HEDGE_STATS["segments"] += 1
+    n_attempts = [0]
+
+    def _on_attempt(_aid: int) -> None:
+        n_attempts[0] += 1
+        _HEDGE_STATS["attempts"] += 1
+
+    try:
+        yield from _hedged_stream(
+            lambda _aid: generate_stream(system, prompt, temperature),
+            _HEDGE_DELAY_S, _HEDGE_MAX_ATTEMPTS, on_attempt=_on_attempt,
+        )
+    finally:
+        if n_attempts[0] > 1:
+            _HEDGE_STATS["hedged_segments"] += 1
+
+
 def answer_question(
     question: str,
     k: int = 5,
@@ -436,6 +567,10 @@ def _chat_event_stream(
     _timings_cm = collect()
     timings = _timings_cm.__enter__()
     t0 = time.perf_counter()
+    # Snapshot the process-global hedge counters so we can report THIS request's
+    # LLM attempts/segments (accurate under the sequential benchmark; the global
+    # get_hedge_stats() is the source of truth under concurrency).
+    _hedge0 = (_HEDGE_STATS["segments"], _HEDGE_STATS["attempts"])
 
     # --- Pre-generation: route + retrieve (the "bird" phase) -----------------
     graph_sources: list[dict] = []
@@ -490,7 +625,7 @@ def _chat_event_stream(
                     parts.append(seg["text"])
                     yield _line({"type": "token", "text": seg["text"]})
             else:
-                for delta in generate_stream(seg["system"], seg["prompt"], seg["temperature"]):
+                for delta in _llm_stream(seg["system"], seg["prompt"], seg["temperature"]):
                     if delta:
                         if first_token_at is None:
                             first_token_at = time.perf_counter()
@@ -518,6 +653,8 @@ def _chat_event_stream(
         timings.add("total", (now - t0) * 1000.0)
         if first_token_at is not None:
             timings.add("generation", (now - first_token_at) * 1000.0)
+        timings.meta["llm_segments"] = _HEDGE_STATS["segments"] - _hedge0[0]
+        timings.meta["llm_attempts"] = _HEDGE_STATS["attempts"] - _hedge0[1]
         stage_ms = timings.as_dict()
         logger.info("chat timings (path=%s): %s", path, stage_ms)
         done_evt = {
