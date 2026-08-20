@@ -962,6 +962,143 @@ def _build_sparql(question: str, tickers: list[str]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# A2: direct in-registry lookup for single-fact / small-fan-out shapes (#1–#5)
+# ---------------------------------------------------------------------------
+# Shapes #1–#5 (>=1 ticker) are pure reads over the in-memory _registry that
+# build_graph is itself built from, so they can bypass the ~2–11s rdflib SPARQL
+# execution entirely (~microseconds). Shape #6 (all-company ranking) and the
+# no-ticker all-company multi-metric STAY on SPARQL (A1). Controlled by env
+# FINSIGHT_GRAPH_A2:
+#   "off"    -> SPARQL only (A1)
+#   "shadow" -> compute BOTH, log any drift, SERVE SPARQL (validation mode)
+#   "on"     -> SERVE registry rows, SPARQL fallback on miss/None/exception
+# Registry rows are built to match run_sparql() output byte-for-byte: same keys,
+# same float values, same ORDER BY — verified by the shadow-compare before "on".
+_A2_MODE = os.getenv("FINSIGHT_GRAPH_A2", "on").strip().lower()
+
+# multi-metric column -> registry field name (mirrors the 5 OPTIONALs in the
+# _sparql_*_multi_metric templates).
+_A2_MULTI = (
+    ("revenue", "total_revenue_millions"),
+    ("netIncome", "net_income_millions"),
+    ("netMargin", "net_margin_pct"),
+    ("operatingMargin", "operating_margin_pct"),
+    ("roe", "return_on_equity_pct"),
+)
+# Same categories, same order, that rdf_graph._add_metric_triples emits from.
+_A2_CATEGORIES = ("income_statement", "balance_sheet", "cash_flow", "computed_ratios")
+
+_A2_SHADOW: dict[str, int] = {"checked": 0, "mismatch": 0}
+
+
+def get_a2_shadow_stats() -> dict[str, int]:
+    return dict(_A2_SHADOW)
+
+
+def _flat_metrics(ticker: str, year: str) -> Optional[dict]:
+    """name->float for one (ticker, year), merged across the 4 metric categories
+    EXACTLY as rdf_graph._add_metric_triples emits them (skip None / non-floatable)
+    so a registry read matches the graph's fs:metricName/fs:metricValue triples."""
+    doc = _registry.get(ticker)
+    if not doc:
+        return None
+    ym = (doc.get("metrics_by_year") or {}).get(year)
+    if ym is None:
+        return None
+    flat: dict[str, float] = {}
+    for cat in _A2_CATEGORIES:
+        for name, value in (ym.get(cat) or {}).items():
+            if value is None:
+                continue
+            try:
+                flat[name] = float(value)
+            except (TypeError, ValueError):
+                continue
+    return flat
+
+
+def _registry_years(ticker: str) -> list[str]:
+    doc = _registry.get(ticker)
+    return list((doc.get("metrics_by_year") or {}).keys()) if doc else []
+
+
+def _registry_single_metric_rows(tickers: list[str], metric: str,
+                                 year: Optional[str] = None) -> list[dict]:
+    """{ticker, fiscalYear, value} for each (ticker, year) that HAS the metric —
+    mirrors the single-metric templates (a row exists only where metricName binds)."""
+    rows: list[dict] = []
+    for t in tickers:
+        years = [year] if year else _registry_years(t)
+        for y in years:
+            flat = _flat_metrics(t, y)
+            if flat and metric in flat:
+                rows.append({"ticker": t, "fiscalYear": y, "value": flat[metric]})
+    return rows
+
+
+def _registry_multi_metric_rows(tickers: list[str]) -> list[dict]:
+    """{ticker, fiscalYear, [revenue,netIncome,netMargin,operatingMargin,roe]} for
+    EVERY (ticker, year) with a filing node — mirrors the OPTIONAL multi-metric
+    templates: a row per year, each of the 5 columns present only if the metric is."""
+    rows: list[dict] = []
+    for t in tickers:
+        for y in _registry_years(t):
+            flat = _flat_metrics(t, y) or {}
+            row: dict = {"ticker": t, "fiscalYear": y}
+            for col, name in _A2_MULTI:
+                if name in flat:
+                    row[col] = flat[name]
+            rows.append(row)
+    return rows
+
+
+def _registry_lookup(question: str, tickers: list[str]) -> Optional[list[dict]]:
+    """Registry-backed equivalent of run_sparql(_build_sparql(question, tickers))
+    for shapes #1–#5. Returns rows in the SAME shape + ORDER BY as SPARQL, or None
+    when the shape stays on SPARQL (no ticker: shape #6 / all-company multi-metric)."""
+    if not tickers:
+        return None  # #6 single_metric_all / MULTI_METRIC_QUERY -> SPARQL (A1)
+    metric = _detect_metric(question)
+    year_match = _YEAR_RE.search(question)
+    year = re.search(r"20\d{2}", year_match.group()).group() if year_match else None
+    all_years = list(dict.fromkeys(re.findall(r"20\d{2}", question)))
+    is_multiyear = len(all_years) > 1
+
+    if len(tickers) >= 2:
+        if metric:  # #3 ORDER BY ?ticker ?fiscalYear
+            rows = _registry_single_metric_rows(tickers, metric)
+            rows.sort(key=lambda r: (r["ticker"], r["fiscalYear"]))
+            return rows
+        # #5 ORDER BY ?ticker ?fiscalYear
+        rows = _registry_multi_metric_rows(tickers)
+        rows.sort(key=lambda r: (r["ticker"], r["fiscalYear"]))
+        return rows
+
+    t = tickers[0]
+    if metric:
+        if is_multiyear or not year:  # #2 single_company ORDER BY DESC(?fiscalYear)
+            rows = _registry_single_metric_rows([t], metric)
+            rows.sort(key=lambda r: r["fiscalYear"], reverse=True)
+            return rows
+        return _registry_single_metric_rows([t], metric, year=year)  # #1 (0/1 row)
+    # #4 single_company_multi_metric ORDER BY ?fiscalYear
+    rows = _registry_multi_metric_rows([t])
+    rows.sort(key=lambda r: r["fiscalYear"])
+    return rows
+
+
+def _shadow_report(question: str, sparql_rows: list[dict], reg_rows: Optional[list[dict]]) -> None:
+    if reg_rows is None:  # shape stayed on SPARQL — nothing to compare
+        return
+    _A2_SHADOW["checked"] += 1
+    if reg_rows != sparql_rows:
+        _A2_SHADOW["mismatch"] += 1
+        logger.warning("A2 shadow MISMATCH q=%r sparql=%d reg=%d | sparql[:2]=%s reg[:2]=%s",
+                       question[:60], len(sparql_rows), len(reg_rows),
+                       sparql_rows[:2], reg_rows[:2])
+
+
+# ---------------------------------------------------------------------------
 # Fix 5 helpers: period-end disclosure + deterministic partial-data note
 # ---------------------------------------------------------------------------
 
@@ -1491,9 +1628,29 @@ def _graph_prompt(question: str) -> tuple[Optional[str], str, list[dict], Option
 
     metric = _detect_metric(question)
     sparql = _build_sparql(question, available)
+
+    def _fetch_rows() -> list[dict]:
+        # A2 "on": serve the registry rows for shapes #1–#5; fall back to SPARQL
+        # when the shape stays on the engine (_registry_lookup -> None) or on error.
+        if _A2_MODE == "on":
+            try:
+                reg = _registry_lookup(question, available)
+            except Exception as exc:
+                logger.warning("A2 registry lookup failed, SPARQL fallback: %s", exc)
+                reg = None
+            if reg is not None:
+                return reg
+        rows_ = run_sparql(g, sparql)
+        if _A2_MODE == "shadow":  # compute both, log drift, SERVE SPARQL
+            try:
+                _shadow_report(question, rows_, _registry_lookup(question, available))
+            except Exception as exc:
+                logger.warning("A2 shadow error: %s", exc)
+        return rows_
+
     try:
-        with stage("sparql"):  # isolated run_sparql timing (A1 verdict metric)
-            rows = run_sparql(g, sparql)
+        with stage("sparql"):  # isolated row-fetch timing (A1/A2 verdict metric)
+            rows = _fetch_rows()
     except Exception as exc:
         logger.warning("SPARQL failed: %s", exc)
         return None, "", [], None
