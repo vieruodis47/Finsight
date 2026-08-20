@@ -80,21 +80,27 @@ def ask(url: str, q: dict, timeout: float = 180.0) -> dict:
     n_tokens = 0
     done = None
     err = None
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        for line in r:
-            line = line.strip()
-            if not line:
-                continue
-            evt = json.loads(line)
-            et = evt.get("type")
-            if et == "token":
-                n_tokens += 1
-                if client_ttft is None:
-                    client_ttft = (time.perf_counter() - t0) * 1000.0
-            elif et == "done":
-                done = evt
-            elif et == "error":
-                err = evt.get("message")
+    # Resilient to per-request stalls: a Gemini tail spike that trips the socket
+    # timeout is recorded as an errored sample (excluded from percentiles) rather
+    # than aborting the whole benchmark run.
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            for line in r:
+                line = line.strip()
+                if not line:
+                    continue
+                evt = json.loads(line)
+                et = evt.get("type")
+                if et == "token":
+                    n_tokens += 1
+                    if client_ttft is None:
+                        client_ttft = (time.perf_counter() - t0) * 1000.0
+                elif et == "done":
+                    done = evt
+                elif et == "error":
+                    err = evt.get("message")
+    except Exception as exc:  # timeout, connection reset, JSON parse mid-stream
+        err = err or f"{type(exc).__name__}: {exc}"
     client_total = (time.perf_counter() - t0) * 1000.0
     timings = (done or {}).get("timings", {})
     return {

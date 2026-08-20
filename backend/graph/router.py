@@ -1233,6 +1233,14 @@ _GRAPH_SYSTEM = (
     "5. Be concise and state the fiscal year for each figure you cite."
 )
 
+# B0: deterministic lead header for the pure-graph streaming path. Emitting it as
+# the FIRST segment makes time-to-first-token retrieval-bound (~0ms post-A2)
+# instead of waiting on the LLM's first token (~1–2s + tail). Mirrors the "both"
+# path's structured-data header (minus the filing-text contrast, since a graph
+# answer has a single section). Deterministic text only — no figures, no
+# citations — so it cannot affect grounding or attribution.
+_GRAPH_ONLY_HEADER = "**From structured financial data (XBRL metrics):**\n\n"
+
 
 # --- Exact, verbatim-ready value formatting (Seam 3: grounded generation) ----
 # Values reach the model already formatted so it never has to do arithmetic.
@@ -2095,7 +2103,8 @@ def _prepare_chat_stream_impl(
     if path == "graph":
         gprompt, gtail, grefs, gchart = _timed_graph_prompt(question)
         if gprompt is not None:
-            segs = [_llm(_GRAPH_SYSTEM, gprompt, 0.1)]
+            # B0: lead with the deterministic header so TTFT is retrieval-bound.
+            segs = [_text(_GRAPH_ONLY_HEADER), _llm(_GRAPH_SYSTEM, gprompt, 0.1)]
             if gtail:
                 segs.append(_text(gtail))
             return segs, [], grefs, "graph", gchart
@@ -2139,7 +2148,9 @@ def _prepare_chat_stream_impl(
         return segs, chunks, grefs, "both", gchart
 
     if had_graph:
-        segs = [_llm(_GRAPH_SYSTEM, gprompt, 0.1)]
+        # "both"-classified but only the graph half returned — same graph-only
+        # shape as the pure-graph branch, so lead with the header too (B0).
+        segs = [_text(_GRAPH_ONLY_HEADER), _llm(_GRAPH_SYSTEM, gprompt, 0.1)]
         if gtail:
             segs.append(_text(gtail))
         return segs, [], grefs, "graph", gchart
