@@ -19,8 +19,10 @@ import json
 import logging
 import os
 import re
+import threading
 import time
-from typing import Iterator, Literal, Optional
+from collections import deque
+from typing import Callable, Iterator, Literal, Optional
 
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
@@ -33,6 +35,106 @@ from backend.obs import collect
 logger = logging.getLogger(__name__)
 
 GEN_MODEL = os.getenv("GEMINI_GEN_MODEL", "gemini-3.1-flash-lite")
+
+# --- Gemini rate limiting + 429 backoff ---------------------------------------
+# The free tier caps gemini-3.1-flash-lite at ~15 requests/min; bursting past it
+# returns HTTP 429 RESOURCE_EXHAUSTED (which surfaced as the ~10s "tail" and the
+# stream errors in Phase 3). A process-wide sliding-window limiter QUEUES calls to
+# stay under the cap (a no-op under normal <RPM traffic; a brief wait under burst,
+# instead of an error), and a bounded backoff retries any 429 that still slips
+# through, honoring the server's RetryInfo delay. Both are configurable and can be
+# disabled (GEMINI_MAX_RPM=0). Applies to every Gemini call — streaming chat and
+# the non-streaming summary/compare paths.
+GEMINI_MAX_RPM = int(os.getenv("GEMINI_MAX_RPM", "15"))
+GEMINI_MAX_RETRIES = int(os.getenv("GEMINI_MAX_RETRIES", "3"))
+GEMINI_RETRY_CAP_S = float(os.getenv("GEMINI_RETRY_CAP_S", "20"))
+
+_LLM_STATS: dict[str, int] = {"calls": 0, "throttle_waits": 0, "retries_429": 0}
+
+
+def get_llm_stats() -> dict[str, int]:
+    return dict(_LLM_STATS)
+
+
+class RateLimiter:
+    """Thread-safe sliding-window limiter: at most `max_per_window` acquisitions in
+    any `window_s`. acquire() blocks the caller until a slot is free (FastAPI runs
+    sync chat in a threadpool, so blocking a worker is the intended backpressure).
+    Clock/sleep are injectable for deterministic tests."""
+
+    def __init__(self, max_per_window: int, window_s: float = 60.0,
+                 clock: Callable[[], float] = time.monotonic,
+                 sleep: Callable[[float], None] = time.sleep) -> None:
+        self.max = max_per_window
+        self.window = window_s
+        self._clock = clock
+        self._sleep = sleep
+        self._hits: deque = deque()
+        self._lock = threading.Lock()
+
+    def acquire(self) -> float:
+        """Block until allowed; return the seconds waited (0.0 if immediate)."""
+        waited = 0.0
+        while True:
+            with self._lock:
+                now = self._clock()
+                while self._hits and now - self._hits[0] >= self.window:
+                    self._hits.popleft()
+                if len(self._hits) < self.max:
+                    self._hits.append(now)
+                    return waited
+                sleep_for = self.window - (now - self._hits[0]) + 0.01
+            waited += sleep_for
+            self._sleep(sleep_for)
+
+
+_LIMITER: Optional[RateLimiter] = RateLimiter(GEMINI_MAX_RPM) if GEMINI_MAX_RPM > 0 else None
+
+_RETRY_DELAY_RE = re.compile(r"(?:retryDelay['\"]?\s*:\s*['\"]?|retry in\s+)(\d+(?:\.\d+)?)s")
+
+
+def _is_rate_limit(exc: Exception) -> bool:
+    if getattr(exc, "code", None) == 429 or getattr(exc, "status_code", None) == 429:
+        return True
+    s = str(exc)
+    return "429" in s or "RESOURCE_EXHAUSTED" in s
+
+
+def _retry_delay_s(exc: Exception) -> Optional[float]:
+    m = _RETRY_DELAY_RE.search(str(exc))
+    return float(m.group(1)) if m else None
+
+
+def _acquire_slot() -> None:
+    _LLM_STATS["calls"] += 1
+    if _LIMITER is not None:
+        if _LIMITER.acquire() > 0:
+            _LLM_STATS["throttle_waits"] += 1
+
+
+def _backoff_sleep(exc: Exception, attempt: int) -> None:
+    """Honor the server's RetryInfo delay (capped), else exponential; count it."""
+    delay = _retry_delay_s(exc)
+    if delay is None:
+        delay = min(2.0 ** attempt, GEMINI_RETRY_CAP_S)
+    delay = min(delay, GEMINI_RETRY_CAP_S)
+    _LLM_STATS["retries_429"] += 1
+    logger.warning("Gemini 429 rate-limited; backing off %.1fs (attempt %d/%d)",
+                   delay, attempt + 1, GEMINI_MAX_RETRIES)
+    time.sleep(delay)
+
+
+def _generate_content_retrying(client, **kwargs):
+    """Non-streaming Gemini call through the limiter, retrying 429 with backoff."""
+    for attempt in range(GEMINI_MAX_RETRIES + 1):
+        _acquire_slot()
+        try:
+            return client.models.generate_content(**kwargs)
+        except Exception as exc:  # noqa: BLE001
+            if _is_rate_limit(exc) and attempt < GEMINI_MAX_RETRIES:
+                _backoff_sleep(exc, attempt)
+                continue
+            raise
 
 SYSTEM_PROMPT = (
     "You are FinSight, an expert financial research assistant.\n"
@@ -276,7 +378,8 @@ def generate_answer(question: str, chunks: list[FilingChunk]) -> str:
     """Generate a grounded answer from retrieved context via Gemini."""
     context = _format_context(chunks)
     client = get_genai_client()
-    resp = client.models.generate_content(
+    resp = _generate_content_retrying(
+        client,
         model=GEN_MODEL,
         contents=f"Context:\n{context}\n\nQuestion:\n{question}",
         config=types.GenerateContentConfig(
@@ -295,17 +398,27 @@ def generate_stream(system: str, prompt: str, temperature: float) -> Iterator[st
     whole answer. Raising propagates to the endpoint, which emits an error event.
     """
     client = get_genai_client()
-    for chunk in client.models.generate_content_stream(
-        model=GEN_MODEL,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            system_instruction=system,
-            temperature=temperature,
-        ),
-    ):
-        delta = getattr(chunk, "text", None)
-        if delta:
-            yield delta
+    config = types.GenerateContentConfig(system_instruction=system, temperature=temperature)
+    for attempt in range(GEMINI_MAX_RETRIES + 1):
+        _acquire_slot()
+        yielded = False
+        try:
+            for chunk in client.models.generate_content_stream(
+                model=GEN_MODEL, contents=prompt, config=config,
+            ):
+                delta = getattr(chunk, "text", None)
+                if delta:
+                    yielded = True
+                    yield delta
+            return
+        except Exception as exc:  # noqa: BLE001
+            # Retry a 429 ONLY before any token has streamed — retrying mid-stream
+            # would duplicate already-emitted text. A 429 fires at request start
+            # (quota check), so this covers it without risking duplication.
+            if _is_rate_limit(exc) and not yielded and attempt < GEMINI_MAX_RETRIES:
+                _backoff_sleep(exc, attempt)
+                continue
+            raise
 
 
 # --- B2: hedged LLM streaming for a genuine LATENCY tail ----------------------
@@ -723,7 +836,8 @@ COMPARE_PROMPT = (
 
 def generate_summary(content: str) -> str:
     client = get_genai_client()
-    resp = client.models.generate_content(
+    resp = _generate_content_retrying(
+        client,
         model=GEN_MODEL,
         contents=f"Filing text:\n{content}",
         config=types.GenerateContentConfig(
@@ -740,7 +854,8 @@ def compare_documents(name_a: str, content_a: str, name_b: str, content_b: str) 
         f"Document A — {name_a}:\n{content_a}\n\n"
         f"Document B — {name_b}:\n{content_b}"
     )
-    resp = client.models.generate_content(
+    resp = _generate_content_retrying(
+        client,
         model=GEN_MODEL,
         contents=prompt,
         config=types.GenerateContentConfig(
