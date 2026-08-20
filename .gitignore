@@ -41,3 +41,6 @@ secrets/
 *.ravendbdumpe
 
 .claude/
+# Phase 3 perf work: local venv + RavenDB dump (never commit)
+.venv-perf/
+*.ravendbdump

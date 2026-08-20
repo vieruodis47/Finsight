@@ -1,0 +1,5 @@
+{"id": "vec1", "expect_path": "vector", "question": "What are the major categories of risk Microsoft describes in the risk factors of its fiscal 2025 10-K?", "ticker": "MSFT", "form": "10-K"}
+{"id": "vec2", "expect_path": "vector", "question": "What does Apple say about its supply chain and manufacturing concentration risks?", "ticker": "AAPL", "form": "10-K"}
+{"id": "vec3", "expect_path": "vector", "question": "How does NVIDIA describe risks related to demand for its products and competition?", "ticker": "NVDA", "form": "10-K"}
+{"id": "vec4", "expect_path": "vector", "question": "How does Microsoft describe its approach to research and development and innovation?", "ticker": "MSFT", "form": "10-K"}
+{"id": "vec5", "expect_path": "vector", "question": "What does Apple describe as the main competitive factors in its markets?", "ticker": "AAPL", "form": "10-K"}
