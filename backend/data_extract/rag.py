@@ -19,7 +19,10 @@ import json
 import logging
 import os
 import re
-from typing import Iterator, Literal, Optional
+import threading
+import time
+from collections import deque
+from typing import Callable, Iterator, Literal, Optional
 
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
@@ -27,10 +30,111 @@ from pydantic import BaseModel, Field
 from google.genai import types
 
 from .embeddings import search, get_genai_client, FilingChunk
+from backend.obs import collect
 
 logger = logging.getLogger(__name__)
 
 GEN_MODEL = os.getenv("GEMINI_GEN_MODEL", "gemini-3.1-flash-lite")
+
+# --- Gemini rate limiting + 429 backoff ---------------------------------------
+# The free tier caps gemini-3.1-flash-lite at ~15 requests/min; bursting past it
+# returns HTTP 429 RESOURCE_EXHAUSTED (which surfaced as the ~10s "tail" and the
+# stream errors in Phase 3). A process-wide sliding-window limiter QUEUES calls to
+# stay under the cap (a no-op under normal <RPM traffic; a brief wait under burst,
+# instead of an error), and a bounded backoff retries any 429 that still slips
+# through, honoring the server's RetryInfo delay. Both are configurable and can be
+# disabled (GEMINI_MAX_RPM=0). Applies to every Gemini call — streaming chat and
+# the non-streaming summary/compare paths.
+GEMINI_MAX_RPM = int(os.getenv("GEMINI_MAX_RPM", "15"))
+GEMINI_MAX_RETRIES = int(os.getenv("GEMINI_MAX_RETRIES", "3"))
+GEMINI_RETRY_CAP_S = float(os.getenv("GEMINI_RETRY_CAP_S", "20"))
+
+_LLM_STATS: dict[str, int] = {"calls": 0, "throttle_waits": 0, "retries_429": 0}
+
+
+def get_llm_stats() -> dict[str, int]:
+    return dict(_LLM_STATS)
+
+
+class RateLimiter:
+    """Thread-safe sliding-window limiter: at most `max_per_window` acquisitions in
+    any `window_s`. acquire() blocks the caller until a slot is free (FastAPI runs
+    sync chat in a threadpool, so blocking a worker is the intended backpressure).
+    Clock/sleep are injectable for deterministic tests."""
+
+    def __init__(self, max_per_window: int, window_s: float = 60.0,
+                 clock: Callable[[], float] = time.monotonic,
+                 sleep: Callable[[float], None] = time.sleep) -> None:
+        self.max = max_per_window
+        self.window = window_s
+        self._clock = clock
+        self._sleep = sleep
+        self._hits: deque = deque()
+        self._lock = threading.Lock()
+
+    def acquire(self) -> float:
+        """Block until allowed; return the seconds waited (0.0 if immediate)."""
+        waited = 0.0
+        while True:
+            with self._lock:
+                now = self._clock()
+                while self._hits and now - self._hits[0] >= self.window:
+                    self._hits.popleft()
+                if len(self._hits) < self.max:
+                    self._hits.append(now)
+                    return waited
+                sleep_for = self.window - (now - self._hits[0]) + 0.01
+            waited += sleep_for
+            self._sleep(sleep_for)
+
+
+_LIMITER: Optional[RateLimiter] = RateLimiter(GEMINI_MAX_RPM) if GEMINI_MAX_RPM > 0 else None
+
+_RETRY_DELAY_RE = re.compile(r"(?:retryDelay['\"]?\s*:\s*['\"]?|retry in\s+)(\d+(?:\.\d+)?)s")
+
+
+def _is_rate_limit(exc: Exception) -> bool:
+    if getattr(exc, "code", None) == 429 or getattr(exc, "status_code", None) == 429:
+        return True
+    s = str(exc)
+    return "429" in s or "RESOURCE_EXHAUSTED" in s
+
+
+def _retry_delay_s(exc: Exception) -> Optional[float]:
+    m = _RETRY_DELAY_RE.search(str(exc))
+    return float(m.group(1)) if m else None
+
+
+def _acquire_slot() -> None:
+    _LLM_STATS["calls"] += 1
+    if _LIMITER is not None:
+        if _LIMITER.acquire() > 0:
+            _LLM_STATS["throttle_waits"] += 1
+
+
+def _backoff_sleep(exc: Exception, attempt: int) -> None:
+    """Honor the server's RetryInfo delay (capped), else exponential; count it."""
+    delay = _retry_delay_s(exc)
+    if delay is None:
+        delay = min(2.0 ** attempt, GEMINI_RETRY_CAP_S)
+    delay = min(delay, GEMINI_RETRY_CAP_S)
+    _LLM_STATS["retries_429"] += 1
+    logger.warning("Gemini 429 rate-limited; backing off %.1fs (attempt %d/%d)",
+                   delay, attempt + 1, GEMINI_MAX_RETRIES)
+    time.sleep(delay)
+
+
+def _generate_content_retrying(client, **kwargs):
+    """Non-streaming Gemini call through the limiter, retrying 429 with backoff."""
+    for attempt in range(GEMINI_MAX_RETRIES + 1):
+        _acquire_slot()
+        try:
+            return client.models.generate_content(**kwargs)
+        except Exception as exc:  # noqa: BLE001
+            if _is_rate_limit(exc) and attempt < GEMINI_MAX_RETRIES:
+                _backoff_sleep(exc, attempt)
+                continue
+            raise
 
 SYSTEM_PROMPT = (
     "You are FinSight, an expert financial research assistant.\n"
@@ -274,7 +378,8 @@ def generate_answer(question: str, chunks: list[FilingChunk]) -> str:
     """Generate a grounded answer from retrieved context via Gemini."""
     context = _format_context(chunks)
     client = get_genai_client()
-    resp = client.models.generate_content(
+    resp = _generate_content_retrying(
+        client,
         model=GEN_MODEL,
         contents=f"Context:\n{context}\n\nQuestion:\n{question}",
         config=types.GenerateContentConfig(
@@ -293,17 +398,158 @@ def generate_stream(system: str, prompt: str, temperature: float) -> Iterator[st
     whole answer. Raising propagates to the endpoint, which emits an error event.
     """
     client = get_genai_client()
-    for chunk in client.models.generate_content_stream(
-        model=GEN_MODEL,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            system_instruction=system,
-            temperature=temperature,
-        ),
-    ):
-        delta = getattr(chunk, "text", None)
-        if delta:
-            yield delta
+    config = types.GenerateContentConfig(system_instruction=system, temperature=temperature)
+    for attempt in range(GEMINI_MAX_RETRIES + 1):
+        _acquire_slot()
+        yielded = False
+        try:
+            for chunk in client.models.generate_content_stream(
+                model=GEN_MODEL, contents=prompt, config=config,
+            ):
+                delta = getattr(chunk, "text", None)
+                if delta:
+                    yielded = True
+                    yield delta
+            return
+        except Exception as exc:  # noqa: BLE001
+            # Retry a 429 ONLY before any token has streamed — retrying mid-stream
+            # would duplicate already-emitted text. A 429 fires at request start
+            # (quota check), so this covers it without risking duplication.
+            if _is_rate_limit(exc) and not yielded and attempt < GEMINI_MAX_RETRIES:
+                _backoff_sleep(exc, attempt)
+                continue
+            raise
+
+
+# --- B2: hedged LLM streaming for a genuine LATENCY tail ----------------------
+# A hedge fires a SECOND identical request if the first hasn't produced a token
+# within a delay; the FIRST attempt to yield a token wins and becomes the SOLE
+# source for the whole segment (one coherent generation). All other attempts are
+# abandoned and their output is DISCARDED BY CONSTRUCTION — the orchestrator only
+# ever yields tokens tagged with the winner's attempt id, independent of whether
+# the loser stops promptly (proved in tests/.../test_llm_hedge.py). When the tail
+# is genuine first-token LATENCY, two independent draws rarely both hit it, so
+# p95/p99 collapses; cost is capped at max_attempts and only on the hedged
+# fraction (measured multiplier via get_hedge_stats()).
+#
+# DEFAULT OFF — and it MUST stay off wherever the tail is RATE-LIMIT driven.
+# Measured 2026-08-20: this deploy is on the Gemini FREE TIER (15 req/min for
+# gemini-3.1-flash-lite); the observed ~10s "tail" was HTTP 429 RESOURCE_EXHAUSTED
+# (retryDelay ~15s), not latency. Hedging fires a 2nd request that consumes MORE
+# of the 15/min budget → MORE 429s: a vector A/B measured hedge-ON 29 errors vs
+# hedge-OFF 18. So hedging is COUNTERPRODUCTIVE under a quota tail. The correct
+# fix there is a higher tier / client-side rate limiter — not hedging. Enable this
+# (FINSIGHT_LLM_HEDGE=on) ONLY once the tail is confirmed latency-bound, not quota.
+_HEDGE_ENABLED = os.getenv("FINSIGHT_LLM_HEDGE", "off").strip().lower() in ("on", "1", "true")
+_HEDGE_DELAY_S = float(os.getenv("FINSIGHT_LLM_HEDGE_MS", "1500")) / 1000.0
+_HEDGE_MAX_ATTEMPTS = int(os.getenv("FINSIGHT_LLM_HEDGE_ATTEMPTS", "2"))
+
+_HEDGE_STATS: dict[str, int] = {"segments": 0, "attempts": 0, "hedged_segments": 0}
+
+
+def get_hedge_stats() -> dict[str, float]:
+    s = dict(_HEDGE_STATS)
+    s["cost_multiplier"] = round(s["attempts"] / s["segments"], 3) if s["segments"] else 1.0
+    return s
+
+
+def _hedged_stream(make_stream, hedge_delay_s: float, max_attempts: int = 2,
+                   on_attempt=None) -> Iterator[str]:
+    """Race up to `max_attempts` copies of a token stream, launched `hedge_delay_s`
+    apart, until one yields its first token. That attempt wins and is the SOLE
+    source; every other attempt is signalled to stop and its tokens are discarded.
+
+    `make_stream(attempt_id) -> Iterator[str]` builds one independent attempt.
+    Injectable so the guardrail test can race deterministic fakes with no network.
+    """
+    import queue
+    import threading
+
+    q: "queue.Queue" = queue.Queue()
+    stops: dict[int, threading.Event] = {}
+    live: set[int] = set()      # started, not yet ended/errored/cancelled
+    last_err = [None]
+
+    def _run(aid: int) -> None:
+        stop = stops[aid]
+        try:
+            for delta in make_stream(aid):
+                if stop.is_set():
+                    break
+                if delta:
+                    q.put((aid, "tok", delta))
+            q.put((aid, "end", None))
+        except Exception as exc:  # noqa: BLE001 — surfaced via the queue
+            q.put((aid, "err", exc))
+
+    def _launch(aid: int) -> None:
+        stops[aid] = threading.Event()
+        live.add(aid)
+        if on_attempt:
+            on_attempt(aid)
+        threading.Thread(target=_run, args=(aid,), daemon=True).start()
+
+    _launch(0)
+    winner = None
+    while True:
+        # Before a winner exists, wait only up to the hedge delay so we can launch
+        # the next attempt on a stall; after, block for the winner's next token.
+        timeout = hedge_delay_s if (winner is None and len(stops) < max_attempts) else None
+        try:
+            aid, kind, val = q.get(timeout=timeout)
+        except queue.Empty:
+            _launch(len(stops))          # stall: hedge in the next attempt
+            continue
+
+        if winner is None:
+            if kind == "tok":
+                winner = aid
+                for other, ev in stops.items():   # cancel every other attempt
+                    if other != winner:
+                        ev.set()
+                yield val
+            else:  # this attempt produced no token
+                live.discard(aid)
+                if kind == "err":
+                    last_err[0] = val
+                if not live:
+                    if len(stops) < max_attempts:
+                        _launch(len(stops))       # try the next attempt now
+                    elif last_err[0] is not None:
+                        raise last_err[0]         # all attempts failed
+                    else:
+                        return                    # all ended empty
+        else:
+            if aid != winner:
+                continue                          # DISCARD loser output (guardrail b)
+            if kind == "tok":
+                yield val
+            elif kind == "err":
+                raise val                         # winner failed mid-stream
+            else:  # "end"
+                return
+
+
+def _llm_stream(system: str, prompt: str, temperature: float) -> Iterator[str]:
+    """Segment-level LLM stream: hedged when enabled, else a single attempt."""
+    if not _HEDGE_ENABLED:
+        yield from generate_stream(system, prompt, temperature)
+        return
+    _HEDGE_STATS["segments"] += 1
+    n_attempts = [0]
+
+    def _on_attempt(_aid: int) -> None:
+        n_attempts[0] += 1
+        _HEDGE_STATS["attempts"] += 1
+
+    try:
+        yield from _hedged_stream(
+            lambda _aid: generate_stream(system, prompt, temperature),
+            _HEDGE_DELAY_S, _HEDGE_MAX_ATTEMPTS, on_attempt=_on_attempt,
+        )
+    finally:
+        if n_attempts[0] > 1:
+            _HEDGE_STATS["hedged_segments"] += 1
 
 
 def answer_question(
@@ -428,6 +674,17 @@ def _chat_event_stream(
     def _line(obj: dict) -> str:
         return json.dumps(obj, ensure_ascii=False) + "\n"
 
+    # Per-request stage timing (obs.collect binds a contextvar the deep retrieval
+    # stages record into). Additive only: the numbers ride along in the terminal
+    # `done` event under `timings` and never touch answer/citation content.
+    _timings_cm = collect()
+    timings = _timings_cm.__enter__()
+    t0 = time.perf_counter()
+    # Snapshot the process-global hedge counters so we can report THIS request's
+    # LLM attempts/segments (accurate under the sequential benchmark; the global
+    # get_hedge_stats() is the source of truth under concurrency).
+    _hedge0 = (_HEDGE_STATS["segments"], _HEDGE_STATS["attempts"])
+
     # --- Pre-generation: route + retrieve (the "bird" phase) -----------------
     graph_sources: list[dict] = []
     chart: Optional[dict] = None   # inline comparison/over-time chart (graph path)
@@ -438,6 +695,9 @@ def _chat_event_stream(
         )
     except Exception as exc:
         logger.warning("Stream router error, falling back to pure vector: %s", exc)
+        # Hard fallback: the router raised before it could record routing telemetry,
+        # so mark it here (post-D this should be rare — graph-misses are soft).
+        timings.meta.update({"served": "vector", "hard_fallback": True})
         try:
             chunks = search(question, k=k, ticker=ticker, tickers=tickers, form=form)
         except Exception:
@@ -451,6 +711,12 @@ def _chat_event_stream(
             chunks = []
             path = "none"
 
+    # Wall-clock of the whole pre-generation "bird" phase (classify + retrieval).
+    # The individual classify/embed/vector_search/graph stages were recorded by
+    # obs.stage() inside the router/search; this is their combined latency
+    # (max of the parallel branches on the "both" path), i.e. the floor on TTFT.
+    timings.add("retrieval_total", (time.perf_counter() - t0) * 1000.0)
+
     # One reference list across paths: vector passages (numbered, inline-cited) +
     # graph/XBRL fact cards, same shape → one consistent citation UI.
     references = _assemble_sources(chunks, graph_sources)
@@ -461,15 +727,22 @@ def _chat_event_stream(
     # to the client for live rendering; the reference list + validated marker set
     # are attached only in the terminal `done` event.
     parts: list[str] = []
+    first_token_at: Optional[float] = None
     try:
         for seg in segments:
             if seg["kind"] == "text":
                 if seg["text"]:
+                    if first_token_at is None:
+                        first_token_at = time.perf_counter()
+                        timings.add("ttft", (first_token_at - t0) * 1000.0)
                     parts.append(seg["text"])
                     yield _line({"type": "token", "text": seg["text"]})
             else:
-                for delta in generate_stream(seg["system"], seg["prompt"], seg["temperature"]):
+                for delta in _llm_stream(seg["system"], seg["prompt"], seg["temperature"]):
                     if delta:
+                        if first_token_at is None:
+                            first_token_at = time.perf_counter()
+                            timings.add("ttft", (first_token_at - t0) * 1000.0)
                         parts.append(delta)
                         yield _line({"type": "token", "text": delta})
         full_answer = "".join(parts)
@@ -488,11 +761,26 @@ def _chat_event_stream(
             references, valid, chart = [], [], None
         else:
             valid = validate_citations(full_answer, chunks)
+        # Finalize timing: total request wall-clock and pure generation time.
+        now = time.perf_counter()
+        timings.add("total", (now - t0) * 1000.0)
+        if first_token_at is not None:
+            timings.add("generation", (now - first_token_at) * 1000.0)
+        timings.meta["llm_segments"] = _HEDGE_STATS["segments"] - _hedge0[0]
+        timings.meta["llm_attempts"] = _HEDGE_STATS["attempts"] - _hedge0[1]
+        stage_ms = timings.as_dict()
+        logger.info("chat timings (path=%s): %s", path, stage_ms)
         done_evt = {
             "type": "done",
             "sources": references,
             "valid_citations": valid,
             "retrieval_path": path,
+            # Additive per-stage latency (ms). Existing clients ignore this key;
+            # the Phase 1 benchmark harness reads it straight off the wire.
+            "timings": stage_ms,
+            # Routing telemetry (classified vs served path, graph→vector fallback).
+            # Set by the router wrapper; used to measure the true fallback rate.
+            "routing": timings.meta,
         }
         # Inline chart built from the SAME structured rows that grounded the
         # answer (never a separately computed number). Only present for chartable
@@ -505,6 +793,10 @@ def _chat_event_stream(
         # partial text already arrived (it never blanks the bubble).
         logger.warning("Stream generation error: %s", exc)
         yield _line({"type": "error", "message": "The response was interrupted. Please try again."})
+    finally:
+        # Always unbind the per-request timings collector (reset the contextvar),
+        # even if the client disconnects mid-stream and the generator is closed.
+        _timings_cm.__exit__(None, None, None)
 
 
 @router.post("/chat/stream")
@@ -544,7 +836,8 @@ COMPARE_PROMPT = (
 
 def generate_summary(content: str) -> str:
     client = get_genai_client()
-    resp = client.models.generate_content(
+    resp = _generate_content_retrying(
+        client,
         model=GEN_MODEL,
         contents=f"Filing text:\n{content}",
         config=types.GenerateContentConfig(
@@ -561,7 +854,8 @@ def compare_documents(name_a: str, content_a: str, name_b: str, content_b: str) 
         f"Document A — {name_a}:\n{content_a}\n\n"
         f"Document B — {name_b}:\n{content_b}"
     )
-    resp = client.models.generate_content(
+    resp = _generate_content_retrying(
+        client,
         model=GEN_MODEL,
         contents=prompt,
         config=types.GenerateContentConfig(

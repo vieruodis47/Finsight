@@ -1,0 +1,8 @@
+{"id": "g1", "expect_path": "graph", "question": "What was Microsoft's net income in fiscal year 2024?", "ticker": "MSFT", "form": "10-K"}
+{"id": "g2", "expect_path": "graph", "question": "What were Apple's total net sales in fiscal 2024?", "ticker": "AAPL", "form": "10-K"}
+{"id": "g3", "expect_path": "graph", "question": "What was NVIDIA's operating cash flow in fiscal 2026?", "ticker": "NVDA", "form": "10-K"}
+{"id": "v1", "expect_path": "vector", "question": "What are the major categories of risk Microsoft describes in the risk factors of its fiscal 2025 10-K?", "ticker": "MSFT", "form": "10-K"}
+{"id": "v2", "expect_path": "vector", "question": "What does Apple say about its supply chain and manufacturing concentration risks?", "ticker": "AAPL", "form": "10-K"}
+{"id": "b1", "expect_path": "both", "question": "What were Apple's operating income and net income in fiscal 2024, and how far apart were they?", "ticker": "AAPL", "form": "10-K"}
+{"id": "b2", "expect_path": "both", "question": "Compare Apple and Microsoft net income in fiscal 2024. Which is higher and by how much?", "tickers": ["AAPL", "MSFT"], "form": "10-K"}
+{"id": "b3", "expect_path": "both", "question": "In NVIDIA's fiscal 2026, what were cost of revenue and cash flow from operating activities?", "ticker": "NVDA", "form": "10-K"}

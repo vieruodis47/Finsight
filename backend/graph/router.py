@@ -764,14 +764,18 @@ def _count_covered_metrics(question: str) -> int:
 # ---------------------------------------------------------------------------
 
 def _sparql_single_metric_all(metric: str) -> str:
+    # Shape #6 (all-company ranking) — STAYS on the SPARQL engine permanently.
+    # A1: lead with the selective metricName triple so rdflib seeds the BGP from
+    # the metric nodes of this name (POS index) instead of enumerating every
+    # company first. Same triples, reordered → identical result set.
     return f"""
 PREFIX fs:  <http://finsight.io/ontology#>
 PREFIX fsd: <http://finsight.io/data/>
 SELECT ?ticker ?fiscalYear ?value
 WHERE {{
-    ?co  a fs:Company ; fs:hasTicker ?ticker ; fs:filedFiling ?f .
-    ?f   fs:fiscalYear ?fiscalYear ; fs:reportsMetric ?m .
     ?m   fs:metricName "{metric}" ; fs:metricValue ?value .
+    ?f   fs:reportsMetric ?m ; fs:fiscalYear ?fiscalYear .
+    ?co  fs:filedFiling ?f ; fs:hasTicker ?ticker ; a fs:Company .
 }}
 ORDER BY DESC(?value)
 """
@@ -786,16 +790,25 @@ def _ticker_in(tickers: list[str]) -> str:
     return f"FILTER(?ticker IN ({inner}))"
 
 
+def _ticker_values(tickers: list[str]) -> str:
+    """A1: SPARQL `VALUES ?ticker {{ "A" "B" ... }}` — bind the ticker set FIRST so
+    rdflib seeds the BGP from those companies (POS index on fs:hasTicker) instead of
+    scanning every company and FILTERing at the end. Same result set as _ticker_in,
+    same ORDER BY, just an evaluation-order optimization for the multi-company path."""
+    inner = " ".join(f'"{t}"' for t in tickers)
+    return f"VALUES ?ticker {{ {inner} }}"
+
+
 def _sparql_multi_company_single_metric(tickers: list[str], metric: str) -> str:
     return f"""
 PREFIX fs:  <http://finsight.io/ontology#>
 PREFIX fsd: <http://finsight.io/data/>
 SELECT ?ticker ?fiscalYear ?value
 WHERE {{
-    ?co  a fs:Company ; fs:hasTicker ?ticker ; fs:filedFiling ?f .
+    {_ticker_values(tickers)}
+    ?co  fs:hasTicker ?ticker ; a fs:Company ; fs:filedFiling ?f .
     ?f   fs:fiscalYear ?fiscalYear ; fs:reportsMetric ?m .
     ?m   fs:metricName "{metric}" ; fs:metricValue ?value .
-    {_ticker_in(tickers)}
 }}
 ORDER BY ?ticker ?fiscalYear
 """
@@ -807,7 +820,8 @@ PREFIX fs:  <http://finsight.io/ontology#>
 PREFIX fsd: <http://finsight.io/data/>
 SELECT ?ticker ?fiscalYear ?revenue ?netIncome ?netMargin ?operatingMargin ?roe
 WHERE {{
-    ?co  a fs:Company ; fs:hasTicker ?ticker ; fs:filedFiling ?f .
+    {_ticker_values(tickers)}
+    ?co  fs:hasTicker ?ticker ; a fs:Company ; fs:filedFiling ?f .
     ?f   fs:fiscalYear ?fiscalYear .
     OPTIONAL {{
         ?f fs:reportsMetric ?m1 .
@@ -829,7 +843,6 @@ WHERE {{
         ?f fs:reportsMetric ?m5 .
         ?m5 fs:metricName "return_on_equity_pct" ; fs:metricValue ?roe .
     }}
-    {_ticker_in(tickers)}
 }}
 ORDER BY ?ticker ?fiscalYear
 """
@@ -841,10 +854,10 @@ PREFIX fs:  <http://finsight.io/ontology#>
 PREFIX fsd: <http://finsight.io/data/>
 SELECT ?ticker ?fiscalYear ?value
 WHERE {{
-    ?co  a fs:Company ; fs:hasTicker ?ticker ; fs:filedFiling ?f .
+    ?co  fs:hasTicker "{ticker}" ; a fs:Company ; fs:filedFiling ?f .
     ?f   fs:fiscalYear ?fiscalYear ; fs:reportsMetric ?m .
     ?m   fs:metricName "{metric}" ; fs:metricValue ?value .
-    FILTER(?ticker = "{ticker}")
+    BIND("{ticker}" AS ?ticker)
 }}
 ORDER BY DESC(?fiscalYear)
 """
@@ -856,10 +869,11 @@ PREFIX fs:  <http://finsight.io/ontology#>
 PREFIX fsd: <http://finsight.io/data/>
 SELECT ?ticker ?fiscalYear ?value
 WHERE {{
-    ?co  a fs:Company ; fs:hasTicker ?ticker ; fs:filedFiling ?f .
-    ?f   fs:fiscalYear ?fiscalYear ; fs:reportsMetric ?m .
+    ?co  fs:hasTicker "{ticker}" ; a fs:Company ; fs:filedFiling ?f .
+    ?f   fs:fiscalYear "{year}" ; fs:reportsMetric ?m .
     ?m   fs:metricName "{metric}" ; fs:metricValue ?value .
-    FILTER(?ticker = "{ticker}" && ?fiscalYear = "{year}")
+    BIND("{ticker}" AS ?ticker)
+    BIND("{year}" AS ?fiscalYear)
 }}
 """
 
@@ -875,7 +889,7 @@ PREFIX fs:  <http://finsight.io/ontology#>
 PREFIX fsd: <http://finsight.io/data/>
 SELECT ?ticker ?fiscalYear ?revenue ?netIncome ?netMargin ?operatingMargin ?roe
 WHERE {{
-    ?co  a fs:Company ; fs:hasTicker ?ticker ; fs:filedFiling ?f .
+    ?co  fs:hasTicker "{ticker}" ; a fs:Company ; fs:filedFiling ?f .
     ?f   fs:fiscalYear ?fiscalYear .
     OPTIONAL {{
         ?f fs:reportsMetric ?m1 .
@@ -897,7 +911,7 @@ WHERE {{
         ?f fs:reportsMetric ?m5 .
         ?m5 fs:metricName "return_on_equity_pct" ; fs:metricValue ?roe .
     }}
-    FILTER(?ticker = "{ticker}")
+    BIND("{ticker}" AS ?ticker)
 }}
 ORDER BY ?fiscalYear
 """
@@ -945,6 +959,143 @@ def _build_sparql(question: str, tickers: list[str]) -> str:
         return _sparql_single_metric_all(metric)
 
     return MULTI_METRIC_QUERY
+
+
+# ---------------------------------------------------------------------------
+# A2: direct in-registry lookup for single-fact / small-fan-out shapes (#1–#5)
+# ---------------------------------------------------------------------------
+# Shapes #1–#5 (>=1 ticker) are pure reads over the in-memory _registry that
+# build_graph is itself built from, so they can bypass the ~2–11s rdflib SPARQL
+# execution entirely (~microseconds). Shape #6 (all-company ranking) and the
+# no-ticker all-company multi-metric STAY on SPARQL (A1). Controlled by env
+# FINSIGHT_GRAPH_A2:
+#   "off"    -> SPARQL only (A1)
+#   "shadow" -> compute BOTH, log any drift, SERVE SPARQL (validation mode)
+#   "on"     -> SERVE registry rows, SPARQL fallback on miss/None/exception
+# Registry rows are built to match run_sparql() output byte-for-byte: same keys,
+# same float values, same ORDER BY — verified by the shadow-compare before "on".
+_A2_MODE = os.getenv("FINSIGHT_GRAPH_A2", "on").strip().lower()
+
+# multi-metric column -> registry field name (mirrors the 5 OPTIONALs in the
+# _sparql_*_multi_metric templates).
+_A2_MULTI = (
+    ("revenue", "total_revenue_millions"),
+    ("netIncome", "net_income_millions"),
+    ("netMargin", "net_margin_pct"),
+    ("operatingMargin", "operating_margin_pct"),
+    ("roe", "return_on_equity_pct"),
+)
+# Same categories, same order, that rdf_graph._add_metric_triples emits from.
+_A2_CATEGORIES = ("income_statement", "balance_sheet", "cash_flow", "computed_ratios")
+
+_A2_SHADOW: dict[str, int] = {"checked": 0, "mismatch": 0}
+
+
+def get_a2_shadow_stats() -> dict[str, int]:
+    return dict(_A2_SHADOW)
+
+
+def _flat_metrics(ticker: str, year: str) -> Optional[dict]:
+    """name->float for one (ticker, year), merged across the 4 metric categories
+    EXACTLY as rdf_graph._add_metric_triples emits them (skip None / non-floatable)
+    so a registry read matches the graph's fs:metricName/fs:metricValue triples."""
+    doc = _registry.get(ticker)
+    if not doc:
+        return None
+    ym = (doc.get("metrics_by_year") or {}).get(year)
+    if ym is None:
+        return None
+    flat: dict[str, float] = {}
+    for cat in _A2_CATEGORIES:
+        for name, value in (ym.get(cat) or {}).items():
+            if value is None:
+                continue
+            try:
+                flat[name] = float(value)
+            except (TypeError, ValueError):
+                continue
+    return flat
+
+
+def _registry_years(ticker: str) -> list[str]:
+    doc = _registry.get(ticker)
+    return list((doc.get("metrics_by_year") or {}).keys()) if doc else []
+
+
+def _registry_single_metric_rows(tickers: list[str], metric: str,
+                                 year: Optional[str] = None) -> list[dict]:
+    """{ticker, fiscalYear, value} for each (ticker, year) that HAS the metric —
+    mirrors the single-metric templates (a row exists only where metricName binds)."""
+    rows: list[dict] = []
+    for t in tickers:
+        years = [year] if year else _registry_years(t)
+        for y in years:
+            flat = _flat_metrics(t, y)
+            if flat and metric in flat:
+                rows.append({"ticker": t, "fiscalYear": y, "value": flat[metric]})
+    return rows
+
+
+def _registry_multi_metric_rows(tickers: list[str]) -> list[dict]:
+    """{ticker, fiscalYear, [revenue,netIncome,netMargin,operatingMargin,roe]} for
+    EVERY (ticker, year) with a filing node — mirrors the OPTIONAL multi-metric
+    templates: a row per year, each of the 5 columns present only if the metric is."""
+    rows: list[dict] = []
+    for t in tickers:
+        for y in _registry_years(t):
+            flat = _flat_metrics(t, y) or {}
+            row: dict = {"ticker": t, "fiscalYear": y}
+            for col, name in _A2_MULTI:
+                if name in flat:
+                    row[col] = flat[name]
+            rows.append(row)
+    return rows
+
+
+def _registry_lookup(question: str, tickers: list[str]) -> Optional[list[dict]]:
+    """Registry-backed equivalent of run_sparql(_build_sparql(question, tickers))
+    for shapes #1–#5. Returns rows in the SAME shape + ORDER BY as SPARQL, or None
+    when the shape stays on SPARQL (no ticker: shape #6 / all-company multi-metric)."""
+    if not tickers:
+        return None  # #6 single_metric_all / MULTI_METRIC_QUERY -> SPARQL (A1)
+    metric = _detect_metric(question)
+    year_match = _YEAR_RE.search(question)
+    year = re.search(r"20\d{2}", year_match.group()).group() if year_match else None
+    all_years = list(dict.fromkeys(re.findall(r"20\d{2}", question)))
+    is_multiyear = len(all_years) > 1
+
+    if len(tickers) >= 2:
+        if metric:  # #3 ORDER BY ?ticker ?fiscalYear
+            rows = _registry_single_metric_rows(tickers, metric)
+            rows.sort(key=lambda r: (r["ticker"], r["fiscalYear"]))
+            return rows
+        # #5 ORDER BY ?ticker ?fiscalYear
+        rows = _registry_multi_metric_rows(tickers)
+        rows.sort(key=lambda r: (r["ticker"], r["fiscalYear"]))
+        return rows
+
+    t = tickers[0]
+    if metric:
+        if is_multiyear or not year:  # #2 single_company ORDER BY DESC(?fiscalYear)
+            rows = _registry_single_metric_rows([t], metric)
+            rows.sort(key=lambda r: r["fiscalYear"], reverse=True)
+            return rows
+        return _registry_single_metric_rows([t], metric, year=year)  # #1 (0/1 row)
+    # #4 single_company_multi_metric ORDER BY ?fiscalYear
+    rows = _registry_multi_metric_rows([t])
+    rows.sort(key=lambda r: r["fiscalYear"])
+    return rows
+
+
+def _shadow_report(question: str, sparql_rows: list[dict], reg_rows: Optional[list[dict]]) -> None:
+    if reg_rows is None:  # shape stayed on SPARQL — nothing to compare
+        return
+    _A2_SHADOW["checked"] += 1
+    if reg_rows != sparql_rows:
+        _A2_SHADOW["mismatch"] += 1
+        logger.warning("A2 shadow MISMATCH q=%r sparql=%d reg=%d | sparql[:2]=%s reg[:2]=%s",
+                       question[:60], len(sparql_rows), len(reg_rows),
+                       sparql_rows[:2], reg_rows[:2])
 
 
 # ---------------------------------------------------------------------------
@@ -1081,6 +1232,14 @@ _GRAPH_SYSTEM = (
     "do not relabel or shift years.\n"
     "5. Be concise and state the fiscal year for each figure you cite."
 )
+
+# B0: deterministic lead header for the pure-graph streaming path. Emitting it as
+# the FIRST segment makes time-to-first-token retrieval-bound (~0ms post-A2)
+# instead of waiting on the LLM's first token (~1–2s + tail). Mirrors the "both"
+# path's structured-data header (minus the filing-text contrast, since a graph
+# answer has a single section). Deterministic text only — no figures, no
+# citations — so it cannot affect grounding or attribution.
+_GRAPH_ONLY_HEADER = "**From structured financial data (XBRL metrics):**\n\n"
 
 
 # --- Exact, verbatim-ready value formatting (Seam 3: grounded generation) ----
@@ -1441,17 +1600,22 @@ def _graph_prompt(question: str) -> tuple[Optional[str], str, list[dict], Option
     so the streaming path can do this retrieval work up front (the "bird" phase)
     and then stream the generation.
 
-    Returns (prompt, tail): prompt is None when the graph has no usable data for
-    the question (caller falls back to vector). `tail` is templated text — never
-    LLM-generated — so phrasing is identical across calls for the same gap.
+    Returns a 4-tuple (prompt, tail, refs, chart): prompt is None when the graph
+    has no usable data for the question (caller falls back to vector). ALL exit
+    paths must return 4 elements — a short (3-element) return makes the caller's
+    `gprompt, gtail, grefs, gchart = _graph_prompt(...)` unpack raise ValueError,
+    which historically threw the whole request onto pure vector and discarded the
+    router decision (and, on the "both" path, the concurrent graph half). `tail`
+    is templated text — never LLM-generated — so phrasing is identical across
+    calls for the same gap.
     """
     g = _get_graph()
     if len(g) == 0:
-        return None, "", []
+        return None, "", [], None
 
     known = _graph_tickers()
     if not known:
-        return None, "", []
+        return None, "", [], None
 
     # Pass the known-ticker set so single-letter tickers (e.g. F for Ford) are
     # matched only when they are actually registered in the graph.
@@ -1466,19 +1630,42 @@ def _graph_prompt(question: str) -> tuple[Optional[str], str, list[dict], Option
     # proceed with all companies (available=[]) and let SPARQL return all rows.
     if raw_tickers and not available:
         logger.info("Graph missing tickers %s (have %s) — falling back", raw_tickers, known)
-        return None, "", []
+        return None, "", [], None
+
+    from ..obs import stage
 
     metric = _detect_metric(question)
     sparql = _build_sparql(question, available)
+
+    def _fetch_rows() -> list[dict]:
+        # A2 "on": serve the registry rows for shapes #1–#5; fall back to SPARQL
+        # when the shape stays on the engine (_registry_lookup -> None) or on error.
+        if _A2_MODE == "on":
+            try:
+                reg = _registry_lookup(question, available)
+            except Exception as exc:
+                logger.warning("A2 registry lookup failed, SPARQL fallback: %s", exc)
+                reg = None
+            if reg is not None:
+                return reg
+        rows_ = run_sparql(g, sparql)
+        if _A2_MODE == "shadow":  # compute both, log drift, SERVE SPARQL
+            try:
+                _shadow_report(question, rows_, _registry_lookup(question, available))
+            except Exception as exc:
+                logger.warning("A2 shadow error: %s", exc)
+        return rows_
+
     try:
-        rows = run_sparql(g, sparql)
+        with stage("sparql"):  # isolated row-fetch timing (A1/A2 verdict metric)
+            rows = _fetch_rows()
     except Exception as exc:
         logger.warning("SPARQL failed: %s", exc)
-        return None, "", []
+        return None, "", [], None
 
     if not rows:
         logger.info("SPARQL returned 0 rows for: %s", question[:80])
-        return None, "", []
+        return None, "", [], None
 
     # Scope the rows to the fiscal-year window the question actually asks about.
     # A multi-year SPARQL deliberately returns the FULL series (so the model can
@@ -1776,7 +1963,56 @@ _PER_MINUTE_QUOTA_MSG_TXT = (
 )
 
 
+# Cumulative routing counters (process-lifetime). graph_routed = classified as
+# graph/both; graph_fallback = graph-routed but the graph produced no answer and
+# we served vector instead. Post-D these fallbacks are SOFT (clean vector serve);
+# pre-D a graph-miss raised ValueError and threw the whole request onto vector.
+_ROUTE_STATS: dict[str, int] = {"requests": 0, "graph_routed": 0, "graph_fallback": 0}
+
+
+def get_route_stats() -> dict[str, int]:
+    return dict(_ROUTE_STATS)
+
+
 def prepare_chat_stream(
+    question: str,
+    k: int = 5,
+    ticker: Optional[str] = None,
+    tickers: Optional[list[str]] = None,
+    form: Optional[str] = None,
+) -> tuple[list[dict], list, list, str, Optional[dict]]:
+    """Thin wrapper over _prepare_chat_stream_impl that records routing telemetry:
+    per request, whether it was graph-routed and whether the graph→vector fallback
+    fired. Derived from the (idempotent, ~0ms regex) classification plus the served
+    path, so it needs no signature change on the impl. Surfaced to the harness via
+    obs.set_meta (rides in the chat `done` event) and logged per request."""
+    result = _prepare_chat_stream_impl(question, k=k, ticker=ticker, tickers=tickers, form=form)
+    served = result[3]
+    classified = classify_question(question)  # regex, deterministic, ~0ms
+    graph_routed = classified in ("graph", "both")
+    # The graph contributed iff we served a path that includes graph content.
+    graph_used = served in ("graph", "both")
+    graph_fallback = graph_routed and not graph_used
+
+    _ROUTE_STATS["requests"] += 1
+    if graph_routed:
+        _ROUTE_STATS["graph_routed"] += 1
+    if graph_fallback:
+        _ROUTE_STATS["graph_fallback"] += 1
+    logger.info(
+        "route: classified=%s served=%s graph_routed=%s graph_fallback=%s | %s",
+        classified, served, graph_routed, graph_fallback, question[:60],
+    )
+    try:
+        from ..obs import set_meta
+        set_meta(classified=classified, served=served,
+                 graph_routed=graph_routed, graph_fallback=graph_fallback)
+    except Exception:
+        pass
+    return result
+
+
+def _prepare_chat_stream_impl(
     question: str,
     k: int = 5,
     ticker: Optional[str] = None,
@@ -1824,7 +2060,10 @@ def prepare_chat_stream(
     else:
         vector_scope = None
 
-    path = classify_question(question)
+    from ..obs import stage, bind_context
+
+    with stage("classify"):
+        path = classify_question(question)
     logger.info("Router(stream): path=%s | %s", path, question[:80])
 
     def _vector_prep_raw() -> tuple[Optional[str], list, Optional[str]]:
@@ -1857,10 +2096,15 @@ def prepare_chat_stream(
         segs, chunks, vpath = _vector_segments()
         return segs, chunks, [], vpath, None
 
+    def _timed_graph_prompt(q: str):
+        with stage("graph"):
+            return _graph_prompt(q)
+
     if path == "graph":
-        gprompt, gtail, grefs, gchart = _graph_prompt(question)
+        gprompt, gtail, grefs, gchart = _timed_graph_prompt(question)
         if gprompt is not None:
-            segs = [_llm(_GRAPH_SYSTEM, gprompt, 0.1)]
+            # B0: lead with the deterministic header so TTFT is retrieval-bound.
+            segs = [_text(_GRAPH_ONLY_HEADER), _llm(_GRAPH_SYSTEM, gprompt, 0.1)]
             if gtail:
                 segs.append(_text(gtail))
             return segs, [], grefs, "graph", gchart
@@ -1869,9 +2113,12 @@ def prepare_chat_stream(
 
     # path == "both": retrieve both halves concurrently (the bird phase), then
     # stream graph generation followed by vector generation.
+    # bind_context() copies the active timings collector into each worker thread
+    # so the embed / vector_search / graph stage timers still record (contextvars
+    # do not auto-propagate across ThreadPoolExecutor submissions).
     with ThreadPoolExecutor(max_workers=2) as pool:
-        fut_graph = pool.submit(_graph_prompt, question)
-        fut_vector = pool.submit(_vector_prep_raw)
+        fut_graph = pool.submit(bind_context().run, _timed_graph_prompt, question)
+        fut_vector = pool.submit(bind_context().run, _vector_prep_raw)
         gprompt, gtail, grefs, gchart = fut_graph.result()
         vprompt, chunks, verr = fut_vector.result()
 
@@ -1901,7 +2148,9 @@ def prepare_chat_stream(
         return segs, chunks, grefs, "both", gchart
 
     if had_graph:
-        segs = [_llm(_GRAPH_SYSTEM, gprompt, 0.1)]
+        # "both"-classified but only the graph half returned — same graph-only
+        # shape as the pure-graph branch, so lead with the header too (B0).
+        segs = [_text(_GRAPH_ONLY_HEADER), _llm(_GRAPH_SYSTEM, gprompt, 0.1)]
         if gtail:
             segs.append(_text(gtail))
         return segs, [], grefs, "graph", gchart
