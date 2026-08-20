@@ -447,6 +447,9 @@ def _chat_event_stream(
         )
     except Exception as exc:
         logger.warning("Stream router error, falling back to pure vector: %s", exc)
+        # Hard fallback: the router raised before it could record routing telemetry,
+        # so mark it here (post-D this should be rare — graph-misses are soft).
+        timings.meta.update({"served": "vector", "hard_fallback": True})
         try:
             chunks = search(question, k=k, ticker=ticker, tickers=tickers, form=form)
         except Exception:
@@ -525,6 +528,9 @@ def _chat_event_stream(
             # Additive per-stage latency (ms). Existing clients ignore this key;
             # the Phase 1 benchmark harness reads it straight off the wire.
             "timings": stage_ms,
+            # Routing telemetry (classified vs served path, graph→vector fallback).
+            # Set by the router wrapper; used to measure the true fallback rate.
+            "routing": timings.meta,
         }
         # Inline chart built from the SAME structured rows that grounded the
         # answer (never a separately computed number). Only present for chartable

@@ -66,11 +66,15 @@ class Timings:
     reported number is the total time spent in that stage across the request.
     """
 
-    __slots__ = ("stages", "_order")
+    __slots__ = ("stages", "_order", "meta")
 
     def __init__(self) -> None:
         self.stages: dict[str, float] = {}
         self._order: list[str] = []
+        # Non-timing per-request telemetry (e.g. routing: classified vs served
+        # path, whether the graph→vector fallback fired). Surfaced alongside the
+        # stage timings in the chat `done` event.
+        self.meta: dict[str, object] = {}
 
     def add(self, name: str, ms: float) -> None:
         if name not in self.stages:
@@ -123,6 +127,14 @@ def stage(name: str) -> Iterator[None]:
             coll.add(name, dt_ms)
         if span_cm is not None:
             span_cm.__exit__(None, None, None)
+
+
+def set_meta(**kw: object) -> None:
+    """Attach non-timing telemetry (routing decision, fallback flags) to the
+    active request collector. No-op outside a `collect()` scope."""
+    coll = _current.get()
+    if coll is not None:
+        coll.meta.update(kw)
 
 
 def record(name: str, ms: float) -> None:

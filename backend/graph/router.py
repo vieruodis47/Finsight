@@ -1441,17 +1441,22 @@ def _graph_prompt(question: str) -> tuple[Optional[str], str, list[dict], Option
     so the streaming path can do this retrieval work up front (the "bird" phase)
     and then stream the generation.
 
-    Returns (prompt, tail): prompt is None when the graph has no usable data for
-    the question (caller falls back to vector). `tail` is templated text — never
-    LLM-generated — so phrasing is identical across calls for the same gap.
+    Returns a 4-tuple (prompt, tail, refs, chart): prompt is None when the graph
+    has no usable data for the question (caller falls back to vector). ALL exit
+    paths must return 4 elements — a short (3-element) return makes the caller's
+    `gprompt, gtail, grefs, gchart = _graph_prompt(...)` unpack raise ValueError,
+    which historically threw the whole request onto pure vector and discarded the
+    router decision (and, on the "both" path, the concurrent graph half). `tail`
+    is templated text — never LLM-generated — so phrasing is identical across
+    calls for the same gap.
     """
     g = _get_graph()
     if len(g) == 0:
-        return None, "", []
+        return None, "", [], None
 
     known = _graph_tickers()
     if not known:
-        return None, "", []
+        return None, "", [], None
 
     # Pass the known-ticker set so single-letter tickers (e.g. F for Ford) are
     # matched only when they are actually registered in the graph.
@@ -1466,7 +1471,7 @@ def _graph_prompt(question: str) -> tuple[Optional[str], str, list[dict], Option
     # proceed with all companies (available=[]) and let SPARQL return all rows.
     if raw_tickers and not available:
         logger.info("Graph missing tickers %s (have %s) — falling back", raw_tickers, known)
-        return None, "", []
+        return None, "", [], None
 
     metric = _detect_metric(question)
     sparql = _build_sparql(question, available)
@@ -1474,11 +1479,11 @@ def _graph_prompt(question: str) -> tuple[Optional[str], str, list[dict], Option
         rows = run_sparql(g, sparql)
     except Exception as exc:
         logger.warning("SPARQL failed: %s", exc)
-        return None, "", []
+        return None, "", [], None
 
     if not rows:
         logger.info("SPARQL returned 0 rows for: %s", question[:80])
-        return None, "", []
+        return None, "", [], None
 
     # Scope the rows to the fiscal-year window the question actually asks about.
     # A multi-year SPARQL deliberately returns the FULL series (so the model can
@@ -1776,7 +1781,56 @@ _PER_MINUTE_QUOTA_MSG_TXT = (
 )
 
 
+# Cumulative routing counters (process-lifetime). graph_routed = classified as
+# graph/both; graph_fallback = graph-routed but the graph produced no answer and
+# we served vector instead. Post-D these fallbacks are SOFT (clean vector serve);
+# pre-D a graph-miss raised ValueError and threw the whole request onto vector.
+_ROUTE_STATS: dict[str, int] = {"requests": 0, "graph_routed": 0, "graph_fallback": 0}
+
+
+def get_route_stats() -> dict[str, int]:
+    return dict(_ROUTE_STATS)
+
+
 def prepare_chat_stream(
+    question: str,
+    k: int = 5,
+    ticker: Optional[str] = None,
+    tickers: Optional[list[str]] = None,
+    form: Optional[str] = None,
+) -> tuple[list[dict], list, list, str, Optional[dict]]:
+    """Thin wrapper over _prepare_chat_stream_impl that records routing telemetry:
+    per request, whether it was graph-routed and whether the graph→vector fallback
+    fired. Derived from the (idempotent, ~0ms regex) classification plus the served
+    path, so it needs no signature change on the impl. Surfaced to the harness via
+    obs.set_meta (rides in the chat `done` event) and logged per request."""
+    result = _prepare_chat_stream_impl(question, k=k, ticker=ticker, tickers=tickers, form=form)
+    served = result[3]
+    classified = classify_question(question)  # regex, deterministic, ~0ms
+    graph_routed = classified in ("graph", "both")
+    # The graph contributed iff we served a path that includes graph content.
+    graph_used = served in ("graph", "both")
+    graph_fallback = graph_routed and not graph_used
+
+    _ROUTE_STATS["requests"] += 1
+    if graph_routed:
+        _ROUTE_STATS["graph_routed"] += 1
+    if graph_fallback:
+        _ROUTE_STATS["graph_fallback"] += 1
+    logger.info(
+        "route: classified=%s served=%s graph_routed=%s graph_fallback=%s | %s",
+        classified, served, graph_routed, graph_fallback, question[:60],
+    )
+    try:
+        from ..obs import set_meta
+        set_meta(classified=classified, served=served,
+                 graph_routed=graph_routed, graph_fallback=graph_fallback)
+    except Exception:
+        pass
+    return result
+
+
+def _prepare_chat_stream_impl(
     question: str,
     k: int = 5,
     ticker: Optional[str] = None,

@@ -35,8 +35,29 @@ STAGE_KEYS = ["classify", "embed", "vector_search", "graph", "retrieval_total",
               "ttft", "generation", "total"]
 
 
-def load_questions() -> list[dict]:
-    return [json.loads(l) for l in Q_FILE.read_text().splitlines() if l.strip()]
+def load_questions(path: Path = Q_FILE) -> list[dict]:
+    return [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
+
+
+def routing_summary(rows: list[dict]) -> str:
+    """Report the true graph→vector fallback rate (workstream D)."""
+    ok = [r for r in rows if not r.get("error")]
+    graph_routed = [r for r in ok if r.get("routing", {}).get("graph_routed")]
+    fb = [r for r in graph_routed if r["routing"].get("graph_fallback")]
+    hard = [r for r in ok if r.get("routing", {}).get("hard_fallback")]
+    lines = ["\n## Routing / fallback (workstream D)\n"]
+    n = len(ok)
+    lines.append(f"- samples: {n}")
+    lines.append(f"- graph-routed (classified graph/both): {len(graph_routed)} "
+                 f"({100*len(graph_routed)/n:.0f}% of traffic)" if n else "- graph-routed: 0")
+    denom = len(graph_routed)
+    lines.append(f"- graph→vector fallback fired: {len(fb)}/{denom} "
+                 f"({100*len(fb)/denom:.1f}% of graph-routed)" if denom else "- fallback: n/a")
+    lines.append(f"- hard fallbacks (router raised): {len(hard)}")
+    if fb:
+        lines.append("- fell back on: " + ", ".join(
+            f"{r['id']}({r['routing'].get('classified')}→{r['routing'].get('served')})" for r in fb))
+    return "\n".join(lines) + "\n"
 
 
 def ask(url: str, q: dict, timeout: float = 180.0) -> dict:
@@ -87,6 +108,7 @@ def ask(url: str, q: dict, timeout: float = 180.0) -> dict:
         "n_valid_citations": len((done or {}).get("valid_citations", [])),
         "error": err,
         "timings": timings,
+        "routing": (done or {}).get("routing", {}),
     }
 
 
@@ -141,10 +163,11 @@ def main() -> None:
     ap.add_argument("--reps", type=int, default=5, help="measured reps per question (warm)")
     ap.add_argument("--label", default="baseline")
     ap.add_argument("--cold-only", action="store_true", help="one cold pass, no warm reps")
+    ap.add_argument("--questions", default=str(Q_FILE), help="path to questions .jsonl")
     args = ap.parse_args()
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    questions = load_questions()
+    questions = load_questions(Path(args.questions))
     rows: list[dict] = []
 
     # --- COLD pass: first hit per path pays model-load / graph-build one-time costs.
@@ -159,7 +182,7 @@ def main() -> None:
         r["rep"] = 0
         rows.append(r)
         t = r["timings"]
-        print(f"  [cold {r['path']:>6}] {q['id']}: TTFT={r['client_ttft_ms']}ms "
+        print(f"  [cold {(r['path'] or 'ERR'):>6}] {q['id']}: TTFT={r['client_ttft_ms']}ms "
               f"total={r['client_total_ms']}ms embed={t.get('embed','-')} "
               f"vsearch={t.get('vector_search','-')} graph={t.get('graph','-')}")
 
@@ -176,7 +199,7 @@ def main() -> None:
                 r["rep"] = rep
                 rows.append(r)
                 t = r["timings"]
-                print(f"  [warm r{rep} {r['path']:>6}] {q['id']}: "
+                print(f"  [warm r{rep} {(r['path'] or 'ERR'):>6}] {q['id']}: "
                       f"TTFT={r['client_ttft_ms']}ms total={r['client_total_ms']}ms "
                       f"retr={t.get('retrieval_total','-')} gen={t.get('generation','-')}")
 
@@ -184,7 +207,7 @@ def main() -> None:
     raw_path.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
 
     warm = [r for r in rows if r.get("phase") == "warm"]
-    summary = summarize(warm if warm else rows)
+    summary = summarize(warm if warm else rows) + routing_summary(warm if warm else rows)
     sum_path = OUT_DIR / f"{args.label}.summary.md"
     sum_path.write_text(summary)
     print("\n" + summary)

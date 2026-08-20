@@ -1,0 +1,4 @@
+{"id": "fb_uncovered_ticker", "expect_path": "graph", "question": "What was Palantir's net income in fiscal 2024?", "ticker": "PLTR", "form": "10-K"}
+{"id": "fb_uncovered_ticker2", "expect_path": "graph", "question": "What was Rivian's total revenue in fiscal 2024?", "ticker": "RIVN", "form": "10-K"}
+{"id": "fb_uncovered_metric", "expect_path": "graph", "question": "What was Apple's advertising spend in fiscal 2024?", "ticker": "AAPL", "form": "10-K"}
+{"id": "fb_covered_control", "expect_path": "graph", "question": "What was Microsoft's net income in fiscal year 2024?", "ticker": "MSFT", "form": "10-K"}
