@@ -764,14 +764,18 @@ def _count_covered_metrics(question: str) -> int:
 # ---------------------------------------------------------------------------
 
 def _sparql_single_metric_all(metric: str) -> str:
+    # Shape #6 (all-company ranking) — STAYS on the SPARQL engine permanently.
+    # A1: lead with the selective metricName triple so rdflib seeds the BGP from
+    # the metric nodes of this name (POS index) instead of enumerating every
+    # company first. Same triples, reordered → identical result set.
     return f"""
 PREFIX fs:  <http://finsight.io/ontology#>
 PREFIX fsd: <http://finsight.io/data/>
 SELECT ?ticker ?fiscalYear ?value
 WHERE {{
-    ?co  a fs:Company ; fs:hasTicker ?ticker ; fs:filedFiling ?f .
-    ?f   fs:fiscalYear ?fiscalYear ; fs:reportsMetric ?m .
     ?m   fs:metricName "{metric}" ; fs:metricValue ?value .
+    ?f   fs:reportsMetric ?m ; fs:fiscalYear ?fiscalYear .
+    ?co  fs:filedFiling ?f ; fs:hasTicker ?ticker ; a fs:Company .
 }}
 ORDER BY DESC(?value)
 """
@@ -786,16 +790,25 @@ def _ticker_in(tickers: list[str]) -> str:
     return f"FILTER(?ticker IN ({inner}))"
 
 
+def _ticker_values(tickers: list[str]) -> str:
+    """A1: SPARQL `VALUES ?ticker {{ "A" "B" ... }}` — bind the ticker set FIRST so
+    rdflib seeds the BGP from those companies (POS index on fs:hasTicker) instead of
+    scanning every company and FILTERing at the end. Same result set as _ticker_in,
+    same ORDER BY, just an evaluation-order optimization for the multi-company path."""
+    inner = " ".join(f'"{t}"' for t in tickers)
+    return f"VALUES ?ticker {{ {inner} }}"
+
+
 def _sparql_multi_company_single_metric(tickers: list[str], metric: str) -> str:
     return f"""
 PREFIX fs:  <http://finsight.io/ontology#>
 PREFIX fsd: <http://finsight.io/data/>
 SELECT ?ticker ?fiscalYear ?value
 WHERE {{
-    ?co  a fs:Company ; fs:hasTicker ?ticker ; fs:filedFiling ?f .
+    {_ticker_values(tickers)}
+    ?co  fs:hasTicker ?ticker ; a fs:Company ; fs:filedFiling ?f .
     ?f   fs:fiscalYear ?fiscalYear ; fs:reportsMetric ?m .
     ?m   fs:metricName "{metric}" ; fs:metricValue ?value .
-    {_ticker_in(tickers)}
 }}
 ORDER BY ?ticker ?fiscalYear
 """
@@ -807,7 +820,8 @@ PREFIX fs:  <http://finsight.io/ontology#>
 PREFIX fsd: <http://finsight.io/data/>
 SELECT ?ticker ?fiscalYear ?revenue ?netIncome ?netMargin ?operatingMargin ?roe
 WHERE {{
-    ?co  a fs:Company ; fs:hasTicker ?ticker ; fs:filedFiling ?f .
+    {_ticker_values(tickers)}
+    ?co  fs:hasTicker ?ticker ; a fs:Company ; fs:filedFiling ?f .
     ?f   fs:fiscalYear ?fiscalYear .
     OPTIONAL {{
         ?f fs:reportsMetric ?m1 .
@@ -829,7 +843,6 @@ WHERE {{
         ?f fs:reportsMetric ?m5 .
         ?m5 fs:metricName "return_on_equity_pct" ; fs:metricValue ?roe .
     }}
-    {_ticker_in(tickers)}
 }}
 ORDER BY ?ticker ?fiscalYear
 """
@@ -841,10 +854,10 @@ PREFIX fs:  <http://finsight.io/ontology#>
 PREFIX fsd: <http://finsight.io/data/>
 SELECT ?ticker ?fiscalYear ?value
 WHERE {{
-    ?co  a fs:Company ; fs:hasTicker ?ticker ; fs:filedFiling ?f .
+    ?co  fs:hasTicker "{ticker}" ; a fs:Company ; fs:filedFiling ?f .
     ?f   fs:fiscalYear ?fiscalYear ; fs:reportsMetric ?m .
     ?m   fs:metricName "{metric}" ; fs:metricValue ?value .
-    FILTER(?ticker = "{ticker}")
+    BIND("{ticker}" AS ?ticker)
 }}
 ORDER BY DESC(?fiscalYear)
 """
@@ -856,10 +869,11 @@ PREFIX fs:  <http://finsight.io/ontology#>
 PREFIX fsd: <http://finsight.io/data/>
 SELECT ?ticker ?fiscalYear ?value
 WHERE {{
-    ?co  a fs:Company ; fs:hasTicker ?ticker ; fs:filedFiling ?f .
-    ?f   fs:fiscalYear ?fiscalYear ; fs:reportsMetric ?m .
+    ?co  fs:hasTicker "{ticker}" ; a fs:Company ; fs:filedFiling ?f .
+    ?f   fs:fiscalYear "{year}" ; fs:reportsMetric ?m .
     ?m   fs:metricName "{metric}" ; fs:metricValue ?value .
-    FILTER(?ticker = "{ticker}" && ?fiscalYear = "{year}")
+    BIND("{ticker}" AS ?ticker)
+    BIND("{year}" AS ?fiscalYear)
 }}
 """
 
@@ -875,7 +889,7 @@ PREFIX fs:  <http://finsight.io/ontology#>
 PREFIX fsd: <http://finsight.io/data/>
 SELECT ?ticker ?fiscalYear ?revenue ?netIncome ?netMargin ?operatingMargin ?roe
 WHERE {{
-    ?co  a fs:Company ; fs:hasTicker ?ticker ; fs:filedFiling ?f .
+    ?co  fs:hasTicker "{ticker}" ; a fs:Company ; fs:filedFiling ?f .
     ?f   fs:fiscalYear ?fiscalYear .
     OPTIONAL {{
         ?f fs:reportsMetric ?m1 .
@@ -897,7 +911,7 @@ WHERE {{
         ?f fs:reportsMetric ?m5 .
         ?m5 fs:metricName "return_on_equity_pct" ; fs:metricValue ?roe .
     }}
-    FILTER(?ticker = "{ticker}")
+    BIND("{ticker}" AS ?ticker)
 }}
 ORDER BY ?fiscalYear
 """
@@ -1473,10 +1487,13 @@ def _graph_prompt(question: str) -> tuple[Optional[str], str, list[dict], Option
         logger.info("Graph missing tickers %s (have %s) — falling back", raw_tickers, known)
         return None, "", [], None
 
+    from ..obs import stage
+
     metric = _detect_metric(question)
     sparql = _build_sparql(question, available)
     try:
-        rows = run_sparql(g, sparql)
+        with stage("sparql"):  # isolated run_sparql timing (A1 verdict metric)
+            rows = run_sparql(g, sparql)
     except Exception as exc:
         logger.warning("SPARQL failed: %s", exc)
         return None, "", [], None

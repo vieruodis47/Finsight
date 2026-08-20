@@ -31,7 +31,7 @@ HERE = Path(__file__).resolve().parent
 Q_FILE = HERE / "questions.jsonl"
 OUT_DIR = HERE / "results"
 
-STAGE_KEYS = ["classify", "embed", "vector_search", "graph", "retrieval_total",
+STAGE_KEYS = ["classify", "embed", "vector_search", "sparql", "graph", "retrieval_total",
               "ttft", "generation", "total"]
 
 
